@@ -1,4 +1,4 @@
-﻿# The 3rd Birthday — native PC port (static recompilation)
+# The 3rd Birthday — native PC port (static recompilation)
 
 ## Goals
 - Playable improvements: widescreen, high framerate, modern controls (twin-stick camera is the first real milestone)
@@ -89,7 +89,8 @@
   - GE signal handlers now run.
   - Aya walks and runs under scripted analog input, and the Vulkan renderer displays correctly in the game window (`tools/capture_window.ps1` can capture it, even when covered).
   - With a fresh save the opening is unskippable and very long; with an old save, ✕ skips it. The earlier "barricade scene without HUD" came from skipping.
-- **Open:** does gameplay after the full opening show the HUD and "MISSION" popup like PPSSPP? Also: a stray-pixel column at the right edge and a strip at the bottom of Vulkan output, and silent ATRAC/voice audio.
+- **HUD (checked 2026-09-26):** after the full opening (fresh save, 10,411 movie frames), mission 1 starts at the same spot as PPSSPP but **no HUD or MISSION popup is drawn**. The HUD isn't drawn-but-invisible: in gameplay the only screen-space (through-mode) draws are 2 per frame, and the new transform-mode vtypes (0x11e, 0x102) are world-space effects. So the game decides not to submit the HUD. There are no failed file opens and no out-of-range memory accesses. Next: diff game state against PPSSPP in gameplay (same RAM layout), e.g. locate the HUD draw code via its textures and find the gate.
+- **Was open:** does gameplay after the full opening show the HUD and "MISSION" popup like PPSSPP? Also: a stray-pixel column at the right edge and a strip at the bottom of Vulkan output, and silent ATRAC/voice audio.
 - **Aya invisible, narrowed down (2026-09-26):** her skinned draws (vtypes 0x522/0x4522/0x8522/0xc522) are submitted, but every bone matrix is zero. The GE runs the 0x2A/0x2B bone commands, and all 158 bone blocks in RAM hold zero data, so the game's own code emits zeros. Timing is ruled out. The emitter is the function at 0x08b52cd0 (unrelocated 0x34ECD0): `lv.q` loads two matrices, `vmmul`, `sv.q` to a scratch buffer, then packs `0x2B000000 | float>>8`. Next: compare `vmmul`/`lv.q`/`sv.q` codegen (register mapping, matrix transpose) against PPSSPP on this sequence, or diff the source matrices at `*(obj+0x3C4)+0x40` with PPSSPP. New debug switches: `SR_VTSTAT`, `SR_SKINDBG=<frame>`, `tools/ppsspp_shot.py` (capture doesn't work on v1.20.4).
 - **Previous blocker (fixed):** after New Game, the 3D scene rendered behind a full-screen black quad at alpha 255 (a fade that never starts). The opening movie's MPEG player is created (`sceMpegCreate`, `InitAu`) but never fed (`ringPut=0`), so the game presumably waits for the cutscene. Next steps: find out why the player never calls `sceMpegRingbufferPut` (check how PPSSPP proceeds after New Game), then do real MPEG/ATRAC decoding per the plan.
 - **Debug switches added:** `SR_REGWATCH=<reg>:<hex>` (first instruction that sees a GPR value), `SR_WATCH_VAL` (filter for `SR_WATCH`), `SR_DMALOG`, `SR_CALLCOUNT=2` (all calls), `SR_STACK_ARENA` (removed again: the arena is now kernel RAM).

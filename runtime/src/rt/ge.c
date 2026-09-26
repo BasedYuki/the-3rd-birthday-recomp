@@ -1850,8 +1850,14 @@ static void draw_prim(uint32_t op) {
                 for (int si = 0; si < seen_cnt; si++) seen_n[si] = 0;
             }
             int slot = -1;
+            /* SR_VDUMP_VT=<hex>: only dump that vtype (the 16-slot table otherwise fills with the
+             * first vtypes seen and never admits later ones, e.g. the in-game HUD). */
+            static int vt_filter = -2;
+            if (vt_filter == -2) { const char *e = getenv("SR_VDUMP_VT"); vt_filter = e ? (int)strtoul(e, NULL, 16) : -1; }
+            if (vt_filter >= 0 && (uint32_t)vt_filter != ge.vtype) slot = -2;
+            if (slot == -1)
             for (int si = 0; si < seen_cnt; si++) if (seen_vt[si] == ge.vtype) { slot = si; break; }
-            if (slot < 0 && seen_cnt < 16) { slot = seen_cnt++; seen_vt[slot] = ge.vtype; seen_n[slot] = 0; }
+            if (slot == -1 && seen_cnt < 16) { slot = seen_cnt++; seen_vt[slot] = ge.vtype; seen_n[slot] = 0; }
             if (slot >= 0 && seen_n[slot] < 2) {
                 seen_n[slot]++;
                 fprintf(stderr, "VDUMP f=%u type=%d count=%d vtype=0x%06x stride=%d offs[w=%d tc=%d col=%d nrm=%d pos=%d] lit=%d gouraud=%d fog=%d tmm=0x%03x\n",
@@ -1879,6 +1885,14 @@ static void draw_prim(uint32_t op) {
                     fprintf(stderr, "  v%d @0x%08x [%s] pos=(%.4g,%.4g,%.4g) uv=(%.3g,%.3g) col=%02x%02x%02x%02x nrm=(%.3g,%.3g,%.3g) w0=%.3g -> cw=%.4g lit=%02x%02x%02x%02x uvT=(%.3g,%.3g) fog=%.3g\n",
                             i, a, hex, px, py, pz, u, tv, r, g, b, al, nx, ny, nz, w0,
                             cv2.cw, cv2.r, cv2.g, cv2.b, cv2.a, cv2.u, cv2.v, cv2.fog);
+                    fprintf(stderr, "      clip=(%.4g,%.4g,%.4g,%.4g) oor=%d ozp=%d ozn=%d screen=(%.1f,%.1f,%.1f)\n",
+                            cv2.cx, cv2.cy, cv2.cz, cv2.cw, cv2.oor, cv2.ozp, cv2.ozn, cv2.sx, cv2.sy, cv2.sz);
+                }
+                if (vt_filter >= 0) {
+                    fprintf(stderr, "      state: ztest=%d/%d zwrite_dis=%d minz=%u maxz=%u clip=%d cull=%d/%d atest=%d/0x%06x blend=%d tex=%d/0x%08x %dx%d fmt=%u\n",
+                            ge.ztest_enable, ge.ztest, ge.zwrite_disable, ge.minz, ge.maxz, ge.depth_clip,
+                            ge.cull_enable, ge.cull, ge.atest_enable, ge.atest, ge.blend_enable,
+                            ge.tex_enable, ge.tex_addr, ge.tex_w, ge.tex_h, ge.tex_fmt);
                 }
             }
         }
