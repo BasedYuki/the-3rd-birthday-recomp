@@ -37,12 +37,13 @@ fi
 # 2. Compile the generated chunks in parallel (the single file needs >16 GB RAM).
 CFLAGS=(-O1 -foptimize-sibling-calls -I"$RT/src/rt" -I"$GEN" -DSR_SDL3VK -w)
 export OUT
+export RTH="$RT/src/rt/recomp.h"
 ls "$GEN"/recomp_*.c | xargs -P "$JOBS" -I{} bash -c '
   c="$1"; o="${c%.c}.o"; shift
-  [ "$o" -nt "$c" ] || gcc "$@" -c "$c" -o "$o"' _ {} "${CFLAGS[@]}"
+  [ "$o" -nt "$c" ] && [ "$o" -nt "$RTH" ] || gcc "$@" -c "$c" -o "$o"' _ {} "${CFLAGS[@]}"
 
 # 3. Runtime + link.
-[ "$OUT/ge.o" -nt "$RT/src/rt/ge.c" ] 2>/dev/null || \
+{ [ "$OUT/ge.o" -nt "$RT/src/rt/ge.c" ] && [ "$OUT/ge.o" -nt "$RT/src/rt/recomp.h" ]; } 2>/dev/null || \
   gcc -O2 -fno-math-errno -w -I"$RT/src/rt" -c "$RT/src/rt/ge.c" -o "$OUT/ge.o"
 
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c

@@ -443,6 +443,27 @@ void sr_trace_close(void) {
 static uint32_t s_watch_addr = 0;
 static int s_watch_on = -1;
 void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
+    /* SR_PCPROBE=<hexpc>[:<n>]: dump GPRs and the first 48 VFPU registers the first n (default
+     * 3) times the instruction at pc is about to run. */
+    {
+        static int pp = -1; static uint32_t pp_pc; static int pp_left;
+        if (pp < 0) {
+            const char *e = getenv("SR_PCPROBE");
+            pp = 0;
+            if (e) { pp_pc = (uint32_t)strtoul(e, NULL, 16); const char *c = strchr(e, ':'); pp_left = c ? atoi(c + 1) : 3; pp = 1; }
+        }
+        if (pp && pc == pp_pc && pp_left > 0) {
+            pp_left--;
+            fprintf(stderr, "PCPROBE pc=0x%08x op=0x%08x\n  gpr:", pc, op);
+            for (int i = 0; i < 32; i++) fprintf(stderr, " r%d=%08x", i, s->r[i]);
+            fprintf(stderr, "\n");
+            for (int m = 0; m < 3; m++) {
+                fprintf(stderr, "  v[%d..%d]:", m * 16, m * 16 + 15);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %g", s->v[m * 16 + i]);
+                fprintf(stderr, "\n");
+            }
+        }
+    }
     /* SR_REGWATCH=<reg>:<hexvalue>: report the first instruction that runs with GPR <reg>
      * holding <value>, plus the previous instruction (the likely writer). */
     {

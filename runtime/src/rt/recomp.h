@@ -39,15 +39,20 @@ extern uint8_t *g_mem;
 #define SR_PHYS(a)  ((a) & 0x1FFFFFFFu)
 /* Signed offset so addresses below SR_RAM_BASE (VRAM/eDRAM at 0x04000000) map below g_mem,
  * into the part of the arena reserved for them, instead of wrapping to a huge positive offset. */
-#define SR_HOST(a)  (g_mem + (int32_t)(SR_PHYS(a) - SR_RAM_BASE))
+/* The 16 KB scratchpad (guest 0x00010000..0x00013fff) is backed by an unused slice of the
+ * arena's VRAM/IO span at 0x07ff0000. Games do matrix work there (The 3rd Birthday builds its
+ * skinning bone matrices in it); dropping those accesses made every bone zero. */
+#define SR_SCRATCH_PHYS(p)  (((p) - 0x00010000u) < 0x4000u ? (p) + 0x07FE0000u : (p))
+#define SR_HOST(a)  (g_mem + (int32_t)(SR_SCRATCH_PHYS(SR_PHYS(a)) - SR_RAM_BASE))
 
 /* The arena covers guest physical [0x04000000, 0x0c000000): VRAM/eDRAM at 0x04000000 and user
- * RAM at 0x08000000. A guest pointer outside that window is wild (would fault on real hardware
- * too). During bring-up some not-yet-faithful subsystems compute such pointers; rather than
- * segfault the host, out-of-range reads return 0 and writes are dropped. Valid accesses are
- * unaffected, so differential/bit-exact checks still hold. */
+ * RAM at 0x08000000, plus the scratchpad (remapped above). A guest pointer outside that is wild
+ * (would fault on real hardware too). During bring-up some not-yet-faithful subsystems compute
+ * such pointers; rather than segfault the host, out-of-range reads return 0 and writes are
+ * dropped. Valid accesses are unaffected, so differential/bit-exact checks still hold. */
 static inline int sr_inrange(uint32_t a) {
-    return (uint32_t)(SR_PHYS(a) - 0x04000000u) < 0x08000000u;
+    uint32_t p = SR_PHYS(a);
+    return (uint32_t)(p - 0x04000000u) < 0x08000000u || (uint32_t)(p - 0x00010000u) < 0x4000u;
 }
 extern void sr_oor(uint32_t a, uint32_t v, int store);   /* records out-of-range access (diag) */
 static inline uint8_t  sr_r8 (uint32_t a) { if (sr_inrange(a)) return *(uint8_t  *)SR_HOST(a); sr_oor(a,0,0); return 0u; }

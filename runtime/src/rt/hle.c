@@ -1254,8 +1254,16 @@ static uint32_t h_CtrlButtons(void) {
             }
         }
         if (scr_n > 0) {
+            /* A mask with bit 31 set is an analog-stick line: bits 8-15 = X, bits 0-7 = Y. */
+            extern int g_script_lx, g_script_ly;
+            g_script_lx = g_script_ly = -1;
             for (int i = 0; i < scr_n; i++)
-                if (s_vcount_fwd >= scr[i].f && s_vcount_fwd < scr[i].f + scr[i].w) keys |= scr[i].mask;
+                if (s_vcount_fwd >= scr[i].f && s_vcount_fwd < scr[i].f + scr[i].w) {
+                    if (scr[i].mask & 0x80000000u) {
+                        g_script_lx = (int)((scr[i].mask >> 8) & 0xFF);
+                        g_script_ly = (int)(scr[i].mask & 0xFF);
+                    } else keys |= scr[i].mask;
+                }
             return keys;
         }
     }
@@ -1282,10 +1290,12 @@ static uint32_t h_CtrlButtons(void) {
  * positive mask there makes the game see almost every button held and run wild (it jumped through
  * an uninitialised menu handler). */
 /* Latch one controller sample per frame into the ring (called from sr_vblank_tick). */
+int g_script_lx = -1, g_script_ly = -1;   /* SR_PADSCRIPT analog override (-1 = none) */
 void sr_ctrl_sample(void) {
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
     s_ctrl_ring[s_ctrl_w].btn = h_CtrlButtons();
+    if (g_script_lx >= 0) { lx = (uint8_t)g_script_lx; ly = (uint8_t)g_script_ly; }
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
     s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
