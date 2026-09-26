@@ -547,6 +547,11 @@ static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
             clut_lookup((uint32_t)ni, r, g, b, a); break;
         }
         case 5: clut_lookup(MEM_R8(ge.tex_addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
+        /* CLUT16/CLUT32: the index is the whole texel, then shift/mask/start as usual. The 3rd
+         * Birthday's glow reads its 8888 framebuffer as CLUT32 (green>>12) and its 4444 glow
+         * buffer as CLUT16; the old white fallback bloomed the entire screen. */
+        case 6: clut_lookup(MEM_R16(ge.tex_addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
+        case 7: clut_lookup(MEM_R32(ge.tex_addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
         default: *r=*g=*b=*a=255; break;
     }
     if (*r | *g | *b) g_tex_nonzero++;
@@ -1665,6 +1670,23 @@ static void draw_prim(uint32_t op) {
     int type = (op >> 16) & 7;
     int count = op & 0xFFFF;
     VFmt vf; decode_vtype(ge.vtype, &vf);
+    /* SR_DRAWLOG=<frame>[,<frame>...]: print the target/texture/blend state of every prim drawn
+     * in those frames (same fields as tools/ge_listdump.py --draws, for diffing vs PPSSPP). */
+    {
+        static int nf = -1; static uint32_t fr[16];
+        if (nf < 0) {
+            nf = 0; const char *e = getenv("SR_DRAWLOG");
+            while (e && *e && nf < 16) { fr[nf++] = (uint32_t)strtoul(e, (char **)&e, 10); if (*e == ',') e++; else break; }
+        }
+        for (int k = 0; k < nf; k++) if (s_ge_frame == fr[k]) {
+            fprintf(stderr, "DRAW f=%u type=%d n=%d vt=%06x fb=%08x/%u/%u tex=%d %08x fmt=%u bw=%u %dx%d func=%05x"
+                    " clut=%08x/%06x blend=%d %06x mat=%06x/%02x\n", s_ge_frame, type, count, ge.vtype,
+                    ge.fbp, ge.fbw, ge.fbfmt, ge.tex_enable, ge.tex_addr, ge.tex_fmt, ge.tex_bufw, ge.tex_w,
+                    ge.tex_h, ge.tex_func, ge.clut_addr, ge.clut_fmt, ge.blend_enable, ge.blend_mode,
+                    ge.material, ge.material_alpha);
+            break;
+        }
+    }
     /* SR_SKINDBG=<frame>: at the first weighted draw from that frame on, print the last 96 GE
      * commands executed (where did the bone matrices come from?). */
     {

@@ -681,7 +681,7 @@ static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
 static uint64_t tex_hash(void) {
     uint32_t bpp_num;
     switch (s_ge->tex_fmt) {
-        case 3: bpp_num = 32; break;
+        case 3: case 7: bpp_num = 32; break;
         case 4: bpp_num = 4;  break;
         case 5: bpp_num = 8;  break;
         default: bpp_num = 16; break;
@@ -772,7 +772,7 @@ static VkDescriptorSet tex_get(void) {
                  | ((uint64_t)s_ge->tex_swizzle << 56) | ((uint64_t)(unsigned)linear << 57)
                  | ((uint64_t)(unsigned)clamp_u << 58) | ((uint64_t)(unsigned)clamp_v << 59);
     key ^= (uint64_t)s_ge->tex_bufw << 16;
-    if (s_ge->tex_fmt == 4 || s_ge->tex_fmt == 5)
+    if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7)
         key ^= clut_hash() | 1;        /* distinct entry per (texture, palette) pair */
     uint64_t hash = tex_hash();
     for (int i = 0; i < s_tex_n; i++) {
@@ -1140,8 +1140,17 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     return 1;
 }
 
+/* SR_GPU_SKIPTEX=<hex vram offset>: drop textured draws sampling that address (bisect a
+ * post-effect pass without touching the game). */
+static int skip_draw(void) {
+    static long skip = -2;
+    if (skip == -2) { const char *e = getenv("SR_GPU_SKIPTEX"); skip = e ? strtol(e, NULL, 16) : -1; }
+    return skip >= 0 && s_ge->tex_enable && (long)(s_ge->tex_addr & 0x001FFFFFu) == skip;
+}
+
 static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
     if (!s_ready) return 0;
+    if (skip_draw()) return 1;
     Batch b;
     state_get(persp, 1, &b);
     if (!begin_target()) return 1;
@@ -1337,6 +1346,13 @@ void gegpu_flush(const char *reason) {
             if (a0 < t->fba + flen && t->fba < a0 + bytes)
                 target_readback(t);
         }
+        return;
+    }
+    if (reason && strcmp(reason, "syncall") == 0) {
+        /* debug dumps: materialize every GPU-resident target into guest VRAM */
+        submit_pending();
+        for (int i = 0; i < MAX_TGT; i++)
+            if (s_tgts[i].used && s_tgts[i].gpu_valid) target_readback(&s_tgts[i]);
         return;
     }
     if (reason && strcmp(reason, "loadclut") == 0) {
