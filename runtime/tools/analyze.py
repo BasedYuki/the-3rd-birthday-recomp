@@ -191,7 +191,10 @@ def analyze(elf):
     text = elf.sec(".text")
 
     def in_text(a):
-        return text and text["addr"] <= a < text["addr"] + text["size"] and (a & 3) == 0
+        if text:
+            return text["addr"] <= a < text["addr"] + text["size"] and (a & 3) == 0
+        # Stripped section names (e.g. The 3rd Birthday): use the executable ranges instead.
+        return (a & 3) == 0 and in_ranges(a, ranges)
 
     # High-confidence function starts: addresses that are genuinely entered as a function,
     # not internal blocks. These seed the extent tracing below.
@@ -223,9 +226,15 @@ def analyze(elf):
             if in_ranges(val, ranges):
                 hc.add(val)
 
-    # Function-pointer tables in read-only/data sections (callbacks reached via jalr).
-    for nm in (".rodata", ".data", ".sdata"):
-        s = elf.sec(nm)
+    # Function-pointer tables in read-only/data sections (callbacks reached via jalr, vtables,
+    # switch jump tables). With stripped section names, scan every allocated non-executable
+    # PROGBITS section instead.
+    data_secs = [elf.sec(nm) for nm in (".rodata", ".data", ".sdata")]
+    if not any(data_secs):
+        data_secs = [s for s in elf.sections
+                     if s["typ"] == 1 and s["size"] and s["addr"] and not (s["flags"] & 4)
+                     and (s["flags"] & 2)]   # SHF_ALLOC, not SHF_EXECINSTR
+    for s in data_secs:
         if not s or s["typ"] == 8:
             continue
         blob = section_bytes(elf, s)

@@ -108,6 +108,28 @@ static uint32_t block_addr(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) if (s_blocks[i].uid == uid) return s_blocks[i].addr;
     return 0;
 }
+/* Top-down allocation from the user partition (thread and interrupt stacks, sched.c), like the
+ * PSP kernel's PSP_SMEM_High: the partition top moves down, so the heap can never reach it. */
+/* Kernel-RAM arena [0x08400000, 0x08800000): memory the game never sees (HLE runs no kernel
+ * code there). Holds the interrupt stack, and thread stacks once the user partition is full.
+ * The game sizes its heap from nearly all free user memory -- any reserve taken out of the user
+ * partition starves its allocator -- while on hardware its later threads still get stacks,
+ * because the real layout differs slightly. Serving those from kernel RAM keeps both working. */
+static uint32_t s_karena_top = 0x08800000u;
+uint32_t sr_kernel_alloc(uint32_t size) {
+    uint32_t addr = (s_karena_top - size) & ~0xFFu;
+    if (addr < 0x08400000u) return 0;
+    s_karena_top = addr;
+    return addr;
+}
+uint32_t sr_user_alloc_high(uint32_t size) {
+    user_partition_init();
+    uint32_t addr = (s_part_top - size) & ~0xFFu;
+    if (addr >= s_heap && addr < s_part_top) { s_part_top = addr; return addr; }
+    addr = sr_kernel_alloc(size);
+    if (addr && getenv("SR_THLOG")) fprintf(stderr, "stack 0x%x from kernel arena at 0x%08x\n", size, addr);
+    return addr;
+}
 /* Raw user-partition allocation for kernel objects that own memory (FPL/VPL in hle_ext.c).
  * Returns the address, or 0 if the partition is exhausted. */
 uint32_t sr_user_alloc(uint32_t size, uint32_t align) {
@@ -185,6 +207,13 @@ static uint32_t h_StartThread(CpuState *s) {
     return 0;
 }
 static uint32_t h_ExitThread(CpuState *s) { (void)s; sched_exit_current(); return 0; }
+extern void sched_exit_delete_current(void);
+extern int sched_delete_thread(uint32_t uid);
+static uint32_t h_ExitDeleteThread(CpuState *s) { (void)s; sched_exit_delete_current(); return 0; }
+static uint32_t h_DeleteThread(CpuState *s) {
+    int r = sched_delete_thread(A0);
+    return r == 0 ? 0 : r == -1 ? 0x80020198u /* UNKNOWN_THID */ : 0x800201a4u /* NOT_DORMANT */;
+}
 static uint32_t h_DelayThread(CpuState *s) { sched_delay_current(A0); return 0; }
 static uint32_t h_ChangeThreadPriority(CpuState *s) { sched_set_priority(A0, (int)A1); return 0; }
 static uint32_t h_TerminateDeleteThread(CpuState *s) { sched_terminate_thread(A0); return 0; }
@@ -247,6 +276,7 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
 static uint32_t h_DmacMemcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
+    if (getenv("SR_DMALOG")) fprintf(stderr, "DmacMemcpy dst=0x%08x src=0x%08x n=0x%x\n", dst, src, n);
     for (uint32_t i = 0; i < n; i++) MEM_W8(dst + i, MEM_R8(src + i));
     extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
     sr_gpu_vram_dirty(dst, n);   /* DMA into a GPU-cached framebuffer must invalidate it */
@@ -682,7 +712,7 @@ static int s_osk_status = 0;
 static uint32_t s_osk_param = 0;
 /* PPSSPP keeps a "current dialog type": OskGetStatus is WRONG_TYPE only while a DIFFERENT
  * utility dialog owns the slot. After an OSK shuts down it stays the current dialog and
- * GetStatus returns NONE(0) — a game spinning "while (OskGetStatus() != 0)" after name entry
+ * GetStatus returns NONE(0) ??? a game spinning "while (OskGetStatus() != 0)" after name entry
  * hangs forever if we keep returning WRONG_TYPE there. */
 static int s_osk_current = 0;
 static int s_osk_current_clear(void) { s_osk_current = 0; return 0; }
@@ -990,7 +1020,8 @@ static uint32_t h_IoRead(CpuState *s) {
     if (getenv("SR_IOLOG")) {
         static int n = 0;
         if (n++ < 4000)
-            fprintf(stderr, "Read fd=%u off=%u size=%u -> %u\n", fd, f->off - done, count, done);
+            fprintf(stderr, "Read fd=%u off=%u size=%u -> %u dst=0x%08x%s\n", fd, f->off - done, count, done,
+                    dst, f->block ? " (block)" : "");
     }
     return f->block ? done / 2048u : done;
 }
@@ -1178,7 +1209,8 @@ static void sr_dump_calls(void) {
     for (int a = 0; a < g_ncc; a++) for (int b = a + 1; b < g_ncc; b++)
         if (g_cc[b].n > g_cc[a].n) { __typeof__(g_cc[0]) t = g_cc[a]; g_cc[a] = g_cc[b]; g_cc[b] = t; }
     fprintf(stderr, "--- top HLE calls ---\n");
-    for (int a = 0; a < g_ncc && a < 18; a++) fprintf(stderr, "  %-32s 0x%08x  %lu\n", g_cc[a].nm, g_cc[a].nid, g_cc[a].n);
+    int lim = (getenv("SR_CALLCOUNT") && atoi(getenv("SR_CALLCOUNT")) >= 2) ? g_ncc : 18;   /* =2: all */
+    for (int a = 0; a < g_ncc && a < lim; a++) fprintf(stderr, "  %-32s 0x%08x  %lu\n", g_cc[a].nm, g_cc[a].nid, g_cc[a].n);
 }
 /* PSP controller ring buffer, modelled on PPSSPP (Core/HLE/sceCtrl.cpp): one sample is latched
  * per VBLANK into a 64-entry ring; sceCtrlReadBufferPositive returns the samples accumulated
@@ -1304,8 +1336,10 @@ static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);
 static uint32_t s_framebuf = 0, s_vcount = 0;
 static uint32_t s_last_flip_vcount = 0;   /* hang watchdog (see sr_vblank_tick) */
+static uint32_t s_framebuf_width = 512, s_framebuf_fmt = 3;
 static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     s_framebuf = A0;
+    if (A0) { s_framebuf_width = A1; s_framebuf_fmt = A2; }
     s_last_flip_vcount = s_vcount;
     /* SR_GEWATCH: interleave presents with GELIST lines to expose draw-vs-present ordering. */
     {
@@ -1355,8 +1389,13 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     }
     return 0;
 }
+/* sceDisplayGetFrameBuf(u32 *topaddr, int *bufferwidth, int *pixelformat, int sync) */
 static uint32_t h_DisplayGetFrameBuf(CpuState *s) {
     if (A0) MEM_W32(A0, s_framebuf);
+    if (A1) MEM_W32(A1, s_framebuf_width);
+    if (A2) MEM_W32(A2, s_framebuf_fmt);
+    if (getenv("SR_DMALOG")) fprintf(stderr, "GetFrameBuf -> 0x%08x w=%u fmt=%u (vcount %u)\n",
+                                     s_framebuf, s_framebuf_width, s_framebuf_fmt, s_vcount);
     return 0;
 }
 
@@ -1934,7 +1973,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x446d8de6, "sceKernelCreateThread", h_CreateThread);
     sr_hle_register(0xf475845d, "sceKernelStartThread", h_StartThread);
     sr_hle_register(0xaa73c935, "sceKernelExitThread", h_ExitThread);
-    sr_hle_register(0x809ce29b, "sceKernelExitDeleteThread", h_ExitThread);
+    sr_hle_register(0x809ce29b, "sceKernelExitDeleteThread", h_ExitDeleteThread);
     sr_hle_register(0xe81caf8f, "sceKernelCreateCallback", h_module_uid);
     sr_hle_register(0xceadeb47, "sceKernelDelayThread", h_DelayThread);
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
@@ -1945,7 +1984,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x840e8133, "sceKernelWaitThreadEndCB", h_WaitThreadEnd);
     sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0x383f7bcc, "sceKernelTerminateDeleteThread", h_TerminateDeleteThread);
-    sr_hle_register(0x9fa03cd3, "sceKernelDeleteThread", h_ok);
+    sr_hle_register(0x9fa03cd3, "sceKernelDeleteThread", h_DeleteThread);
     sr_hle_register(0xa66b0120, "sceKernelReferEventFlagStatus", h_ReferEventFlagStatus);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);

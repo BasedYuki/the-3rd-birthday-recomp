@@ -43,6 +43,8 @@ typedef struct {
     int      sleeping;           /* 1 while blocked in sceKernelSleepThread[CB] */
     uint64_t vbl_seen;           /* s_vbl_count this thread last consumed (vblank latch) */
     uint32_t sp_init, k0_init;   /* initial sp/k0 (to re-seed registers on a restart) */
+    uint32_t stack_base, stack_size;   /* guest stack block (from the top of user memory) */
+    int      deleted;            /* sceKernelDeleteThread'd: slot and stack can be reused */
     CpuState saved;              /* register file while not running */
 } TCB;
 
@@ -53,7 +55,10 @@ static void    *s_sched_fiber = NULL;
 static CpuState *s_cpu = NULL;
 static uint64_t s_tick = 0;
 static uint32_t s_gp = 0;        /* module global pointer, inherited by created threads */
-static uint32_t s_stack_top = 0x09f00000;  /* sibling thread stacks grow down from here */
+/* Thread and interrupt stacks come from the top of the user partition (hle.c), as the PSP
+ * kernel allocates them, so the game's heap can never grow into a live stack. */
+uint32_t sr_user_alloc_high(uint32_t size);
+static uint32_t s_intr_stack = 0;
 
 static TCB *tcb_by_uid(uint32_t uid) {
     for (int i = 0; i < s_ntcb; i++) if (s_tcb[i].uid == uid) return &s_tcb[i];
@@ -216,7 +221,8 @@ static uint32_t run_interrupt_handler(uint32_t h, uint32_t a0) {
     CpuState save;
     memcpy(&save, s_cpu, sizeof(CpuState));
     memset(s_cpu, 0, sizeof(CpuState));
-    s_cpu->r[29] = 0x09df0000;          /* dedicated interrupt stack (below thread stacks) */
+    if (!s_intr_stack) { extern uint32_t sr_kernel_alloc(uint32_t); s_intr_stack = sr_kernel_alloc(0x10000) + 0x10000 - 0x10; }
+    s_cpu->r[29] = s_intr_stack;        /* dedicated interrupt stack */
     s_cpu->r[28] = s_gp;
     s_cpu->r[4] = a0;
     s_cpu->r[31] = 0;
@@ -302,26 +308,39 @@ static void CALLBACK fiber_proc(void *param) {
 }
 
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
-    if (s_ntcb >= MAXTHREADS) {
-        fprintf(stderr, "sched_create_thread: MAXTHREADS(%d) exhausted (entry=0x%08x)\n", MAXTHREADS, entry);
-        return 0;
-    }
     if (getenv("SR_THLOG")) fprintf(stderr, "create thread #%d entry=0x%08x pri=%d stack=%u\n", s_ntcb, entry, priority, stack_size);
-    TCB *t = &s_tcb[s_ntcb++];
+    uint32_t sz = (stack_size ? stack_size : 0x40000);
+    sz = (sz + 0xFFu) & ~0xFFu;
+    /* Reuse a deleted thread's slot (and its stack, if big enough) before taking a new one. */
+    TCB *t = NULL;
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].deleted && s_tcb[i].stack_size >= sz) { t = &s_tcb[i]; break; }
+    uint32_t base = 0;
+    void *fiber = NULL; int started = 0;
+    if (t) {
+        base = t->stack_base; sz = t->stack_size;
+        fiber = t->fiber; started = t->started;      /* fiber_proc re-reads entry on restart */
+    } else {
+        if (s_ntcb >= MAXTHREADS) {
+            fprintf(stderr, "sched_create_thread: MAXTHREADS(%d) exhausted (entry=0x%08x)\n", MAXTHREADS, entry);
+            return 0;
+        }
+        t = &s_tcb[s_ntcb++];
+        base = sr_user_alloc_high(sz);
+        if (!base) { fprintf(stderr, "sched_create_thread: no memory for a 0x%x stack\n", sz); s_ntcb--; return 0; }
+    }
     memset(t, 0, sizeof(*t));
+    t->fiber = fiber; t->started = started;
+    t->stack_base = base; t->stack_size = sz;
     t->uid = sr_alloc_uid();
     t->state = TH_DORMANT;
     t->priority = priority;
     t->entry = entry;
-    t->started = 0;
-    t->fiber = NULL;
     /* Give the thread a stack, the module gp, and a per-thread k0 (r26) area. The PSP kernel
      * sets k0 to a small per-thread control region near the top of the thread stack, and the
      * game's thread bodies use it as a base pointer (e.g. sw r21,4(k0)); leaving it 0 faults.
      * (The entry thread's saved state is overwritten with the driver's seed in sched_run.) */
-    uint32_t sz = stack_size ? stack_size : 0x40000;
-    s_stack_top -= (sz + 0xFFu) & ~0xFFu;
-    uint32_t top = (s_stack_top + sz) & ~0xFu;
+    uint32_t top = (base + sz) & ~0xFu;
     uint32_t k0 = (top - 0x800) & ~0xFu;           /* reserved k0/TLS region below the top */
     t->k0_init = k0;
     t->sp_init = (k0 - 0x10) & ~0xFu;              /* sp grows down below the k0 region */
@@ -581,6 +600,27 @@ void sched_exit_current(void) {
     switch_to_scheduler();
 }
 
+/* sceKernelDeleteThread (a dormant thread) / sceKernelExitDeleteThread (self): the slot and its
+ * stack become reusable by the next sceKernelCreateThread. */
+int sched_delete_thread(uint32_t uid) {
+    TCB *t = tcb_by_uid(uid);
+    if (!t) return -1;
+    if (t->state != TH_DORMANT) return -2;
+    t->deleted = 1;
+    t->uid = 0;                  /* no longer addressable */
+    return 0;
+}
+void sched_exit_delete_current(void) {
+    if (s_cur < 0) return;
+    s_tcb[s_cur].deleted = 1;
+    uint32_t uid = s_tcb[s_cur].uid;
+    s_tcb[s_cur].state = TH_DORMANT;
+    s_tcb[s_cur].uid = 0;
+    if (getenv("SR_SYSLOG")) fprintf(stderr, "thr 0x%x EXIT+DELETE\n", uid);
+    sched_wake(uid);
+    switch_to_scheduler();
+}
+
 int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 32; }
 
 /* sceKernelChangeThreadPriority: uid 0 = current thread. */
@@ -616,6 +656,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
      * -- rather than the synthetic thread stack. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));
+    /* A seed without sp/k0 (an init line with only gp and args) keeps the thread's own stack. */
+    if (!t0->saved.r[29]) t0->saved.r[29] = t0->sp_init;
+    if (!t0->saved.r[26]) t0->saved.r[26] = t0->k0_init;
     arglen = s_cpu->r[4]; argp = s_cpu->r[5];
     sched_start_thread(uid, arglen, argp);
 

@@ -443,6 +443,22 @@ void sr_trace_close(void) {
 static uint32_t s_watch_addr = 0;
 static int s_watch_on = -1;
 void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
+    /* SR_REGWATCH=<reg>:<hexvalue>: report the first instruction that runs with GPR <reg>
+     * holding <value>, plus the previous instruction (the likely writer). */
+    {
+        static int rw = -1; static int rw_reg; static uint32_t rw_val, prev_pc, prev_op;
+        if (rw < 0) {
+            const char *e = getenv("SR_REGWATCH");
+            rw = 0;
+            if (e) { rw_reg = atoi(e); const char *c = strchr(e, ':'); if (c) { rw_val = (uint32_t)strtoul(c + 1, NULL, 16); rw = 1; } }
+        }
+        if (rw == 1 && s->r[rw_reg] == rw_val) {
+            rw = 2;
+            fprintf(stderr, "REGWATCH r%d=0x%08x first seen at pc=0x%08x op=0x%08x; previous pc=0x%08x op=0x%08x ra=0x%08x sp=0x%08x\n",
+                    rw_reg, rw_val, pc, op, prev_pc, prev_op, s->r[31], s->r[29]);
+        }
+        prev_pc = pc; prev_op = op;
+    }
     if (s_watch_on < 0) {
         const char *w = getenv("SR_WATCH");
         s_watch_addr = w ? (uint32_t)strtoul(w, NULL, 16) : 0;
@@ -450,9 +466,11 @@ void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
     }
     if (s_watch_on) {
         static uint16_t last_val; static int primed = 0; static uint32_t last_pc; static int hits = 0;
+        static int filt = -2;   /* SR_WATCH_VAL=<hex16>: only report changes to this value */
+        if (filt == -2) { const char *fv = getenv("SR_WATCH_VAL"); filt = fv ? (int)strtoul(fv, NULL, 16) : -1; }
         uint16_t v = sr_r16(s_watch_addr);
         if (!primed) { last_val = v; primed = 1; }
-        else if (v != last_val && hits < 400) {
+        else if (v != last_val && hits < 400 && (filt < 0 || v == (uint16_t)filt)) {
             hits++;
             fprintf(stderr, "WATCH [0x%08x] 0x%04x -> 0x%04x after pc=0x%08x ra=0x%08x\n",
                     s_watch_addr, last_val, v, last_pc, s->r[31]);
