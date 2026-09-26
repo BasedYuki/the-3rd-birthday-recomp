@@ -419,6 +419,20 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
      * runs for the full file then ends, instead of stopping at the (segment-only) header timestamp. */
     if (ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets && rb_get(ring, RB_packetsAvail) == 0)
         ctx->videoEnd = 1;
+    if (getenv("SR_MPEGSTAT")) {
+        static unsigned long n = 0;
+        if ((++n % 300) == 0) {
+#ifdef SR_SDL3VK
+            extern uint32_t sr_h264_pending_bytes(int id);
+            uint32_t pend = ctx->h264 >= 0 ? sr_h264_pending_bytes(ctx->h264) : 0;
+#else
+            uint32_t pend = 0;
+#endif
+            fprintf(stderr, "MPEGSTAT getavc#%lu fed %u/%u avail %u pending %u bytes read %u end %d\n",
+                    n, ctx->fedPackets, ctx->totalPackets, rb_get(ring, RB_packetsAvail), pend,
+                    rb_get(ring, RB_packetsRead), ctx->videoEnd);
+        }
+    }
     if (rb_get(ring, RB_packetsRead) == 0 || rb_get(ring, RB_packetsAvail) == 0) {
         g_mpeg_nodata++;
         au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
@@ -460,12 +474,20 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (!ring) return (uint32_t)-1;
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
+    /* End of stream for audio too (PPSSPP: IsAudioEnd -> ERROR_MPEG_NO_DATA). Reporting audio
+     * as always available kept the movie's AudioOutput thread alive after the video ended, so
+     * the player never finished and the game froze on the last frame of the opening. */
+    if (ctx->videoEnd || (ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets &&
+                          rb_get(ring, RB_packetsAvail) == 0)) {
+        au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
+        return SCE_MPEG_ERROR_NO_DATA;
+    }
     int64_t pts = ctx->audioPts + ctx->firstTimestamp;
     au_write_pts(auAddr, 0, pts);
     au_write_pts(auAddr, 8, pts);
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
     if (attrAddr) MEM_W32(attrAddr, 0);
-    return 0;   /* audio AU available; the audio ring drains with the video at EOF */
+    return 0;
 }
 
 static uint32_t video_buffer_bytes(uint32_t frameWidth, int pixelMode) {

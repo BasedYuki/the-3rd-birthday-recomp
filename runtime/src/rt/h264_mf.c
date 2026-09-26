@@ -409,7 +409,11 @@ uint32_t sr_h264_pending_bytes(int id) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return 0;
     Dec *d = &s_dec[id];
     uint32_t es = d->curCk < d->nCk ? d->esLen - d->ck[d->curCk].off : 0;
-    return (d->psLen - d->psPos) + es;
+    /* An unparsed PS tail shorter than one packet can be trailing padding that never forms a
+     * complete element; counting it kept packetsAvail at 1 forever at end of stream, so the
+     * game never saw the movie end (it froze on the opening's last frame). */
+    uint32_t ps = d->psLen - d->psPos;
+    return (ps >= 2048 ? ps : 0) + es;
 }
 
 /* Decode the next frame into dst (host pointer to the guest video buffer). eos != 0 once the
