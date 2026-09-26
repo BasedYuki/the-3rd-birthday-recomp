@@ -1,0 +1,34 @@
+﻿covered 148/273 imports (199 handlers registered in runtime)
+
+   sceHttp                  0/20  sceHttpGetContentLength, sceHttpSetResolveRetry, sceHttpSetRecvTimeOut, sceHttpAddExtraHeader, sceHttpSetResolveTimeOut, sceHttpGetStatusCode, sceHttpDeleteConnection, sceHttpSetConnectTimeOut, sceHttpSetSendTimeOut, sceHttpCreateTemplate, sceHttpDeleteRequest, sceHttpInit, sceHttpCreateRequestWithURL, sceHttpSendRequest, sceHttpCreateConnectionWithURL, sceHttpEnd, sceHttpGetAllHeader, sceHttpReadData, sceHttpSetMallocFunction, sceHttpDeleteTemplate
+   sceSasCore              10/27  __sceSasSetADSR, __sceSasGetAllEnvelopeHeights, __sceSasRevParam, __sceSasGetPauseFlag, __sceSasRevType, __sceSasSetSL, __sceSasSetPause, __sceSasSetADSRmode, __sceSasSetNoise, __sceSasGetGrain, __sceSasSetSimpleADSR, __sceSasSetGrain, __sceSasRevEVOL, __sceSasGetOutputmode, __sceSasSetVoicePCM, __sceSasSetOutputmode, __sceSasRevVON
+   ThreadManForUser        25/37  sceKernelCreateFpl, sceKernelAllocateFpl, sceKernelDeleteFpl, sceKernelDeleteCallback, sceKernelCheckCallback, sceKernelDeleteLwMutex, sceKernelDelayThreadCB, sceKernelCancelSema, sceKernelCreateLwMutex, sceKernelSetAlarm, sceKernelCancelAlarm, sceKernelReferThreadStatus
+   sceUtility               4/15  sceUtilityLoadModule, sceUtilityMsgDialogInitStart, sceUtilityMsgDialogAbort, sceUtilityNetconfInitStart, sceUtilityNetconfGetStatus, sceUtilityMsgDialogShutdownStart, sceUtilityNetconfUpdate, sceUtilityMsgDialogUpdate, sceUtilityMsgDialogGetStatus, sceUtilityUnloadModule, sceUtilityNetconfShutdownStart
+   IoFileMgrForUser        15/24  sceIoMkdir, sceIoChdir, sceIoIoctl, sceIoDopen, sceIoChstat, sceIoDread, sceIoDclose, sceIoRemove, sceIoRmdir
+   sceGe_user               4/11  sceGeListSync, sceGeUnsetCallback, sceGeListEnQueueHead, sceGeEdramGetSize, sceGeContinue, sceGeBreak, sceGeListUpdateStallAddr
+   sceNetApctl              0/6   sceNetApctlDisconnect, sceNetApctlDelHandler, sceNetApctlGetState, sceNetApctlAddHandler, sceNetApctlTerm, sceNetApctlInit
+   sceAtrac3plus            8/13  sceAtracSetHalfwayBufferAndGetID, sceAtracReinit, sceAtracGetBitrate, sceAtracGetMaxSample, sceAtracGetInternalErrorInfo
+   sceAudio                 9/14  sceAudioOutput2Reserve, sceAudioOutput2OutputBlocking, sceAudioOutput2Release, sceAudioOutput2ChangeLength, sceAudioOutput2GetRestSample
+   Kernel_Library           3/7   sceKernelMemset, sceKernelUnlockLwMutex, sceKernelMemcpy, sceKernelLockLwMutexCB
+   sceNetAdhocctl           0/4   sceNetAdhocctlAddHandler, sceNetAdhocctlDisconnect, sceNetAdhocctlDelHandler, sceNetAdhocctlGetState
+   scePower                 1/5   scePowerGetPllClockFrequencyInt, scePower_469989ad, scePowerGetBusClockFrequencyInt, scePowerGetCpuClockFrequencyInt
+   UtilsForUser             5/8   sceKernelDcacheWritebackInvalidateAll, sceKernelDcacheInvalidateRange, sceKernelDcacheWritebackInvalidateRange
+   sceRtc                   0/3   sceRtcGetAccumulativeTime, sceRtcGetCurrentTick, sceRtcSetTick
+   sceDisplay               4/6   sceDisplayWaitVblank, sceDisplayWaitVblankStartCB
+   sceMpeg                 23/25  sceMpegGetPcmAu, sceMpegAvcDecodeMode
+   sceNet                   0/2   sceNetTerm, sceNetInit
+   sceNetInet               0/2   sceNetInetInit, sceNetInetTerm
+   sceNetResolver           0/2   sceNetResolverTerm, sceNetResolverInit
+   sceUmdUser               6/8   sceUmdWaitDriveStatCB, sceUmdUnRegisterUMDCallBack
+   SysMemUserForUser        5/6   sceKernelSetCompiledSdkVersion603_605
+   sceOpenPSID              0/1   sceOpenPSIDGetOpenPSID
+   sceParseHttp             0/1   sceParseHttpResponseHeader
+ok InterruptManager         3/3   
+ok LoadExecForUser          2/2   
+ok ModuleMgrForUser         7/7   
+ok StdioForUser             3/3   
+ok sceCtrl                  2/2   
+ok sceDmac                  1/1   
+ok sceImpose                1/1   
+ok sceSuspendForUser        6/6   
+ok sceWlanDrv               1/1   

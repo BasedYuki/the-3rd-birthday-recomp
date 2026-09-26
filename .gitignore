@@ -39,3 +39,9 @@ ppsspp/
 logs/
 
 __pycache__/
+
+# Framework bake-off checkouts
+bakeoff/
+
+# Local toolchains (MSYS2 etc.)
+/Vs assets/

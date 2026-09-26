@@ -1,4 +1,4 @@
-# The 3rd Birthday — native PC port (static recompilation)
+﻿# The 3rd Birthday — native PC port (static recompilation)
 
 ## Goals
 - Playable improvements: widescreen, high framerate, modern controls (twin-stick camera is the first real milestone)
@@ -24,7 +24,7 @@
 
 ## Milestones
 0. **Version check + decrypted EBOOT** — version check done (see below)
-1. Framework bake-off
+1. **Framework bake-off**: done. AljandrOrtega wins (see `docs/bakeoff.md`)
 2. Boot
 3. Stable at native rate
 4. Ultrawide + upscaling
