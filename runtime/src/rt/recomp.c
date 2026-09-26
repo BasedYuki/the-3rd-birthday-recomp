@@ -443,16 +443,42 @@ void sr_trace_close(void) {
 static uint32_t s_watch_addr = 0;
 static int s_watch_on = -1;
 void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
+    /* SR_PCCOUNT=<hex>,<hex>,...: count executions of up to 16 pcs (e.g. function entries);
+     * log at 1, 10, 100, 1000, ... hits so a missing link in a call chain shows up. */
+    {
+        static int pc_n = -1; static uint32_t pcs[16]; static unsigned long cnt[16];
+        if (pc_n < 0) {
+            pc_n = 0;
+            const char *e = getenv("SR_PCCOUNT");
+            while (e && *e && pc_n < 16) {
+                pcs[pc_n++] = (uint32_t)strtoul(e, (char **)&e, 16);
+                if (*e == ',') e++; else break;
+            }
+        }
+        for (int i = 0; i < pc_n; i++) if (pcs[i] == pc) {
+            unsigned long c = ++cnt[i];
+            if (c == 1 || c == 10 || c == 100 || c == 1000 || c == 10000 || c == 100000)
+                fprintf(stderr, "PCCOUNT 0x%08x hits=%lu (ra=0x%08x)\n", pc, c, s->r[31]);
+        }
+    }
     /* SR_PCPROBE=<hexpc>[:<n>]: dump GPRs and the first 48 VFPU registers the first n (default
      * 3) times the instruction at pc is about to run. */
     {
-        static int pp = -1; static uint32_t pp_pc; static int pp_left;
+        static int pp = -1; static uint32_t pp_pc; static int pp_left; static long pp_skip;
         if (pp < 0) {
-            const char *e = getenv("SR_PCPROBE");
+            const char *e = getenv("SR_PCPROBE");   /* <hexpc>[:<n>[:<skip>]] */
             pp = 0;
-            if (e) { pp_pc = (uint32_t)strtoul(e, NULL, 16); const char *c = strchr(e, ':'); pp_left = c ? atoi(c + 1) : 3; pp = 1; }
+            if (e) {
+                pp_pc = (uint32_t)strtoul(e, NULL, 16);
+                const char *c = strchr(e, ':');
+                pp_left = c ? atoi(c + 1) : 3;
+                const char *c2 = c ? strchr(c + 1, ':') : NULL;
+                pp_skip = c2 ? atol(c2 + 1) : 0;
+                pp = 1;
+            }
         }
-        if (pp && pc == pp_pc && pp_left > 0) {
+        if (pp && pc == pp_pc && pp_skip > 0) { pp_skip--; }
+        else if (pp && pc == pp_pc && pp_left > 0) {
             pp_left--;
             fprintf(stderr, "PCPROBE pc=0x%08x op=0x%08x\n  gpr:", pc, op);
             for (int i = 0; i < 32; i++) fprintf(stderr, " r%d=%08x", i, s->r[i]);
@@ -460,6 +486,13 @@ void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
             for (int m = 0; m < 3; m++) {
                 fprintf(stderr, "  v[%d..%d]:", m * 16, m * 16 + 15);
                 for (int i = 0; i < 16; i++) fprintf(stderr, " %g", s->v[m * 16 + i]);
+                fprintf(stderr, "\n");
+            }
+            const char *mr = getenv("SR_PCPROBE_MEM");   /* GPR number: dump 16 words there */
+            if (mr) {
+                uint32_t base = s->r[atoi(mr) & 31];
+                fprintf(stderr, "  mem[r%d=0x%08x]:", atoi(mr) & 31, base);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %08x", sr_r32(base + (uint32_t)i * 4));
                 fprintf(stderr, "\n");
             }
         }

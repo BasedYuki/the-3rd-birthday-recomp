@@ -2505,10 +2505,18 @@ static int ge_run_list_inner(GeListCtx *c) {
                       g_ge_signal_hook(data & 0xFFFF, beh, addr);
                   }
                 }
-                pending_signal=1; break;
-            case GE_FINISH: pending_signal=0; break;  /* END that follows terminates the list */
+                /* bit 0: the next END belongs to this SIGNAL; bits 8-15: the signal behavior,
+                 * which stays in effect until the next FINISH (PPSSPP currentList->signal). */
+                pending_signal = 1 | (int)(((data >> 16) & 0xFF) << 8); break;
+            case GE_FINISH:
+                /* FINISH after a SYNC signal (behavior 8) does not end the list: the sync is
+                 * consumed and execution continues past the END (PPSSPP Execute_End). The 3rd
+                 * Birthday draws its whole HUD after such a FINISH/END pair. */
+                if (((pending_signal >> 8) & 0xFF) == 8) pending_signal = 1;
+                else pending_signal = 0;             /* END that follows terminates the list */
+                break;
             case GE_END:
-                if (pending_signal) { pending_signal=0; break; }
+                if (pending_signal & 1) { pending_signal &= ~1; break; }
                 if (s_gpu && s_gpu->flush) s_gpu->flush("listend");
                 if (snap && g_tex_nonzero>start_nz) ge_snapshot("fb_content.ppm");
                 g_ge_list_sig=sig; g_ge_prim_count=prims;
