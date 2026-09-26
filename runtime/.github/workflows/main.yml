@@ -1,0 +1,69 @@
+name: Build PSP Recompilation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-vulkan-devel
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-mesa
+            mingw-w64-ucrt-x86_64-sdl3
+
+      - name: Install Python dependencies inside MSYS2
+        shell: msys2 {0}
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install gdown toml
+
+      - name: Download juego.elf & symbols.sym
+        shell: msys2 {0}
+        run: |
+          mkdir -p build/mygame
+          # Descargar juego.elf en ./
+          python3 -m gdown "1I-KyrF5wsIlYSjudIkYoVjMOq7R9W-q4" -O juego.elf
+          # Descargar symbols.sym en ./build/mygame/
+          python3 -m gdown "1AWTZF_OvQw-q99MQSwXnlRxNy_-X8OBH" -O map.txt
+
+      - name: Run Recompilation Pipeline & Compile
+        shell: msys2 {0}
+        run: |
+          # 1. Generar la imagen binaria de memoria
+          python3 tools/prxload.py juego.elf 0x08804040 --out=build/mygame/mygame_image.bin
+
+          # 2. Generar la lista de importaciones HLE
+          python3 tools/imports.py juego.elf 0x08804040 --toml=build/mygame/mygame_imports.toml
+          
+          # 3. Generar el código C re-compilado desde el ELF y map.txt
+          python3 tools/map_to_toml.py
+          python3 tools/codegen.py juego.elf build/mygame/mygame_recomp.c --toml=build/mygame/functions.toml --base=0x08804040
+
+          # 4. Compilar el ejecutable final usando el Makefile del proyecto
+          mingw32-make compile GAME_NAME=mygame GAME_ELF=juego.elf GAME_BASE=0x08804000
+
+      - name: Upload Recompiled Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mygame-windows-recompilation
+          path: |
+            build/mygame/mygame.exe
+            build/mygame/mygame_image.bin
+            build/mygame/mygame_imports.toml
+            build/mygame/stubs.txt
