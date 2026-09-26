@@ -1259,7 +1259,22 @@ static uint32_t h_CtrlButtons(void) {
             extern int g_mpeg_sessions;
             static int stop_at = -2;
             if (stop_at == -2) { const char *e = getenv("SR_PADSTOP_MPEG"); stop_at = e ? atoi(e) : -1; }
-            if (stop_at > 0 && g_mpeg_sessions >= stop_at) scr_n = 0;
+            if (stop_at > 0 && g_mpeg_sessions >= stop_at && scr_n > 0) {
+                /* SR_PADSCRIPT_AFTER=<file>: take over with a second script whose frame numbers
+                 * count from this moment. */
+                scr_n = 0;
+                const char *sp2 = getenv("SR_PADSCRIPT_AFTER");
+                FILE *fp = sp2 ? fopen(sp2, "r") : NULL;
+                if (fp) {
+                    while (scr_n < 256 &&
+                           fscanf(fp, "%u %x %u", &scr[scr_n].f, &scr[scr_n].mask, &scr[scr_n].w) == 3) {
+                        scr[scr_n].f += s_vcount_fwd;
+                        scr_n++;
+                    }
+                    fclose(fp);
+                }
+                stop_at = -1;
+            }
         }
         if (scr_n > 0) {
             /* A mask with bit 31 set is an analog-stick line: bits 8-15 = X, bits 0-7 = Y. */
