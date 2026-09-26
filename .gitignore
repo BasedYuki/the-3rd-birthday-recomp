@@ -27,6 +27,13 @@ ghidra/*.rep/
 ghidra/*.gpr
 ghidra/*.lock*
 
+# Portable PPSSPP install (reference emulator)
+ppsspp/
+# PPSSPP currently sits in the repo root: ignore its files until it moves to ppsspp/
+/assets/
+/memstick/
+/README.md
+
 # PPSSPP save states / logs
 *.ppst
 logs/

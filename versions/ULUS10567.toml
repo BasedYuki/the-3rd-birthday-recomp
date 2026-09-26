@@ -17,7 +17,12 @@ module_name    = "pe"
 encrypted_size = 5664064
 elf_size       = 5663725
 psp_tag        = 0xD91613F0
-# decrypted_elf_sha256 = ""   # fill in after dumping with PPSSPP
+# Decrypted with PPSSPP v1.20.4 "Dump decrypted EBOOT.BIN on game boot"
+decrypted_elf_sha256 = "33cd4fa610d96c07b255ae58c17c78e3c0cd9cb84a415e8410bc6f7faa8451d9"
+decrypted_size       = 5664064
+elf_type             = 0xFFA0          # relocatable PRX, loaded at a base chosen by the kernel
+entry                = 0x002F5774      # relative to load base
+module_info_offset   = 0x0041605C      # file offset (first phdr p_paddr)
 
 [assets]
 archive = "/PSP_GAME/USRDIR/3rd.pkg"   # 1345484800 bytes, all game data
