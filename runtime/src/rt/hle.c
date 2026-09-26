@@ -1253,6 +1253,14 @@ static uint32_t h_CtrlButtons(void) {
                 }
             }
         }
+        /* SR_PADSTOP_MPEG=<n>: stop the script once the n-th movie session starts (lets a movie
+         * that the script would otherwise skip play out untouched). */
+        {
+            extern int g_mpeg_sessions;
+            static int stop_at = -2;
+            if (stop_at == -2) { const char *e = getenv("SR_PADSTOP_MPEG"); stop_at = e ? atoi(e) : -1; }
+            if (stop_at > 0 && g_mpeg_sessions >= stop_at) scr_n = 0;
+        }
         if (scr_n > 0) {
             /* A mask with bit 31 set is an analog-stick line: bits 8-15 = X, bits 0-7 = Y. */
             extern int g_script_lx, g_script_ly;
@@ -1291,6 +1299,7 @@ static uint32_t h_CtrlButtons(void) {
  * an uninitialised menu handler). */
 /* Latch one controller sample per frame into the ring (called from sr_vblank_tick). */
 int g_script_lx = -1, g_script_ly = -1;   /* SR_PADSCRIPT analog override (-1 = none) */
+int g_mpeg_sessions = 0;                   /* sceMpegCreate count (mpeg.c), for SR_PADSTOP_MPEG */
 void sr_ctrl_sample(void) {
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
@@ -1572,10 +1581,26 @@ static GeQList *geq_head(void) {
         if (s_geq[i].used && (!h || s_geq[i].seq < h->seq)) h = &s_geq[i];
     return h;
 }
+/* GE SIGNAL with a handler behavior: call the signal function registered for the running
+ * list's callback slot (sceGeSetCallback), as the firmware's GE interrupt does. */
+static CpuState *s_ge_sig_cpu = NULL;
+static uint32_t s_ge_sig_cbid = 0xFFFFFFFFu;
+static void ge_signal_hook(uint32_t value, uint32_t behavior, uint32_t pc) {
+    (void)behavior;
+    if (!s_ge_sig_cpu || s_ge_sig_cbid >= (uint32_t)(sizeof(s_ge_cb) / sizeof(s_ge_cb[0]))) return;
+    GeCallback *cb = &s_ge_cb[s_ge_sig_cbid];
+    if (!cb->used || !cb->signal_func) return;
+    ge_call_guest(s_ge_sig_cpu, cb->signal_func, value, cb->signal_arg, pc);
+}
 static void ge_pump(CpuState *s) {
     GeQList *h;
+    extern void (*g_ge_signal_hook)(uint32_t, uint32_t, uint32_t);
+    g_ge_signal_hook = ge_signal_hook;
     while ((h = geq_head()) != NULL) {
-        if (!ge_run_ctx(&h->ctx)) return;          /* stalled: wait for more commands */
+        s_ge_sig_cpu = s; s_ge_sig_cbid = h->cbid;
+        int done = ge_run_ctx(&h->ctx);
+        s_ge_sig_cpu = NULL;
+        if (!done) return;                         /* stalled: wait for more commands */
         uint32_t id = h->id, cbid = h->cbid, arg = h->arg;
         h->used = 0;
         ge_finish_callback(s, cbid, id, arg);

@@ -99,6 +99,10 @@ static void es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
 /* Drop consumed bytes so the fifos stay small (the ring is ~1.2MB; the game feeds as we drain). */
 static void es_compact(Dec *d) {
     if (d->curCk == 0 || d->curCk < d->nCk / 2 || d->esLen < (1u << 20)) return;
+    if (d->curCk >= d->nCk) {       /* everything consumed: ck[curCk] would be past the table */
+        d->esLen = 0; d->nCk = 0; d->curCk = 0;
+        return;
+    }
     uint32_t base = d->ck[d->curCk].off;
     memmove(d->es, d->es + base, d->esLen - base);
     d->esLen -= base;
@@ -222,16 +226,33 @@ static int dec_open(Dec *d) {
 
 /* Push the next demuxed ES chunk into the MFT. Returns 1 on progress, 0 when the MFT is not
  * accepting (caller should drain output first), -1 on hard failure. */
+/* A video frame (access unit) spans several PES packets; only the first carries a PTS. The
+ * decoder runs in low-latency mode, which treats every input sample as a whole frame, so feeding
+ * PES-sized pieces decoded only the first slices of each picture (smeared, half-missing frames).
+ * Gather chunks from curCk up to the next PTS-bearing chunk into one sample. Returns the number
+ * of chunks in the unit, or 0 if its end hasn't arrived yet (and eos is false). */
+static uint32_t au_span(Dec *d, int eos) {
+    uint32_t i = d->curCk + 1;
+    while (i < d->nCk && d->ck[i].pts < 0) i++;
+    if (i >= d->nCk && !eos) return 0;
+    return i - d->curCk;
+}
+static int s_feed_eos = 0;   /* set by sr_h264_frame for the current call */
+
 static int feed_one(Dec *d) {
+    uint32_t span = au_span(d, s_feed_eos);
+    if (!span) return 2;                         /* frame incomplete: wait for more feed */
     EsChunk *c = &d->ck[d->curCk];
+    EsChunk *last = &d->ck[d->curCk + span - 1];
+    uint32_t len = last->off + last->len - c->off;
     IMFSample *smp = NULL; IMFMediaBuffer *mb = NULL;
     BYTE *base = NULL;
     int ret = -1;
-    if (FAILED(MFCreateMemoryBuffer(c->len, &mb))) return -1;
+    if (FAILED(MFCreateMemoryBuffer(len, &mb))) return -1;
     if (SUCCEEDED(IMFMediaBuffer_Lock(mb, &base, NULL, NULL))) {
-        memcpy(base, d->es + c->off, c->len);
+        memcpy(base, d->es + c->off, len);
         IMFMediaBuffer_Unlock(mb);
-        IMFMediaBuffer_SetCurrentLength(mb, c->len);
+        IMFMediaBuffer_SetCurrentLength(mb, len);
         if (SUCCEEDED(MFCreateSample(&smp))) {
             IMFSample_AddBuffer(smp, mb);
             /* 90 kHz -> 100 ns; synthesize a monotonic time when the PES had no PTS (the MFT
@@ -240,7 +261,7 @@ static int feed_one(Dec *d) {
             d->fakeTime = t + 1;
             IMFSample_SetSampleTime(smp, t);
             HRESULT hr = IMFTransform_ProcessInput(d->xf, 0, smp, 0);
-            if (SUCCEEDED(hr)) { d->curCk++; es_compact(d); ret = 1; }
+            if (SUCCEEDED(hr)) { d->curCk += span; es_compact(d); ret = 1; }
             else ret = (hr == MF_E_NOTACCEPTING) ? 0 : -1;
             IMFSample_Release(smp);
         }
@@ -382,6 +403,15 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
     }
 }
 
+/* Bytes fed but not yet handed to the decoder (unparsed PS + queued ES). mpeg.c derives the
+ * ringbuffer's packetsAvail from this, as PPSSPP does from its media engine's buffer level. */
+uint32_t sr_h264_pending_bytes(int id) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return 0;
+    Dec *d = &s_dec[id];
+    uint32_t es = d->curCk < d->nCk ? d->esLen - d->ck[d->curCk].off : 0;
+    return (d->psLen - d->psPos) + es;
+}
+
 /* Decode the next frame into dst (host pointer to the guest video buffer). eos != 0 once the
  * game has fed the whole movie, so the MFT gets drained for the last buffered frames.
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
@@ -389,6 +419,7 @@ int sr_h264_frame(int id, int eos, uint8_t *dst, int frameWidth, int pixelMode) 
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed || !d->xf) return -1;
+    s_feed_eos = eos;
     for (int guard = 0; guard < 4096; guard++) {
         int r = pump_out(d, dst, frameWidth, pixelMode);
         if (r > 0) return 1;
@@ -397,6 +428,9 @@ int sr_h264_frame(int id, int eos, uint8_t *dst, int frameWidth, int pixelMode) 
             int f = feed_one(d);
             if (f < 0) { d->failed = 1; return -1; }
             if (f == 0) return 0;           /* MFT full but no output: shouldn't happen */
+            if (f == 2) {                   /* next frame not complete yet */
+                if (!eos) return 0;
+            }
         } else if (eos && !d->drained) {
             d->drained = 1;
             IMFTransform_ProcessMessage(d->xf, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);

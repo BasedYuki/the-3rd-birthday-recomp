@@ -24,6 +24,7 @@ int  sr_h264_frame(int id, int eos, uint8_t *dst, int frameWidth, int pixelMode)
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <windows.h>
 
 /* ---- constants (PPSSPP sceMpeg.cpp/.h) ---- */
 #define PSMF_MAGIC                 0x464D5350u
@@ -81,6 +82,7 @@ typedef struct {
     int h264Init, h264Frames;
     int defaultFrameWidth, pixelMode;
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
+    unsigned long long startMs; /* wall clock at sceMpegCreate (session length log) */
     /* stream map: small fixed table sid -> (type,num,needsReset) */
     struct { int used, type, num, needsReset; uint32_t sid; } streams[8];
 } Mpeg;
@@ -217,12 +219,18 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     ctx->used = 1; ctx->handle = h; ctx->ringAddr = ringAddr;
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
     ctx->h264 = -1;
+    ctx->startMs = GetTickCount64();
+    { extern int g_mpeg_sessions; g_mpeg_sessions++; }
     return 0;
 }
 
 uint32_t mpeg_delete(uint32_t mpegAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    fprintf(stderr, "MPEG session end: %.1f s, fed %u/%u packets, decodes %lld (h264 frames %d), "
+            "videoPts %lld, videoEnd %d\n",
+            (GetTickCount64() - ctx->startMs) / 1000.0, ctx->fedPackets, ctx->totalPackets,
+            (long long)(ctx->videoPts / 3003), ctx->h264Frames, (long long)ctx->videoPts, ctx->videoEnd);
 #ifdef SR_SDL3VK
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
 #endif
@@ -423,7 +431,17 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     au_write_pts(auAddr, 8, pts - videoTimestampStep);
     MEM_W32(auAddr + 16, (uint32_t)num);            /* esBuffer abused as stream num */
     uint32_t avail = rb_get(ring, RB_packetsAvail);
-    if (avail > 0) rb_set(ring, RB_packetsAvail, avail - 1);   /* consume one packet */
+#ifdef SR_SDL3VK
+    if (ctx->h264Init && ctx->h264 >= 0) {
+        /* Ring fill = compressed data the decoder hasn't consumed yet (PPSSPP: media engine
+         * buffer level). Consuming one packet per frame starved the decoder, since a frame
+         * spans many 2 KB packets: the movie ran slow and decoded with missing slices. */
+        extern uint32_t sr_h264_pending_bytes(int id);
+        uint32_t pend = (sr_h264_pending_bytes(ctx->h264) + 2047u) / 2048u;
+        rb_set(ring, RB_packetsAvail, pend < avail ? pend : avail);
+    } else
+#endif
+    if (avail > 0) rb_set(ring, RB_packetsAvail, avail - 1);   /* no decoder: one packet per AU */
     if (attrAddr) MEM_W32(attrAddr, 1);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;

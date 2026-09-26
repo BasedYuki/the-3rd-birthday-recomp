@@ -2161,6 +2161,7 @@ unsigned long g_ge_list_sig=0, g_ge_prim_count=0;
 unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
 static int ge_run_list_inner(GeListCtx *c);
 uint32_t g_ge_ring_op[96], g_ge_ring_pc[96]; unsigned g_ge_ring_n;   /* SR_SKINDBG history */
+void (*g_ge_signal_hook)(uint32_t value, uint32_t behavior, uint32_t pc) = 0;   /* set by hle.c */
 
 void ge_run_list(uint32_t addr) {
     GeListCtx c;
@@ -2472,6 +2473,24 @@ static int ge_run_list_inner(GeListCtx *c) {
             case GE_SIGNAL:
                 /* SIGNAL is paired with an END; the list continues afterwards. The HLE layer
                  * does not register signal handlers, so the payload is dropped. */
+                if (getenv("SR_SIGLOG")) {
+                    static unsigned long cnt[256]; static uint32_t last_frame = 0;
+                    cnt[(data >> 16) & 0xFF]++;
+                    if (s_ge_frame / 300 != last_frame) {
+                        last_frame = s_ge_frame / 300;
+                        for (int k = 0; k < 256; k++) if (cnt[k])
+                            fprintf(stderr, "SIGLOG f=%u behavior=0x%02x count=%lu\n", s_ge_frame, k, cnt[k]);
+                    }
+                }
+                /* Handler behaviors (SUSPEND 1 / CONTINUE 2 / PAUSE 3): run the game's signal
+                 * callback synchronously with the signal value, then carry on. */
+                { unsigned beh = (data >> 16) & 0xFF;
+                  extern void (*g_ge_signal_hook)(uint32_t value, uint32_t behavior, uint32_t pc);
+                  if (beh >= 1 && beh <= 3 && g_ge_signal_hook) {
+                      GE_SAVE_CTX();
+                      g_ge_signal_hook(data & 0xFFFF, beh, addr);
+                  }
+                }
                 pending_signal=1; break;
             case GE_FINISH: pending_signal=0; break;  /* END that follows terminates the list */
             case GE_END:
