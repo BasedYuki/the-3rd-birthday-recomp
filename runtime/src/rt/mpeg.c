@@ -25,6 +25,7 @@ int  sr_h264_frame(int id, int eos, uint8_t *dst, int frameWidth, int pixelMode)
 #include <stdio.h>
 #include <stdlib.h>
 #include <windows.h>
+#include "at3_bridge.h"
 
 /* ---- constants (PPSSPP sceMpeg.cpp/.h) ---- */
 #define PSMF_MAGIC                 0x464D5350u
@@ -83,6 +84,7 @@ typedef struct {
     int defaultFrameWidth, pixelMode;
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     unsigned long long startMs; /* wall clock at sceMpegCreate (session length log) */
+    struct AudioDemux *audio;   /* ATRAC3+ track demuxed from the ring data (NULL until fed) */
     /* stream map: small fixed table sid -> (type,num,needsReset) */
     struct { int used, type, num, needsReset; uint32_t sid; } streams[8];
 } Mpeg;
@@ -90,6 +92,119 @@ typedef struct {
 static Mpeg s_mpeg[8];
 static int s_mpegInit = 0;
 static uint32_t s_streamIdGen = 1;
+
+/* ---- movie audio: PS demux of private stream 1 + ATRAC3+ frames (PPSSPP Core/HW/MpegDemux.cpp
+ * and MediaEngine::getAudioSamples) ----
+ * Every packet the game puts into the ring is also scanned here; the ATRAC3+ payload of the
+ * audio PES packets is queued, and sceMpegAtracDecode decodes one frame from the queue. Each
+ * frame in the queue starts with an 8-byte header 0F D0 c1 c2 ..., frame size
+ * ((c1 & 3) << 8 | c2 * 8) + 0x10 including that header; c1 == 0x24 marks a mono track. */
+typedef struct AudioDemux {
+    uint8_t *ps; int psLen, psCap;          /* program-stream bytes not yet demuxed */
+    uint8_t *es; int esLen, esCap;          /* demuxed ATRAC3+ elementary stream */
+    int channel;                            /* private-stream-1 sub-stream id (-1: first seen) */
+    At3Dec *dec;
+    unsigned long frames;
+} AudioDemux;
+
+static void buf_append(uint8_t **b, int *len, int *cap, const uint8_t *src, int n) {
+    if (*len + n > *cap) {
+        int nc = *cap ? *cap : 65536;
+        while (nc < *len + n) nc *= 2;
+        *b = (uint8_t *)realloc(*b, (size_t)nc);
+        *cap = nc;
+    }
+    memcpy(*b + *len, src, (size_t)n);
+    *len += n;
+}
+static void buf_consume(uint8_t *b, int *len, int n) {
+    if (n >= *len) { *len = 0; return; }
+    memmove(b, b + n, (size_t)(*len - n));
+    *len -= n;
+}
+
+/* Skip a PES header (MpegDemux::readPesHeader); returns the payload length left, *channel set for
+ * private stream 1. i is advanced past the header. */
+static int pes_header(const uint8_t *b, int *i, int length, int privateStream, int *channel) {
+    int c = 0;
+    while (length > 0) { c = b[(*i)++]; length--; if (c != 0xFF) break; }
+    if ((c & 0xC0) == 0x40) { (*i)++; c = b[(*i)++]; length -= 2; }
+    if ((c & 0xE0) == 0x20) {
+        *i += 4; length -= 4;
+        if (c & 0x10) { *i += 5; length -= 5; }
+    } else if ((c & 0xC0) == 0x80) {
+        (*i)++;                               /* flags */
+        int hl = b[(*i)++];
+        length -= 2 + hl;
+        *i += hl;
+    }
+    if (privateStream) {
+        int ch = b[(*i)++]; length--;
+        *channel = ch;
+        if (ch >= 0x80 && ch <= 0xCF) { *i += 3; length -= 3; if (ch >= 0xB0 && ch <= 0xBF) { (*i)++; length--; } }
+        else { *i += 3; length -= 3; }
+    }
+    return length;
+}
+
+static void audio_demux(AudioDemux *a) {
+    const uint8_t *b = a->ps;
+    int i = 0, n = a->psLen;
+    while (i < n) {
+        uint32_t code = 0xFF;
+        int start = i;
+        while ((code & 0xFFFFFF00u) != 0x100u && i < n) code = (code << 8) | b[i++];
+        if (n - i < 16) { i = start; break; }  /* not enough data for a header yet */
+        if (code == 0x1BA) {                   /* pack header: fixed 10 bytes + stuffing */
+            i += 9; i += b[i] & 7; i++;
+            continue;
+        }
+        if (code == 0x1BB || code == 0x1BE || code == 0x1BF || code == 0x1BD || (code >= 0x1E0 && code <= 0x1EF)) {
+            int length = (b[i] << 8) | b[i + 1];
+            i += 2;
+            if (n - i < length) { i = start; break; }
+            if (code == 0x1BD) {
+                int p = i, ch = -1;
+                int payload = pes_header(b, &p, length, 1, &ch);
+                if (a->channel < 0) a->channel = ch;
+                if (ch == a->channel && payload > 0) buf_append(&a->es, &a->esLen, &a->esCap, b + p, payload);
+            }
+            i += length;
+        }
+    }
+    buf_consume(a->ps, &a->psLen, i);
+}
+
+static void audio_feed(Mpeg *ctx, const uint8_t *data, int len) {
+    if (!ctx->audio) {
+        ctx->audio = (AudioDemux *)calloc(1, sizeof(AudioDemux));
+        ctx->audio->channel = -1;
+    }
+    buf_append(&ctx->audio->ps, &ctx->audio->psLen, &ctx->audio->psCap, data, len);
+    audio_demux(ctx->audio);
+}
+
+static void audio_free(Mpeg *ctx) {
+    if (!ctx->audio) return;
+    if (ctx->audio->dec) at3dec_free(ctx->audio->dec);
+    free(ctx->audio->ps); free(ctx->audio->es); free(ctx->audio);
+    ctx->audio = NULL;
+}
+
+/* Size of the complete frame at the front of the ES queue (0 if none); resyncs on the 0F D0
+ * header like MpegDemux::hasNextAudioFrame. */
+static int audio_next_frame(AudioDemux *a, int *code1) {
+    if (!a) return 0;
+    int off = 0;
+    while (off + 4 <= a->esLen && !(a->es[off] == 0x0F && a->es[off + 1] == 0xD0)) off++;
+    if (off) buf_consume(a->es, &a->esLen, off);
+    if (a->esLen < 4) return 0;
+    const int c1 = a->es[2], c2 = a->es[3];
+    const int frameSize = (((c1 & 3) << 8) | (c2 * 8)) + 0x10;
+    if (frameSize > a->esLen) return 0;
+    *code1 = c1;
+    return frameSize;
+}
 
 static Mpeg *mpeg_find(uint32_t mpegAddr) {
     if (!mpegAddr) return 0;
@@ -234,6 +349,9 @@ uint32_t mpeg_delete(uint32_t mpegAddr) {
 #ifdef SR_SDL3VK
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
 #endif
+    if (ctx->audio) fprintf(stderr, "MPEG audio: %lu ATRAC3+ frames decoded, %d bytes left\n",
+                            ctx->audio->frames, ctx->audio->esLen);
+    audio_free(ctx);
     ctx->used = 0;
     return 0;
 }
@@ -323,6 +441,7 @@ uint32_t mpeg_ringbuffer_available_size(uint32_t ring) {
 }
 
 unsigned long g_mpeg_put = 0, g_mpeg_getavc = 0, g_mpeg_avcdec = 0, g_mpeg_nodata = 0;
+int g_mpeg_avc_ring_empty = 0;   /* last GetAvcAu found the ring empty (hle.c picks the delay) */
 /* RingbufferPut(ring, numPackets, available): call the game's fill callback, then feed the bytes
  * it wrote into PPSSPP's MediaEngine bridge. */
 uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, uint32_t available) {
@@ -375,6 +494,8 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
                 sr_h264_feed(ctx->h264, (const uint8_t *)SR_HOST(dst), got * packetSize);
         }
 #endif
+        if (ctx && got && ctx->atracRegistered)
+            audio_feed(ctx, (const uint8_t *)SR_HOST(dst), (int)(got * packetSize));
 
         addedTotal += got;
         writePos = total ? (writePos + got) % total : 0;
@@ -433,8 +554,10 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
                     rb_get(ring, RB_packetsRead), ctx->videoEnd);
         }
     }
+    g_mpeg_avc_ring_empty = 0;
     if (rb_get(ring, RB_packetsRead) == 0 || rb_get(ring, RB_packetsAvail) == 0) {
         g_mpeg_nodata++;
+        g_mpeg_avc_ring_empty = 1;
         au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
         return SCE_MPEG_ERROR_NO_DATA;
     }
@@ -484,8 +607,16 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     }
     int64_t pts = ctx->audioPts + ctx->firstTimestamp;
     au_write_pts(auAddr, 0, pts);
-    au_write_pts(auAddr, 8, pts);
+    MEM_W32(auAddr + 16, (uint32_t)num);            /* esBuffer abused as stream num */
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
+    /* No complete ATRAC3+ frame demuxed yet: PPSSPP IsNoAudioData -> dts -1, NO_DATA. Only once
+     * real audio has started, so a movie without an audio track keeps the timestamp model. */
+    int code1;
+    if (ctx->audio && ctx->audio->frames && !audio_next_frame(ctx->audio, &code1)) {
+        au_write_pts(auAddr, 8, -1);
+        return SCE_MPEG_ERROR_NO_DATA;
+    }
+    au_write_pts(auAddr, 8, pts);
     if (attrAddr) MEM_W32(attrAddr, 0);
     return 0;
 }
@@ -544,11 +675,31 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     }
     return 0;
 }
+/* AtracDecode(mpeg, auAddr, bufferAddr, init): one ATRAC3+ frame -> 2048 stereo s16 samples
+ * written straight to bufferAddr (PPSSPP sceMpegAtracDecode + MediaEngine::getAudioSamples). */
+#define MPEG_ATRAC_ES_OUTPUT_SIZE 8192
 uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAddr, uint32_t init) {
-    (void)auAddr; (void)bufferAddr; (void)init;
+    (void)init;
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    if (!bufferAddr || !sr_inrange(bufferAddr) || !sr_inrange(bufferAddr + MPEG_ATRAC_ES_OUTPUT_SIZE - 1))
+        return (uint32_t)-1;
+    memset(SR_HOST(bufferAddr), 0, MPEG_ATRAC_ES_OUTPUT_SIZE);
+    AudioDemux *a = ctx->audio;
+    int code1 = 0, frameSize = audio_next_frame(a, &code1);
+    if (frameSize) {
+        if (!a->dec) a->dec = at3dec_create(AT3_CODEC_AT3PLUS, code1 == 0x24 ? 1 : 2, frameSize - 8, NULL, 0);
+        int n = 0;
+        if (at3dec_decode(a->dec, a->es + 8, frameSize - 8, 2, (int16_t *)SR_HOST(bufferAddr), &n) < 0) {
+            static int nerr = 0;
+            if (nerr++ < 10) fprintf(stderr, "MPEG audio: ATRAC3+ frame %lu failed to decode (%d bytes)\n", a->frames, frameSize);
+        }
+        /* Pop the frame: normally the next header sits right after it (MpegDemux getNextHeaderPosition). */
+        buf_consume(a->es, &a->esLen, frameSize);
+        a->frames++;
+    }
     ctx->audioPts += audioTimestampStep;
+    if (auAddr) au_write_pts(auAddr, 0, ctx->audioPts + ctx->firstTimestamp);
     return 0;
 }
 uint32_t mpeg_avc_decode_stop(uint32_t mpegAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t statusAddr) {

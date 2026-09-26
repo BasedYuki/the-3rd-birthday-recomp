@@ -92,10 +92,30 @@ int sr_audio_init(void) {
 
 /* Mix nframes of interleaved stereo s16 into the channel's slice of the ring.
  * volL/volR are 0..0x8000 (PSP panned-output volumes). */
+unsigned long g_audio_frames[8];         /* frames submitted per channel (SR_SCHEDSTAT) */
+
 void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     if (!sr_audio_init() || nframes <= 0) return;
     if (ch < 0) ch = 0;
     ch &= 7;
+    g_audio_frames[ch] += (unsigned long)nframes;
+    /* SR_WAVDUMP=1: append every submitted buffer (volume applied) to audio_ch<N>.raw
+     * (s16 stereo 44.1 kHz) -- what the game produced, independent of host playback timing. */
+    {
+        static int dump = -1; static FILE *f[8];
+        if (dump < 0) dump = getenv("SR_WAVDUMP") ? 1 : 0;
+        if (dump) {
+            if (!f[ch]) { char p[32]; snprintf(p, sizeof p, "audio_ch%d.raw", ch); f[ch] = fopen(p, "wb"); }
+            if (f[ch]) {
+                for (int i = 0; i < nframes; i++) {
+                    int16_t o[2] = { (int16_t)(((int32_t)lr[i * 2] * volL) >> 15),
+                                     (int16_t)(((int32_t)lr[i * 2 + 1] * volR) >> 15) };
+                    fwrite(o, sizeof o, 1, f[ch]);
+                }
+                fflush(f[ch]);
+            }
+        }
+    }
     EnterCriticalSection(&s_lock);
     uint64_t w = s_chw[ch];
     if (w < s_play) w = s_play;                            /* channel fell behind: snap to now */
@@ -109,6 +129,10 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     s_chw[ch] = w + (uint64_t)(nframes > 0 ? nframes : 0);
     LeaveCriticalSection(&s_lock);
 }
+
+/* The feeder hands waveOut BLOCK_FRAMES at a time, so a channel must stay at least that far
+ * ahead of the playhead or the block is taken half-written. */
+int sr_audio_block_frames(void) { return BLOCK_FRAMES; }
 
 /* Frames this channel has queued ahead of the playhead (-1: no host audio). The blocking
  * output calls pace against this, like real hardware, so drift self-corrects instead of

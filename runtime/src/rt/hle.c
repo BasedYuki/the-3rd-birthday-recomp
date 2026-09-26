@@ -506,17 +506,19 @@ static uint32_t h_MpegRegistStream(CpuState *s) { return mpeg_regist_stream(A0, 
 static uint32_t h_MpegUnRegistStream(CpuState *s) { return mpeg_unregist_stream(A0, A1); }
 static uint32_t h_MpegQueryStreamOffset(CpuState *s) { return mpeg_query_stream_offset(A0, A1, A2); }
 static uint32_t h_MpegQueryStreamSize(CpuState *s) { return mpeg_query_stream_size(A0, A1); }
-/* PPSSPP returns these via hleDelayResult so the playback thread yields (it does not busy-poll the
- * ring). Mirror that: delay the calling thread a frame-ish, longer when there is no data yet, so the
- * feeder/display threads run and the movie paces instead of hanging the scheduler. */
+/* PPSSPP returns these via hleDelayResult, so the playback thread yields: 2 ms when the ring is
+ * empty, otherwise 100 us (sceMpeg.cpp sceMpegGetAvcAu / sceMpegGetAtracAu). The frame-sized
+ * delays used here before (3 ms, 8 ms on NO_DATA) added up to more than a movie frame per frame
+ * across the player's threads and slowed the opening movie to about half speed. */
 static uint32_t h_MpegGetAvcAu(CpuState *s) {
+    extern int g_mpeg_avc_ring_empty;
     uint32_t r = mpeg_get_avc_au(A0, A1, A2, A3);
-    sched_delay_current(r == 0x80618001u ? 8000u : 3000u);
+    sched_delay_current(r == 0x80618001u && g_mpeg_avc_ring_empty ? 2000u : 100u);
     return r;
 }
 static uint32_t h_MpegGetAtracAu(CpuState *s) {
     uint32_t r = mpeg_get_atrac_au(A0, A1, A2, A3);
-    sched_delay_current(r == 0x80618001u ? 8000u : 3000u);
+    sched_delay_current(100u);
     return r;
 }
 /* PPSSPP charges real decode latency (sceMpeg.cpp: avcDecodeDelayMs=5400, atracDecodeDelayMs=3000,
@@ -534,108 +536,6 @@ static uint32_t h_MpegAtracDecode(CpuState *s) {
 static uint32_t h_MpegAvcDecodeStop(CpuState *s) { return mpeg_avc_decode_stop(A0, A1, A2, A3); }
 /* sceMpegGetPcmAu: no linear-PCM audio streams are demuxed yet, report "no data". */
 static uint32_t h_MpegGetPcmAu(CpuState *s) { (void)s; return 0x80618001u; }   /* ERROR_MPEG_NO_DATA */
-
-/* sceAtrac3plus: control-flow model (no real ATRAC3 decode -- output is silence). Enough for the
- * audio thread to run an ATRAC clip (e.g. the title BGM) to its loop/end without trapping or
- * spinning. SetDataAndGetID parses the RIFF/"fact" sample count; DecodeData hands back a frame of
- * silence and advances; GetRemainFrame reports PSP_ATRAC_ALLDATA_IS_ON_MEMORY (-1) so the game does
- * not wait for streamed data. ATRAC3plus frame = 2048 samples. Ported semantics from PPSSPP
- * Core/HLE/sceAtrac.cpp (decode bookkeeping), minus the media engine. */
-#define ATRAC_SAMPLES_PER_FRAME 2048
-typedef struct { int used; uint32_t buf, size; int endSample, posSample, loopNum; } Atrac;
-static Atrac s_atrac[8];
-static int atrac_riff_samples(uint32_t buf, uint32_t size) {
-    /* Scan the RIFF for the "fact" chunk; its first u32 is the total sample count. */
-    if (size < 44 || MEM_R32(buf) != 0x46464952u /* 'RIFF' */) return 0;
-    uint32_t p = buf + 12, end = buf + (size < 0x100000u ? size : 0x100000u);
-    while (p + 8 <= end) {
-        uint32_t id = MEM_R32(p), sz = MEM_R32(p + 4);
-        if (id == 0x74636166u /* 'fact' */) return (int)MEM_R32(p + 8);
-        p += 8 + ((sz + 1u) & ~1u);
-    }
-    return 0;
-}
-static uint32_t h_AtracSetDataAndGetID(CpuState *s) {
-    int id = -1; for (int i = 0; i < 8; i++) if (!s_atrac[i].used) { id = i; break; }
-    if (id < 0) return 0xFFFFFFFFu;
-    Atrac *a = &s_atrac[id];
-    a->used = 1; a->buf = A0; a->size = A1; a->posSample = 0; a->loopNum = 0;
-    a->endSample = atrac_riff_samples(A0, A1);
-    if (a->endSample <= 0) a->endSample = ATRAC_SAMPLES_PER_FRAME * 1024;   /* unknown: long clip */
-    return (uint32_t)id;
-}
-static Atrac *atrac_of(uint32_t id) { return id < 8 && s_atrac[id].used ? &s_atrac[id] : 0; }
-/* sceAtracSetHalfwayBufferAndGetID(buf, readSize, bufSize): header parsed from what's loaded. */
-static uint32_t h_AtracSetHalfwayBufferAndGetID(CpuState *s) {
-    uint32_t read = A1;
-    s->r[5] = A2;                                   /* treat the full buffer as the data size */
-    uint32_t id = h_AtracSetDataAndGetID(s);
-    if (id < 8 && s_atrac[id].endSample == ATRAC_SAMPLES_PER_FRAME * 1024)
-        s_atrac[id].endSample = atrac_riff_samples(A0, read) > 0 ? atrac_riff_samples(A0, read)
-                                                                   : s_atrac[id].endSample;
-    return id;
-}
-static uint32_t h_AtracGetBitrate(CpuState *s) {
-    if (!atrac_of(A0)) return 0x80630002u;
-    if (A1) MEM_W32(A1, 64);                        /* kbps; ATRAC3plus mono/stereo typical */
-    return 0;
-}
-static uint32_t h_AtracGetMaxSample(CpuState *s) {
-    if (!atrac_of(A0)) return 0x80630002u;
-    if (A1) MEM_W32(A1, ATRAC_SAMPLES_PER_FRAME);
-    return 0;
-}
-static uint32_t h_AtracGetInternalErrorInfo(CpuState *s) {
-    if (!atrac_of(A0)) return 0x80630002u;
-    if (A1) MEM_W32(A1, 0);
-    return 0;
-}
-static uint32_t h_AtracReleaseAtracID(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->used = 0; return 0; }
-static uint32_t h_AtracDecodeData(CpuState *s) {
-    /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, sp+16=*remainFrames. */
-    Atrac *a = atrac_of(A0); if (!a) return 0x80630002u;   /* bad ID */
-    uint32_t out = A1, decAddr = A2, finAddr = A3, remAddr = stack_arg(s, 0);
-    int n = ATRAC_SAMPLES_PER_FRAME;
-    if (out) for (int i = 0; i < n * 2; i++) MEM_W16(out + (uint32_t)i * 2, 0);  /* stereo silence */
-    a->posSample += n;
-    int finished = 0;
-    if (a->posSample >= a->endSample) {
-        if (a->loopNum == 0) finished = 1;
-        else { a->posSample = 0; if (a->loopNum > 0) a->loopNum--; }
-    }
-    if (decAddr) MEM_W32(decAddr, (uint32_t)n);
-    if (finAddr) MEM_W32(finAddr, (uint32_t)finished);
-    if (remAddr) MEM_W32(remAddr, 0xFFFFFFFFu);            /* ALLDATA_IS_ON_MEMORY */
-    return 0;
-}
-static uint32_t h_AtracGetRemainFrame(CpuState *s) { if (A1) MEM_W32(A1, 0xFFFFFFFFu); return 0; }
-static uint32_t h_AtracGetStreamDataInfo(CpuState *s) {
-    /* a1=*writePointer, a2=*writableBytes, a3=*readOffset. No streaming needed: nothing writable. */
-    if (A1) MEM_W32(A1, atrac_of(A0) ? s_atrac[A0].buf : 0);
-    if (A2) MEM_W32(A2, 0); if (A3) MEM_W32(A3, 0);
-    return 0;
-}
-static uint32_t h_AtracAddStreamData(CpuState *s) { (void)s; return 0; }
-static uint32_t h_AtracGetNextDecodePosition(CpuState *s) {
-    Atrac *a = atrac_of(A0); if (!a) return 0x80630002u;
-    if (a->posSample >= a->endSample) return 0x80630022u;   /* ALLDATA_DECODED */
-    if (A1) MEM_W32(A1, (uint32_t)a->posSample);
-    return 0;
-}
-static uint32_t h_AtracGetSoundSample(CpuState *s) {
-    Atrac *a = atrac_of(A0); if (!a) return 0x80630002u;
-    if (A1) MEM_W32(A1, (uint32_t)a->endSample);          /* end sample */
-    if (A2) MEM_W32(A2, 0xFFFFFFFFu);                     /* loop start (-1 = none) */
-    if (A3) MEM_W32(A3, 0xFFFFFFFFu);                     /* loop end */
-    return 0;
-}
-static uint32_t h_AtracGetLoopStatus(CpuState *s) {
-    if (A1) MEM_W32(A1, atrac_of(A0) ? (uint32_t)s_atrac[A0].loopNum : 0);
-    if (A2) MEM_W32(A2, 0);
-    return 0;
-}
-static uint32_t h_AtracSetLoopNum(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->loopNum = (int)A1; return 0; }
-static uint32_t h_AtracResetPlayPosition(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->posSample = (int)A1; return 0; }
 
 /* sceUtility dialogs (savedata/msg/osk). Faithful to PPSSPP's PSPDialog status machine
  * (Core/Dialog/PSPDialog.cpp): status enum NONE=0, INITIALIZE=1, RUNNING=2, FINISHED=3,
@@ -1169,8 +1069,14 @@ static uint32_t audio_output(CpuState *s, uint32_t ch, uint32_t buf, int voll, i
         sched_delay_current(n ? (n * 1000000u / 44100u) : 1000u);
         return n;
     }
-    while ((q = sr_audio_queued((int)ch)) > (int)n)
-        sched_delay_current((uint32_t)(q - (int)n) * 1000000u / 44100u);
+    /* Keep one host feeder block plus this buffer queued. The feeder takes whole blocks, so a
+     * lead of just n (512 frames for this game's SAS mixer) let it grab half-written blocks:
+     * a third of every block played as silence and the mixer ran at ~70% speed -- and the
+     * movie player, which paces itself on audio, played the opening movie at half speed. */
+    extern int sr_audio_block_frames(void);
+    const int lead = (int)n + sr_audio_block_frames();
+    while ((q = sr_audio_queued((int)ch)) > lead)
+        sched_delay_current((uint32_t)(q - lead) * 1000000u / 44100u);
     return n;
 }
 static uint32_t h_AudioOutputBlocking(CpuState *s) {
@@ -1719,201 +1625,6 @@ static uint32_t h_GeSetCallback(CpuState *s) {
     return 0xffffffffu;
 }
 
-/* ---- sceSasCore: real voice mixing (VAG ADPCM), pitch resampling, per-voice volumes ----
- * Mixes into the guest buffer that the game then submits via sceAudioOutput*Blocking (which
- * forwards to the host waveOut backend in audio.c). The envelope is simplified to a gate:
- * KeyOn plays the VAG stream at SetVolume level until its end block or KeyOff -- ACX drives
- * SFX with SetSimpleADSR where attack/release are short next to the 256-sample grain. */
-#define SAS_VOICES 32
-typedef struct {
-    int on;                       /* keyed on and stream not exhausted */
-    uint32_t vag, vag_size;       /* VAG stream base and byte size */
-    uint32_t pos;                 /* byte offset of the next 16-byte block */
-    int loop_start;               /* block offset to loop to (-1 = none) */
-    int hist1, hist2;             /* ADPCM filter state */
-    int pitch;                    /* 0x1000 = native 44.1 kHz */
-    int voll, volr;               /* 0..0x1000 */
-    int16_t buf[28]; int bufn, bufi;
-    uint32_t frac;                /* 12-bit fixed-point resample remainder */
-    int type;                     /* 0 VAG ADPCM, 1 16-bit PCM, 2 noise */
-    int paused;
-    uint32_t pcm, pcm_len, pcm_pos; int pcm_loop;   /* PCM voice: s16 mono samples */
-    uint32_t noise;               /* noise LFSR state */
-    uint32_t adsr_env1, adsr_env2, adsr_mode; int sustain;   /* stored, not yet applied */
-} SasVoice;
-static SasVoice s_sasv[SAS_VOICES];
-static int s_sas_grain = 256;
-static int s_sas_outmode = 0;
-
-static const int vag_f0[5] = { 0, 60, 115,  98, 122 };
-static const int vag_f1[5] = { 0,  0, -52, -55, -60 };
-
-/* Decode the next 16-byte VAG block into v->buf. Returns 0 when the stream ends. */
-static int sas_vag_block(SasVoice *v) {
-    if (v->pos + 16 > v->vag_size) return 0;
-    uint32_t a = v->vag + v->pos;
-    int hdr = MEM_R8(a), flags = MEM_R8(a + 1);
-    if (flags == 7) return 0;                            /* end marker block */
-    int pred = (hdr >> 4) & 0xF, shift = hdr & 0xF;
-    if (pred > 4) pred = 0;
-    if (flags == 6) v->loop_start = (int)v->pos;         /* loop start block */
-    for (int i = 0; i < 28; i++) {
-        int byte = MEM_R8(a + 2 + (i >> 1));
-        int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
-        int samp = (int)((int16_t)((uint16_t)nib << 12)) >> shift;
-        samp += (v->hist1 * vag_f0[pred] + v->hist2 * vag_f1[pred]) >> 6;
-        if (samp > 32767) samp = 32767; if (samp < -32768) samp = -32768;
-        v->buf[i] = (int16_t)samp;
-        v->hist2 = v->hist1; v->hist1 = samp;
-    }
-    v->pos += 16;
-    if (flags == 3 && v->loop_start >= 0) v->pos = (uint32_t)v->loop_start;  /* loop end */
-    v->bufn = 28; v->bufi = 0;
-    return 1;
-}
-
-/* Mix one grain into out (s16 interleaved stereo in guest memory). add=0 overwrites. */
-static void sas_mix(uint32_t out, int add) {
-    if (!out) return;
-    int32_t mixl[1024], mixr[1024];
-    int n = s_sas_grain > 1024 ? 1024 : s_sas_grain;
-    for (int i = 0; i < n; i++) { mixl[i] = 0; mixr[i] = 0; }
-    for (int vi = 0; vi < SAS_VOICES; vi++) {
-        SasVoice *v = &s_sasv[vi];
-        if (!v->on || v->paused) continue;
-        if (v->type == 1) {                              /* 16-bit PCM */
-            for (int i = 0; i < n; i++) {
-                if (v->pcm_pos >= v->pcm_len) {
-                    if (!v->pcm_loop) { v->on = 0; break; }
-                    v->pcm_pos = 0;
-                }
-                int samp = (int16_t)MEM_R16(v->pcm + v->pcm_pos * 2);
-                mixl[i] += (samp * v->voll) >> 12;
-                mixr[i] += (samp * v->volr) >> 12;
-                v->frac += (uint32_t)(v->pitch > 0 ? v->pitch : 0x1000);
-                while (v->frac >= 0x1000) { v->frac -= 0x1000; v->pcm_pos++; }
-            }
-            continue;
-        }
-        if (v->type == 2) {                              /* noise (LFSR) */
-            for (int i = 0; i < n; i++) {
-                v->noise = v->noise * 1103515245u + 12345u;
-                int samp = (int16_t)(v->noise >> 16) >> 2;
-                mixl[i] += (samp * v->voll) >> 12;
-                mixr[i] += (samp * v->volr) >> 12;
-            }
-            continue;
-        }
-        for (int i = 0; i < n; i++) {
-            if (v->bufi >= v->bufn && !sas_vag_block(v)) { v->on = 0; break; }
-            int samp = v->buf[v->bufi];
-            mixl[i] += (samp * v->voll) >> 12;
-            mixr[i] += (samp * v->volr) >> 12;
-            v->frac += (uint32_t)(v->pitch > 0 ? v->pitch : 0x1000);
-            while (v->frac >= 0x1000) { v->frac -= 0x1000; v->bufi++; }
-        }
-    }
-    for (int i = 0; i < n; i++) {
-        int l = mixl[i], r = mixr[i];
-        if (add) {
-            l += (int16_t)MEM_R16(out + (uint32_t)i * 4);
-            r += (int16_t)MEM_R16(out + (uint32_t)i * 4 + 2);
-        }
-        if (l > 32767) l = 32767; if (l < -32768) l = -32768;
-        if (r > 32767) r = 32767; if (r < -32768) r = -32768;
-        MEM_W16(out + (uint32_t)i * 4,     (uint16_t)(int16_t)l);
-        MEM_W16(out + (uint32_t)i * 4 + 2, (uint16_t)(int16_t)r);
-    }
-}
-
-static uint32_t h_SasInit(CpuState *s) {
-    /* __sceSasInit(core, grain, maxVoices, outMode, sampleRate) */
-    s_sas_grain = (int)A1 > 0 && (int)A1 <= 1024 ? (int)A1 : 256;
-    memset(s_sasv, 0, sizeof(s_sasv));
-    for (int i = 0; i < SAS_VOICES; i++) { s_sasv[i].pitch = 0x1000; s_sasv[i].loop_start = -1; }
-    return 0;
-}
-static uint32_t h_SasSetVoice(CpuState *s) {
-    /* __sceSasSetVoice(core, voice, vagAddr, size, loopmode) */
-    SasVoice *v = &s_sasv[A1 & 31u];
-    v->type = 0;
-    v->vag = A2; v->vag_size = A3;
-    v->pos = 0; v->loop_start = stack_arg(s, 0) ? 0 : -1;
-    v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
-    return 0;
-}
-static uint32_t h_SasSetPitch(CpuState *s) { s_sasv[A1 & 31u].pitch = (int)A2; return 0; }
-static uint32_t h_SasSetVolume(CpuState *s) {
-    /* __sceSasSetVolume(core, voice, l, r, effectL, effectR); volumes 0..0x1000 */
-    SasVoice *v = &s_sasv[A1 & 31u];
-    v->voll = (int)A2 & 0x1FFF; v->volr = (int)A3 & 0x1FFF;
-    return 0;
-}
-static uint32_t h_SasGetEndFlag(CpuState *s) {
-    (void)s;
-    uint32_t m = 0;
-    for (int i = 0; i < SAS_VOICES; i++) if (!s_sasv[i].on) m |= 1u << i;
-    return m;
-}
-static uint32_t h_SasSetKeyOn(CpuState *s) {
-    SasVoice *v = &s_sasv[A1 & 31u];
-    v->pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0; v->pcm_pos = 0;
-    if (!v->voll && !v->volr) { v->voll = 0x1000; v->volr = 0x1000; }  /* keyed before SetVolume */
-    if (v->type == 1) v->on = v->pcm && v->pcm_len > 0;
-    else if (v->type == 2) v->on = 1;
-    else v->on = v->vag && v->vag_size >= 16;
-    return 0;
-}
-
-/* __sceSasSetVoicePCM(core, voice, pcmAddr, sampleCount, loopPos): s16 mono source. */
-static uint32_t h_SasSetVoicePCM(CpuState *s) {
-    SasVoice *v = &s_sasv[A1 & 31u];
-    v->type = 1; v->pcm = A2; v->pcm_len = A3; v->pcm_loop = (int32_t)stack_arg(s, 0) >= 0;
-    v->pcm_pos = 0; v->frac = 0;
-    return 0;
-}
-/* __sceSasSetNoise(core, voice, freq) */
-static uint32_t h_SasSetNoise(CpuState *s) {
-    SasVoice *v = &s_sasv[A1 & 31u];
-    v->type = 2; v->noise = 0x1234u + A2;
-    return 0;
-}
-/* __sceSasSetPause(core, voiceBits, pause) / __sceSasGetPauseFlag(core) */
-static uint32_t h_SasSetPause(CpuState *s) {
-    for (int i = 0; i < SAS_VOICES; i++) if (A1 & (1u << i)) s_sasv[i].paused = A2 != 0;
-    return 0;
-}
-static uint32_t h_SasGetPauseFlag(CpuState *s) {
-    (void)s; uint32_t m = 0;
-    for (int i = 0; i < SAS_VOICES; i++) if (s_sasv[i].paused) m |= 1u << i;
-    return m;
-}
-/* ADSR: stored for the later envelope implementation; the mixer still gates on/off. */
-static uint32_t h_SasSetADSR(CpuState *s) {   /* (core, voice, flag, a, d, s, r) */
-    SasVoice *v = &s_sasv[A1 & 31u]; v->adsr_mode = A2; (void)v; return 0;
-}
-static uint32_t h_SasSetADSRmode(CpuState *s) { s_sasv[A1 & 31u].adsr_mode = A2; return 0; }
-static uint32_t h_SasSetSL(CpuState *s) { s_sasv[A1 & 31u].sustain = (int)A2; return 0; }
-static uint32_t h_SasSetSimpleADSR(CpuState *s) {
-    SasVoice *v = &s_sasv[A1 & 31u]; v->adsr_env1 = A2; v->adsr_env2 = A3; return 0;
-}
-/* __sceSasGetAllEnvelopeHeights(core, int heights[32]) */
-static uint32_t h_SasGetAllEnvelopeHeights(CpuState *s) {
-    for (int i = 0; i < SAS_VOICES; i++) MEM_W32(A1 + (uint32_t)i * 4, s_sasv[i].on ? 0x40000000u : 0);
-    return 0;
-}
-static uint32_t h_SasGetGrain(CpuState *s) { (void)s; return (uint32_t)s_sas_grain; }
-static uint32_t h_SasSetGrain(CpuState *s) {
-    if ((int)A1 > 0 && (int)A1 <= 1024) s_sas_grain = (int)A1;
-    return 0;
-}
-static uint32_t h_SasGetOutputmode(CpuState *s) { (void)s; return (uint32_t)s_sas_outmode; }
-static uint32_t h_SasSetOutputmode(CpuState *s) { s_sas_outmode = (int)A1; return 0; }
-static uint32_t h_SasSetKeyOff(CpuState *s) { s_sasv[A1 & 31u].on = 0; return 0; }
-static uint32_t h_SasGetEnvelopeHeight(CpuState *s) { return s_sasv[A1 & 31u].on ? 0x40000000u : 0; }
-static uint32_t h_SasCore(CpuState *s)        { sas_mix(A1, 0); return 0; }
-static uint32_t h_SasCoreWithMix(CpuState *s) { sas_mix(A1, 1); return 0; }
-
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
 
 typedef struct { int used; uint32_t uid; int count, maxc; uint32_t pattern; } Sync;
@@ -2124,18 +1835,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xceb870b1, "sceMpegFreeAvcEsBuf", h_MpegFreeAvcEsBuf);
     sr_hle_register(0x167afd9e, "sceMpegInitAu", h_MpegInitAu);
     sr_hle_register(0xf8dcb679, "sceMpegQueryAtracEsSize", h_MpegQueryAtracEsSize);
-    /* sceAtrac3plus (control flow only; silence output). */
-    sr_hle_register(0x7a20e7af, "sceAtracSetDataAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x61eb33f5, "sceAtracReleaseAtracID", h_AtracReleaseAtracID);
-    sr_hle_register(0x6a8c3cd5, "sceAtracDecodeData", h_AtracDecodeData);
-    sr_hle_register(0x9ae849a7, "sceAtracGetRemainFrame", h_AtracGetRemainFrame);
-    sr_hle_register(0x5d268707, "sceAtracGetStreamDataInfo", h_AtracGetStreamDataInfo);
-    sr_hle_register(0x7db31251, "sceAtracAddStreamData", h_AtracAddStreamData);
-    sr_hle_register(0xe23e3a35, "sceAtracGetNextDecodePosition", h_AtracGetNextDecodePosition);
-    sr_hle_register(0xa2bba8be, "sceAtracGetSoundSample", h_AtracGetSoundSample);
-    sr_hle_register(0xfaa4f89b, "sceAtracGetLoopStatus", h_AtracGetLoopStatus);
-    sr_hle_register(0x868120b5, "sceAtracSetLoopNum", h_AtracSetLoopNum);
-    sr_hle_register(0x644e5607, "sceAtracResetPlayPosition", h_AtracResetPlayPosition);
     sr_hle_register(0x707b7629, "sceMpegFlushAllStream", h_ok);
     /* sceLibFont (firmware fonts absent; valid handles + empty glyphs). */
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
@@ -2210,23 +1909,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xb287bd61, "sceGeDrawSync", h_GeDrawSync);
     sr_hle_register(0xe47e40e4, "sceGeEdramGetAddr", h_GeEdramGetAddr);
     sr_hle_register(0xa4fc06a4, "sceGeSetCallback", h_GeSetCallback);
-    /* sceSasCore: real VAG voice mixing (see sas_mix above). */
-    sr_hle_register(0x68a46b95, "__sceSasGetEndFlag", h_SasGetEndFlag);
-    sr_hle_register(0xa3589d81, "__sceSasCore", h_SasCore);
-    sr_hle_register(0x50a14dfc, "__sceSasCoreWithMix", h_SasCoreWithMix);
-    sr_hle_register(0x76f01aca, "__sceSasSetKeyOn", h_SasSetKeyOn);
-    sr_hle_register(0xa0cf2fa4, "__sceSasSetKeyOff", h_SasSetKeyOff);
-    sr_hle_register(0x42778a9f, "__sceSasInit", h_SasInit);
-    sr_hle_register(0x99944089, "__sceSasSetVoice", h_SasSetVoice);
-    sr_hle_register(0xad84d37f, "__sceSasSetPitch", h_SasSetPitch);
-    sr_hle_register(0x440ca7d8, "__sceSasSetVolume", h_SasSetVolume);
-    sr_hle_register(0x74ae582a, "__sceSasGetEnvelopeHeight", h_SasGetEnvelopeHeight);
-    static const uint32_t sas_ok[] = {     /* ADSR/reverb/noise setters: accepted, unmodelled */
-        0x019b25eb, 0x267a6dd2, 0x2c8e6ab3, 0x33d4ab37,
-        0x5f9529f6, 0x787d04d5, 0x9ec3676a,
-        0xb7660a23, 0xcbcd4f79, 0xd5a229c9, 0xf983b186 };
-    for (unsigned i = 0; i < sizeof(sas_ok) / sizeof(sas_ok[0]); i++)
-        sr_hle_register(sas_ok[i], "__sceSas_ok", h_ok);
     /* time / rtc / libc clock */
     sr_hle_register(0x369ed59d, "sceKernelGetSystemTimeLow", h_GetSystemTimeLow);
     sr_hle_register(0x82bc5777, "sceKernelGetSystemTimeWide", h_GetSystemTimeWide);
@@ -2279,30 +1961,8 @@ void sr_hle_init(void) {
     sr_hle_register(0x328c546a, "sceKernelWaitEventFlagCB", h_WaitEventFlag);
     sr_hle_register(0x30fd48f0, "sceKernelPollEventFlag", h_PollEventFlag);
 
-    sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetHalfwayBufferAndGetID);
-    sr_hle_register(0x132f1eca, "sceAtracReinit", h_ok);
-    sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_AtracGetBitrate);
-    sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
-    sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_AtracGetInternalErrorInfo);
     sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_ok);
     sr_hle_register(0x8c1e027d, "sceMpegGetPcmAu", h_MpegGetPcmAu);
-    sr_hle_register(0xe1cd9561, "__sceSasSetVoicePCM", h_SasSetVoicePCM);
-    sr_hle_register(0xb7660a23, "__sceSasSetNoise", h_SasSetNoise);
-    sr_hle_register(0x787d04d5, "__sceSasSetPause", h_SasSetPause);
-    sr_hle_register(0x2c8e6ab3, "__sceSasGetPauseFlag", h_SasGetPauseFlag);
-    sr_hle_register(0x019b25eb, "__sceSasSetADSR", h_SasSetADSR);
-    sr_hle_register(0x9ec3676a, "__sceSasSetADSRmode", h_SasSetADSRmode);
-    sr_hle_register(0x5f9529f6, "__sceSasSetSL", h_SasSetSL);
-    sr_hle_register(0xcbcd4f79, "__sceSasSetSimpleADSR", h_SasSetSimpleADSR);
-    sr_hle_register(0x07f58c24, "__sceSasGetAllEnvelopeHeights", h_SasGetAllEnvelopeHeights);
-    sr_hle_register(0xbd11b7c2, "__sceSasGetGrain", h_SasGetGrain);
-    sr_hle_register(0xd1e0a01e, "__sceSasSetGrain", h_SasSetGrain);
-    sr_hle_register(0xe175ef66, "__sceSasGetOutputmode", h_SasGetOutputmode);
-    sr_hle_register(0xe855bf76, "__sceSasSetOutputmode", h_SasSetOutputmode);
-    sr_hle_register(0x267a6dd2, "__sceSasRevParam", h_ok);
-    sr_hle_register(0x33d4ab37, "__sceSasRevType", h_ok);
-    sr_hle_register(0xd5a229c9, "__sceSasRevEVOL", h_ok);
-    sr_hle_register(0xf983b186, "__sceSasRevVON", h_ok);
     sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
     sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
     sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
@@ -2317,6 +1977,10 @@ void sr_hle_init(void) {
 
     extern void sr_hle_init_ext(void);
     sr_hle_init_ext();
+    extern void sr_hle_init_atrac(void);   /* atrac_hle.c: real ATRAC3/3+ decoding */
+    sr_hle_init_atrac();
+    extern void sr_hle_init_sas(void);     /* sas_hle.c: PPSSPP's SAS mixer */
+    sr_hle_init_sas();
 }
 
 /* ---- dispatch ---- */

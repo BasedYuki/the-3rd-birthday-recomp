@@ -45,6 +45,7 @@ typedef struct {
     uint32_t sp_init, k0_init;   /* initial sp/k0 (to re-seed registers on a restart) */
     uint32_t stack_base, stack_size;   /* guest stack block (from the top of user memory) */
     int      deleted;            /* sceKernelDeleteThread'd: slot and stack can be reused */
+    uint64_t cpu_us;             /* host time spent running this thread (SR_SCHEDSTAT) */
     CpuState saved;              /* register file while not running */
 } TCB;
 
@@ -170,8 +171,11 @@ static void vtime_refresh(void) {
     }
 }
 
+static uint64_t s_idle_us = 0;       /* host time the scheduler spent sleeping (SR_SCHEDSTAT) */
+
 /* Sleep (host) until the virtual clock reaches target_us. Real-time mode only. */
 static void sleep_until_us(uint64_t target_us) {
+    const uint64_t t0 = qpc_us();
     for (;;) {
         uint64_t now = qpc_us();
         if (now >= target_us) break;
@@ -180,6 +184,7 @@ static void sleep_until_us(uint64_t target_us) {
         else if (d > 300) Sleep(1);
         /* else spin out the remainder via the loop */
     }
+    s_idle_us += qpc_us() - t0;
     vtime_refresh();
 }
 
@@ -195,9 +200,11 @@ static void vblank_pace(void) {
     double period = (double)s_qfreq.QuadPart / 59.94;
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
     if (s_vbl_next > (double)now.QuadPart) {
+        const uint64_t t0 = qpc_us();
         double ms = (s_vbl_next - (double)now.QuadPart) * 1000.0 / (double)s_qfreq.QuadPart;
         if (ms > 2.0) Sleep((DWORD)(ms - 1.0));
         do { QueryPerformanceCounter(&now); } while ((double)now.QuadPart < s_vbl_next);
+        s_idle_us += qpc_us() - t0;
     }
     s_vbl_next += period;
     /* fell behind by more than a frame (slow scene, breakpoint): resync, don't fast-forward */
@@ -648,6 +655,36 @@ int sched_is_dormant(uint32_t uid) {
     return 1;   /* unknown thread: treat as ended */
 }
 
+/* SR_SCHEDSTAT=1: every 5 s of real time, print where the host time went -- per-thread run
+ * time (HLE work such as GE rendering and H.264/ATRAC decoding is charged to the calling
+ * thread), scheduler idle sleep, vblanks delivered and audio frames submitted per channel.
+ * A window with little idle time is CPU-bound. */
+extern unsigned long g_audio_frames[8];
+static void sched_stat_tick(void) {
+    static int on = -1;
+    static uint64_t last = 0, idle0 = 0, vbl0 = 0, cpu0[MAXTHREADS];
+    static unsigned long aud0[8];
+    if (on < 0) on = getenv("SR_SCHEDSTAT") ? 1 : 0;
+    if (!on) return;
+    const uint64_t now = qpc_us();
+    if (!last) { last = now; return; }
+    if (now - last < 5000000) return;
+    const double win = (double)(now - last) / 1000.0;
+    fprintf(stderr, "SCHEDSTAT %.0f ms: idle %.0f ms, vblanks %llu, audio", win, (s_idle_us - idle0) / 1000.0,
+            (unsigned long long)(s_vbl_count - vbl0));
+    for (int c = 0; c < 8; c++) if (g_audio_frames[c] != aud0[c]) {
+        fprintf(stderr, " ch%d=%lu", c, g_audio_frames[c] - aud0[c]); aud0[c] = g_audio_frames[c];
+    }
+    fprintf(stderr, " |");
+    for (int i = 0; i < s_ntcb; i++) {
+        const uint64_t d = s_tcb[i].cpu_us - cpu0[i];
+        if (d >= 1000) fprintf(stderr, " 0x%x:%.0f", s_tcb[i].uid, d / 1000.0);
+        cpu0[i] = s_tcb[i].cpu_us;
+    }
+    fputc('\n', stderr);
+    last = now; idle0 = s_idle_us; vbl0 = s_vbl_count;
+}
+
 /* The scheduler loop. Runs on the main (converted) fiber. Creates the entry thread, then keeps
  * resuming the highest-priority ready thread until none remain runnable. */
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
@@ -716,8 +753,11 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * stack. Reserve a large fiber stack (committed on demand) to match. */
             t->fiber = CreateFiberEx((SIZE_T)1 << 18, (SIZE_T)64 << 20, 0, fiber_proc, t);
         }
+        const uint64_t run0 = qpc_us();
         SwitchToFiber(t->fiber);           /* run until it yields/blocks/exits */
+        t->cpu_us += qpc_us() - run0;
         s_cur = -1;
         s_tick++;
+        sched_stat_tick();
     }
 }

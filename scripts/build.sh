@@ -46,11 +46,22 @@ ls "$GEN"/recomp_*.c | xargs -P "$JOBS" -I{} bash -c '
 { [ "$OUT/ge.o" -nt "$RT/src/rt/ge.c" ] && [ "$OUT/ge.o" -nt "$RT/src/rt/recomp.h" ]; } 2>/dev/null || \
   gcc -O2 -fno-math-errno -w -I"$RT/src/rt" -c "$RT/src/rt/ge.c" -o "$OUT/ge.o"
 
+# ATRAC3/3+ decoder (FFmpeg via PPSSPP's at3_standalone, C++): compiled once, libstdc++ linked
+# statically so the exe needs no extra DLL.
+AT3="$RT/third_party/at3_standalone"
+mkdir -p "$OUT/at3"
+for c in atrac atrac3 atrac3plus atrac3plusdec atrac3plusdsp get_bits compat fft mem; do
+  [ "$OUT/at3/$c.o" -nt "$AT3/$c.cpp" ] || \
+    g++ -O2 -w -I"$AT3" -I"$RT/third_party/at3_shim" -c "$AT3/$c.cpp" -o "$OUT/at3/$c.o"
+done
+g++ -O2 -Wall -I"$AT3" -I"$RT/src/rt" -c "$RT/src/rt/at3_bridge.cpp" -o "$OUT/at3/at3_bridge.o"
+
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
-         savedata.c osk_win.c driver.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
-gcc "${CFLAGS[@]}" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" \
+         savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
+gcc "${CFLAGS[@]}" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \
-  -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -ldinput8 -ldxguid -lole32 -lwinmm
+  -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -ldinput8 -ldxguid -lole32 -lwinmm \
+  -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 
 cp /ucrt64/bin/SDL3.dll "$OUT/"
 cp -r "$RT/font" "$OUT/"
