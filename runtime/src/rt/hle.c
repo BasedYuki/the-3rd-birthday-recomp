@@ -38,6 +38,9 @@ static HleEntry s_hle[HLE_CAP];
 static int s_hle_n = 0;
 
 void sr_hle_register(uint32_t nid, const char *name, HleFn fn) {
+    /* A later registration of the same NID replaces the earlier one (hle_ext.c overrides). */
+    for (int i = 0; i < s_hle_n; i++)
+        if (s_hle[i].nid == nid) { s_hle[i].name = name; s_hle[i].fn = fn; return; }
     if (s_hle_n < HLE_CAP) { s_hle[s_hle_n].nid = nid; s_hle[s_hle_n].name = name; s_hle[s_hle_n].fn = fn; s_hle_n++; }
 }
 
@@ -1338,6 +1341,18 @@ static uint32_t s_framebuf = 0, s_vcount = 0;
 static uint32_t s_last_flip_vcount = 0;   /* hang watchdog (see sr_vblank_tick) */
 static uint32_t s_framebuf_width = 512, s_framebuf_fmt = 3;
 static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
+    /* SR_RAMDUMP=<frame>: write user RAM (0x08800000..0x0A000000) to ram.bin at that frame, for
+     * byte-level comparison with the same addresses in PPSSPP (same load base). */
+    {
+        static int rd = -2;
+        if (rd == -2) { const char *e = getenv("SR_RAMDUMP"); rd = e ? atoi(e) : -1; }
+        if (rd >= 0 && s_vcount >= (uint32_t)rd) {
+            FILE *f = fopen("ram.bin", "wb");
+            if (f) { fwrite(SR_HOST(0x08800000u), 1, 0x01800000u, f); fclose(f); }
+            fprintf(stderr, "RAMDUMP f=%u -> ram.bin\n", s_vcount);
+            rd = -1;
+        }
+    }
     s_framebuf = A0;
     if (A0) { s_framebuf_width = A1; s_framebuf_fmt = A2; }
     s_last_flip_vcount = s_vcount;
@@ -1488,8 +1503,15 @@ typedef struct {
 static GeCallback s_ge_cb[16];
 static uint32_t s_ge_list_next = 0;
 
-static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
-    if (!fn) return;
+/* Call a guest function from HLE and return its $v0. on_thread_stack: run just below the calling
+ * thread's sp (kernel callbacks run on the thread that owns them); otherwise on a dedicated stack
+ * in kernel RAM (GE interrupt callbacks). A fixed stack inside user RAM (formerly 0x09df8000)
+ * silently corrupts the game's heap, which grows up to the top of user memory. */
+uint32_t sr_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, int on_thread_stack) {
+    if (!fn) return 0;
+    static uint32_t cb_stack = 0;
+    extern uint32_t sr_kernel_alloc(uint32_t size);
+    if (!cb_stack) cb_stack = sr_kernel_alloc(0x8000) + 0x8000 - 0x10;
     CpuState save;
     memcpy(&save, s, sizeof(CpuState));
     int32_t save_slice = sr_timeslice;
@@ -1497,14 +1519,20 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->r[4] = a0;
     s->r[5] = a1;
     s->r[6] = a2;
+    s->r[26] = save.r[26];
     s->r[28] = save.r[28];
-    s->r[29] = 0x09df8000u;
+    s->r[29] = on_thread_stack ? ((save.r[29] - 0x40u) & ~0xFu) : cb_stack;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     sr_timeslice = 20000;
     dispatch(s, fn);
+    uint32_t v0 = s->r[2];
     memcpy(s, &save, sizeof(CpuState));
     sr_timeslice = save_slice;
+    return v0;
+}
+static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    sr_call_guest(s, fn, a0, a1, a2, 0);
 }
 
 static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
@@ -2294,7 +2322,15 @@ void sr_syscall(CpuState *s, uint32_t nid) {
         if (j == g_ncc && g_ncc < 512) { g_cc[j].nid = nid; g_cc[j].nm = e->name; g_cc[j].n = 0; g_ncc++; }
         if (j < 512) g_cc[j].n++;
     }
+    /* Kernel callbacks (hle_ext.c) run only while their thread is in a ...CB call or
+     * sceKernelCheckCallback: deliver pending ones before and after such calls. */
+    extern int sr_callbacks_pending(void);
+    extern void sr_run_callbacks(CpuState *s);
+    size_t nlen = strlen(e->name);
+    int cb_point = (nlen > 2 && !strcmp(e->name + nlen - 2, "CB")) || nid == 0x349d6d6cu;
+    if (cb_point && sr_callbacks_pending()) sr_run_callbacks(s);
     uint32_t ret = e->fn(s);
+    if (cb_point && sr_callbacks_pending()) sr_run_callbacks(s);
     /* Poison caller-saved temps exactly like PPSSPP SetDeadbeefRegs: r1, r4-r15, r24, r25,
      * hi, lo. The return value in v0 (and v1) is written afterward and survives. */
     s->r[1] = 0xDEADBEEFu;

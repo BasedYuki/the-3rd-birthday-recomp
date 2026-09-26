@@ -96,25 +96,11 @@ static Mpeg *mpeg_find(uint32_t mpegAddr) {
     return 0;
 }
 
+/* The ringbuffer fill callback runs on the calling thread's stack, as on hardware (hle.c). */
+uint32_t sr_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, int on_thread_stack);
 static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
     if (!s || !fn) return 0;
-    CpuState save;
-    memcpy(&save, s, sizeof(CpuState));
-    int32_t save_slice = sr_timeslice;
-    memset(s, 0, sizeof(CpuState));
-    s->r[4] = a0;
-    s->r[5] = a1;
-    s->r[6] = a2;
-    s->r[28] = save.r[28];
-    s->r[29] = 0x09df8000u;
-    s->r[31] = 0;
-    s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
-    sr_timeslice = 20000;
-    dispatch(s, fn);
-    uint32_t ret = s->r[2];
-    memcpy(s, &save, sizeof(CpuState));
-    sr_timeslice = save_slice;
-    return ret;
+    return sr_call_guest(s, fn, a0, a1, a2, 1);
 }
 
 /* big-endian 32 read from guest memory (PSMF header is big-endian) */

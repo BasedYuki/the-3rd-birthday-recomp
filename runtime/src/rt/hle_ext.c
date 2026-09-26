@@ -430,9 +430,87 @@ static uint32_t h_IoIoctl(CpuState *s) {
     return 0;
 }
 
+/* ---- Kernel callbacks ----
+ * A callback belongs to the thread that created it and only runs while that thread is inside a
+ * ...CB call or sceKernelCheckCallback (hle.c sr_syscall delivers). Handler signature:
+ * int cb(int notifyCount, int notifyArg, void *common); a non-zero return deletes it. */
+uint32_t sr_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, int on_thread_stack);
+typedef struct { int used; uint32_t uid, func, common, thread; int count; uint32_t arg; } KCallback;
+static KCallback s_kcb[32];
+static int s_kcb_pending = 0;
+
+static KCallback *kcb_find(uint32_t uid) {
+    for (int i = 0; i < 32; i++) if (s_kcb[i].used && s_kcb[i].uid == uid) return &s_kcb[i];
+    return NULL;
+}
+static void kcb_notify(uint32_t uid, uint32_t arg) {
+    KCallback *c = kcb_find(uid);
+    if (!c) return;
+    c->count++; c->arg = arg;
+    s_kcb_pending = 1;
+}
+int sr_callbacks_pending(void) { return s_kcb_pending; }
+void sr_run_callbacks(CpuState *s) {
+    uint32_t me = sched_current_uid();
+    int left = 0;
+    for (int i = 0; i < 32; i++) {
+        KCallback *c = &s_kcb[i];
+        if (!c->used || !c->count) continue;
+        if (c->thread != me) { left = 1; continue; }
+        int count = c->count; uint32_t arg = c->arg;
+        c->count = 0;
+        if (getenv("SR_CBLOG")) fprintf(stderr, "callback uid=0x%x fn=0x%08x count=%d arg=0x%x on thread 0x%x\n",
+                                        c->uid, c->func, count, arg, me);
+        uint32_t r = sr_call_guest(s, c->func, (uint32_t)count, arg, c->common, 1);
+        if (r) c->used = 0;
+    }
+    s_kcb_pending = left;
+}
+/* sceKernelCreateCallback(name, func, common) */
+static uint32_t h_CreateCallback(CpuState *s) {
+    for (int i = 0; i < 32; i++) {
+        if (s_kcb[i].used) continue;
+        memset(&s_kcb[i], 0, sizeof(s_kcb[i]));
+        s_kcb[i].used = 1; s_kcb[i].uid = sr_alloc_uid();
+        s_kcb[i].func = A1; s_kcb[i].common = A2; s_kcb[i].thread = sched_current_uid();
+        return s_kcb[i].uid;
+    }
+    return 0x80020190;
+}
+static uint32_t h_DeleteCallback(CpuState *s) {
+    KCallback *c = kcb_find(A0);
+    if (!c) return 0x800201a1;          /* UNKNOWN_CBID */
+    c->used = 0;
+    return 0;
+}
+static uint32_t h_NotifyCallback(CpuState *s) { kcb_notify(A0, A1); return 0; }
+
+/* UMD: the drive-status callback gets PRESENT|INITED|READY once the disc is activated. The game
+ * waits for READY (0x20) before streaming movies from the disc. */
+#define UMD_STAT_READY_ALL 0x32u
+static uint32_t s_umd_cb = 0;
+static int s_umd_active = 0;
+static uint32_t h_UmdRegisterUMDCallBack(CpuState *s) {
+    if (!kcb_find(A0)) return 0x80010016;
+    s_umd_cb = A0;
+    if (s_umd_active) kcb_notify(s_umd_cb, UMD_STAT_READY_ALL);
+    return 0;
+}
+static uint32_t h_UmdUnRegisterUMDCallBack(CpuState *s) { if (A0 == s_umd_cb) s_umd_cb = 0; return 0; }
+static uint32_t h_UmdActivate(CpuState *s) {
+    (void)s;
+    s_umd_active = 1;
+    if (s_umd_cb) kcb_notify(s_umd_cb, UMD_STAT_READY_ALL);
+    return 0;
+}
+
 void sr_hle_init_ext(void) {
+    sr_hle_register(0xe81caf8f, "sceKernelCreateCallback", h_CreateCallback);
+    sr_hle_register(0xc11ba8c4, "sceKernelNotifyCallback", h_NotifyCallback);
+    sr_hle_register(0xaee7404d, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
+    sr_hle_register(0xc6183d47, "sceUmdActivate", h_UmdActivate);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_zero);
-    sr_hle_register(0xbd2bde07, "sceUmdUnRegisterUMDCallBack", h_zero);
+    sr_hle_register(0xbd2bde07, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
     sr_hle_register(0x36cdfade, "sceDisplayWaitVblank", h_WaitVblank);
     sr_hle_register(0x46f186c3, "sceDisplayWaitVblankStartCB", h_WaitVblank);
 
@@ -468,7 +546,7 @@ void sr_hle_init_ext(void) {
     sr_hle_register(0x17c1684e, "sceKernelReferThreadStatus", h_ReferThreadStatus);
     sr_hle_register(0x68da9e36, "sceKernelDelayThreadCB", h_DelayThreadCB);
     sr_hle_register(0x8ffdf9a2, "sceKernelCancelSema", h_CancelSema);
-    sr_hle_register(0xedba5844, "sceKernelDeleteCallback", h_zero);
+    sr_hle_register(0xedba5844, "sceKernelDeleteCallback", h_DeleteCallback);
     sr_hle_register(0x349d6d6c, "sceKernelCheckCallback", h_zero);
     sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
