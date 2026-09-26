@@ -45,7 +45,7 @@ ls "$GEN"/recomp_*.c | xargs -P "$JOBS" -I{} bash -c '
 [ "$OUT/ge.o" -nt "$RT/src/rt/ge.c" ] 2>/dev/null || \
   gcc -O2 -fno-math-errno -w -I"$RT/src/rt" -c "$RT/src/rt/ge.c" -o "$OUT/ge.o"
 
-RT_SRCS=(recomp.c vfpu_interp.c hle.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
+RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
          savedata.c osk_win.c driver.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
 gcc "${CFLAGS[@]}" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \

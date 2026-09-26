@@ -66,7 +66,7 @@ int iso_init(void) {
 }
 
 static void read_sectors(uint32_t lba, void *buf, uint32_t bytes) {
-    fseek(s_iso, (long)(s_iso_offset + lba) * SECTOR, SEEK_SET);
+    _fseeki64(s_iso, (int64_t)(s_iso_offset + lba) * SECTOR, SEEK_SET);
     if (fread(buf, 1, bytes, s_iso) != bytes) memset(buf, 0, bytes);
 }
 
@@ -165,6 +165,14 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
 
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     if (iso_init() != 0) return -1;
-    fseek(s_iso, (long)(s_iso_offset + lba) * SECTOR + (long)offset, SEEK_SET);
+    _fseeki64(s_iso, (int64_t)(s_iso_offset + lba) * SECTOR + (int64_t)offset, SEEK_SET);
     return (int)fread(dst, 1, bytes, s_iso);
+}
+
+/* Size of the disc image in sectors (after any wrapper offset), for the raw umd0:/umd1: device. */
+uint32_t iso_num_sectors(void) {
+    if (iso_init() != 0) return 0;
+    _fseeki64(s_iso, 0, SEEK_END);
+    int64_t n = _ftelli64(s_iso) / SECTOR;
+    return n > s_iso_offset ? (uint32_t)(n - s_iso_offset) : 0;
 }

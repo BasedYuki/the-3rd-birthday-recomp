@@ -100,6 +100,13 @@ float sr_vfpu_exp2(float x);
 #define SR_VFPU_COMPUTE 1
 #define SR_VFPU_STATE   2
 int sr_vfpu_interp(CpuState *s, uint32_t op);
+void sr_vfpu_ext(CpuState *s, uint32_t w);   /* VFPU ops the codegen emits as calls */
+static inline uint32_t sr_bitrev(uint32_t v) {  /* Allegrex bitrev */
+    v = ((v >> 1) & 0x55555555u) | ((v & 0x55555555u) << 1);
+    v = ((v >> 2) & 0x33333333u) | ((v & 0x33333333u) << 2);
+    v = ((v >> 4) & 0x0F0F0F0Fu) | ((v & 0x0F0F0F0Fu) << 4);
+    return __builtin_bswap32(v);
+}
 
 /* Dispatch: guest address -> native recompiled function (section 7). Computed jumps/calls go
  * through here; unknown targets would fall to the interpreter once it is linked in. */
@@ -138,6 +145,18 @@ uint32_t sr_alloc_uid(void);
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 void ge_run_list(uint32_t addr);
 uint32_t ge_framebuffer(void);
+
+/* Resumable list execution for stall-address streaming (sceGeListUpdateStallAddr): the
+ * interpreter stops before fetching the word at `stall` (0 = no stall) and keeps its position
+ * and CALL stack here so a later call continues where it left off. */
+typedef struct GeListCtx {
+    uint32_t pc, stall, list_addr;
+    uint32_t stack_pc[32], stack_off[32];
+    int sp, pending_signal, started;
+    unsigned long sig, prims;
+} GeListCtx;
+/* Returns 1 when the list reached its terminating END, 0 when it stopped at the stall address. */
+int ge_run_ctx(GeListCtx *c);
 
 /* Interactive window front-end (src/rt/gui.c, Win32). gui_init opens the window; gui_present is
  * called from sceDisplaySetFrameBuf to show a frame, pump messages, and sample the keyboard;

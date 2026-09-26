@@ -2126,12 +2126,20 @@ unsigned long g_ge_list_sig=0, g_ge_prim_count=0;
 /* Per-list write accounting for SR_GEWATCH: shows whether a list that cleared a buffer
  * also drew non-black content into it, and which buffer it targeted. */
 unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
-static void ge_run_list_inner(uint32_t addr);
+static int ge_run_list_inner(GeListCtx *c);
 
 void ge_run_list(uint32_t addr) {
+    GeListCtx c;
+    memset(&c, 0, sizeof(c));
+    c.pc = c.list_addr = addr;
+    ge_run_ctx(&c);
+}
+
+int ge_run_ctx(GeListCtx *c) {
     unsigned long t0 = wall_ms();
-    ge_run_list_inner(addr);
+    int done = ge_run_list_inner(c);
     s_ge_ms_acc += wall_ms() - t0;
+    return done;
 }
 
 /* GE block transfer (the "memcpy engine"): rectangle copy between guest buffers, used for
@@ -2160,16 +2168,26 @@ static void ge_block_transfer(uint32_t startdata) {
                       ((h - 1) * dstStride + w) * bpp);
 }
 
-static void ge_run_list_inner(uint32_t addr) {
+static int ge_run_list_inner(GeListCtx *c) {
     if (!s_ge_inited) ge_state_init();
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
-    uint32_t list_addr=addr;
-    g_list_writes=0; g_list_nonblack=0; g_list_clearpx=0;
+    if (!c->started) {
+        c->started=1;
+        g_list_writes=0; g_list_nonblack=0; g_list_clearpx=0;
+    }
+    uint32_t list_addr=c->list_addr;
+    uint32_t addr=c->pc;
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
-    unsigned long sig=0; unsigned long prims=0;
-    uint32_t stack_pc[32], stack_offset[32]; int sp=0;
-    int pending_signal=0;
+    unsigned long sig=c->sig; unsigned long prims=c->prims;
+    uint32_t *stack_pc=c->stack_pc, *stack_offset=c->stack_off; int sp=c->sp;
+    int pending_signal=c->pending_signal;
+#define GE_SAVE_CTX() do { c->pc=addr; c->sig=sig; c->prims=prims; c->sp=sp; \
+                           c->pending_signal=pending_signal; } while (0)
     for (int guard=0; guard<(1<<20); guard++) {
+        if (c->stall && (addr & 0x0FFFFFFFu) == (c->stall & 0x0FFFFFFFu)) {
+            GE_SAVE_CTX();
+            return 0;    /* reached the stall address: wait for UpdateStallAddr */
+        }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
         sig=sig*1000003ul+op;
@@ -2407,7 +2425,7 @@ static void ge_run_list_inner(uint32_t addr) {
             case GE_BJUMP: break;  /* no bounding-box test result kept; draw everything */
             case GE_BOUNDINGBOX: break;
             case GE_CALL:
-                if (sp<(int)(sizeof(stack_pc)/sizeof(stack_pc[0]))) {
+                if (sp<(int)(sizeof(c->stack_pc)/sizeof(c->stack_pc[0]))) {
                     stack_pc[sp]=addr; stack_offset[sp]=ge.offset; sp++;
                     addr=ge_rel_addr(data&0x00FFFFFCu);
                 }
@@ -2429,12 +2447,16 @@ static void ge_run_list_inner(uint32_t addr) {
                     fprintf(stderr, "GELIST f=%u list=0x%08x fbp=0x%08x prims=%lu writes=%lu nonblack=%lu clearpx=%lu\n",
                             s_ge_frame, list_addr, ge_fb_addr(), prims,
                             g_list_writes, g_list_nonblack, g_list_clearpx);
-                return;
+                GE_SAVE_CTX();
+                return 1;
             default:
                 ge_note_unhandled_cmd(cmd, op);
                 break;
         }
     }
+    GE_SAVE_CTX();
+    return 1;    /* runaway list: treat as finished rather than spinning */
+#undef GE_SAVE_CTX
 }
 
 uint32_t ge_framebuffer(void) { return ge_fb_addr(); }

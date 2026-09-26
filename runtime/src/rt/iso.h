@@ -9,5 +9,7 @@ int iso_init(void);
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size);
 /* Read bytes from (lba*2048 + offset). Returns bytes read. */
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes);
+/* Disc size in 2048-byte sectors. */
+uint32_t iso_num_sectors(void);
 
 #endif

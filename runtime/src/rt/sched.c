@@ -210,6 +210,25 @@ static uint64_t vblank_due_us(void) {
     return (uint64_t)((s_vbl_next - (double)now.QuadPart) * 1000000.0 / (double)s_qfreq.QuadPart);
 }
 
+/* Run a guest interrupt handler (vblank, alarm) on the interrupt stack with the interrupted
+ * thread's registers saved around it. Returns the handler's $v0. */
+static uint32_t run_interrupt_handler(uint32_t h, uint32_t a0) {
+    CpuState save;
+    memcpy(&save, s_cpu, sizeof(CpuState));
+    memset(s_cpu, 0, sizeof(CpuState));
+    s_cpu->r[29] = 0x09df0000;          /* dedicated interrupt stack (below thread stacks) */
+    s_cpu->r[28] = s_gp;
+    s_cpu->r[4] = a0;
+    s_cpu->r[31] = 0;
+    s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
+    int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
+    dispatch(s_cpu, h);
+    uint32_t v0 = s_cpu->r[2];
+    s_cur = save_cur;
+    memcpy(s_cpu, &save, sizeof(CpuState));
+    return v0;
+}
+
 static void deliver_vblank(void) {
     vblank_pace();
     s_vbl_count++;
@@ -223,20 +242,49 @@ static void deliver_vblank(void) {
         if ((n++ % 30) == 0) fprintf(stderr, "PCSAMPLE frame=%lu interrupted_pc=0x%08x ra=0x%08x\n",
                                      n, s_cpu->pc, s_cpu->r[31]);
     }
-    CpuState save;
-    memcpy(&save, s_cpu, sizeof(CpuState));
-    memset(s_cpu, 0, sizeof(CpuState));
-    s_cpu->r[29] = 0x09df0000;          /* dedicated interrupt stack (below thread stacks) */
-    s_cpu->r[28] = s_gp;
-    s_cpu->r[4] = sr_vblank_arg();       /* a0 = registered arg */
-    s_cpu->r[31] = 0;
-    s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
-    int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    dispatch(s_cpu, h);
-    s_cur = save_cur;
-    memcpy(s_cpu, &save, sizeof(CpuState));
+    run_interrupt_handler(h, sr_vblank_arg());
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
+}
+
+/* ---- sceKernelSetAlarm: one-shot timers whose handler runs in interrupt context. The
+ * handler's return value is the delay (us) until it fires again; 0 cancels it. */
+typedef struct { int used; uint32_t uid, handler, arg; uint64_t due; } Alarm;
+static Alarm s_alarms[16];
+
+void sched_set_alarm(uint32_t uid, uint32_t usec, uint32_t handler, uint32_t arg) {
+    vtime_refresh();
+    for (int i = 0; i < 16; i++) {
+        if (s_alarms[i].used) continue;
+        s_alarms[i].used = 1; s_alarms[i].uid = uid;
+        s_alarms[i].handler = handler; s_alarms[i].arg = arg;
+        s_alarms[i].due = s_vtime_us + usec;
+        return;
+    }
+    fprintf(stderr, "sched: alarm table full (uid 0x%x dropped)\n", uid);
+}
+int sched_cancel_alarm(uint32_t uid) {
+    for (int i = 0; i < 16; i++)
+        if (s_alarms[i].used && s_alarms[i].uid == uid) { s_alarms[i].used = 0; return 0; }
+    return -1;
+}
+static uint64_t alarm_soonest(void) {
+    uint64_t t = (uint64_t)-1;
+    for (int i = 0; i < 16; i++) if (s_alarms[i].used && s_alarms[i].due < t) t = s_alarms[i].due;
+    return t;
+}
+static void deliver_alarms(void) {
+    if (alarm_soonest() == (uint64_t)-1) return;
+    vtime_refresh();
+    for (int i = 0; i < 16; i++) {
+        Alarm *a = &s_alarms[i];
+        if (!a->used || a->due > s_vtime_us) continue;
+        uint32_t next = run_interrupt_handler(a->handler, a->arg);
+        if (!a->used) continue;                 /* cancelled from inside the handler */
+        if (next) a->due += next;
+        else a->used = 0;
+        if (a->used && a->due + 100000 < s_vtime_us) a->due = s_vtime_us + next;   /* don't burst after a stall */
+    }
 }
 
 static void CALLBACK fiber_proc(void *param) {
@@ -580,13 +628,14 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %s prio %d wait_obj 0x%x\n",
                         s_tcb[i].uid, s_tcb[i].entry, stn[s_tcb[i].state], s_tcb[i].priority, s_tcb[i].wait_obj);
         }
+        deliver_alarms();
         int idx = pick_next();
         if (idx < 0) {
             /* No thread is ready. If a timed wait expires before the next vblank is due,
              * sleep precisely to it (sub-frame delays keep their real duration); otherwise
              * deliver a VBLANK interrupt (real-time paced) -- the per-frame heartbeat that
              * drives the render loop. Vblank delivery can't starve: it runs whenever due. */
-            uint64_t soonest = (uint64_t)-1;
+            uint64_t soonest = alarm_soonest();
             for (int i = 0; i < s_ntcb; i++)
                 if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
                     s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
@@ -600,7 +649,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         }
         if (idx < 0) {
             /* Still nothing. Stop only when nothing is even waiting on a deadline. */
-            uint64_t soonest = (uint64_t)-1;
+            uint64_t soonest = alarm_soonest();
             for (int i = 0; i < s_ntcb; i++)
                 if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
                     s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;

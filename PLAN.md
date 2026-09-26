@@ -71,6 +71,13 @@
 - [ ] From PPSSPP's log: which modules get loaded at runtime (`sceKernelLoadModule*`, `sceUtilityLoadModule`)
 - [x] Measure the logic tick: 30 Hz
 
+## Boot milestone: status (2026-09-26)
+- **All 273 imports are handled** (`tools/hle_coverage.py` reports 255 because the 17 sceHttp stubs register from a table it doesn't parse). New handlers are in `runtime/src/rt/hle_ext.c`, with small hooks in `hle.c`.
+- **All 19,281 functions translate** (0 trapping stubs). Code generator fixes: `cache`, `wsbw`/`bitrev`, `vnop`/`vsync`/`vflush`, `bvf`/`bvt` branches, branch targets that land in a delay slot, and a runtime `sr_vfpu_ext` for vf2i*/vi2f/vrnd*/vx2i/vi2x/vfad/vavg/vmscl/vmmov (PPSSPP semantics).
+- **Runtime additions:** raw UMD block device (`umd1:` reads in sectors; the game streams `3rd.pkg` this way), resumable GE lists with stall addresses plus a proper list queue, `sceKernelSetAlarm` in the scheduler, FPL/LwMutex, SAS PCM/noise/pause, Output2 audio, and a message dialog that auto-answers.
+- **Where it stands:** the game boots, reads its data from the disc, runs its threads, fires its 16 ms alarms, and renders every frame (the boot-notice texture decodes correctly). **The presented image is still black.**
+- **Next bug:** each frame the game copies the last displayed frame into VRAM `0x04178000` (`sceDisplayGetFrameBuf` + `sceDmacMemcpy`), then draws it back full-screen as a 480×272 quad. That capture is black, which keeps every later frame black. Check which buffer is read, when the DMA copy runs relative to GE completion, and whether the Vulkan path flushes VRAM before the copy. PPSSPP (GE debugger / frame dump) is the reference.
+
 ## Bake-off checklist (per framework)
 - [ ] Lift coverage: the whole ELF translates without unknown instructions (VFPU especially)
 - [ ] Module/relocation handling

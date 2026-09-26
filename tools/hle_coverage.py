@@ -21,6 +21,7 @@ def main():
     ap.add_argument("imports")
     ap.add_argument("src")
     ap.add_argument("--names")
+    ap.add_argument("--nids", action="store_true", help="print the NID next to each missing name")
     args = ap.parse_args()
 
     impl = set()
@@ -40,7 +41,8 @@ def main():
         if nid in impl:
             have[lib] += 1
         else:
-            missing[lib].append(names.get(nid, f"0x{nid:08X}"))
+            missing[lib].append(f"{names.get(nid, '?')}=0x{nid:08X}" if args.nids
+                                else names.get(nid, f"0x{nid:08X}"))
 
     print(f"covered {sum(have.values())}/{sum(total.values())} imports "
           f"({len(impl)} handlers registered in runtime)\n")

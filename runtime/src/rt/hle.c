@@ -108,10 +108,20 @@ static uint32_t block_addr(uint32_t uid) {
     for (int i = 0; i < s_nblocks; i++) if (s_blocks[i].uid == uid) return s_blocks[i].addr;
     return 0;
 }
+/* Raw user-partition allocation for kernel objects that own memory (FPL/VPL in hle_ext.c).
+ * Returns the address, or 0 if the partition is exhausted. */
+uint32_t sr_user_alloc(uint32_t size, uint32_t align) {
+    user_partition_init();
+    if (align < 4) align = 4;
+    uint32_t addr = (s_heap + align - 1) & ~(align - 1);
+    if (addr + size > s_part_top) return 0;
+    s_heap = addr + size;
+    return addr;
+}
 
 /* ---- handlers ---- */
 
-static uint32_t g_sdk_version = 0;
+uint32_t g_sdk_version = 0;   /* also set by hle_ext.c (SetCompiledSdkVersion603_605 etc.) */
 
 static uint32_t h_GetCompiledSdkVersion(CpuState *s) { (void)s; return g_sdk_version; }
 static uint32_t h_SetCompiledSdkVersion(CpuState *s) { g_sdk_version = A0; return 0; }
@@ -489,6 +499,8 @@ static uint32_t h_MpegAtracDecode(CpuState *s) {
     return r;
 }
 static uint32_t h_MpegAvcDecodeStop(CpuState *s) { return mpeg_avc_decode_stop(A0, A1, A2, A3); }
+/* sceMpegGetPcmAu: no linear-PCM audio streams are demuxed yet, report "no data". */
+static uint32_t h_MpegGetPcmAu(CpuState *s) { (void)s; return 0x80618001u; }   /* ERROR_MPEG_NO_DATA */
 
 /* sceAtrac3plus: control-flow model (no real ATRAC3 decode -- output is silence). Enough for the
  * audio thread to run an ATRAC clip (e.g. the title BGM) to its loop/end without trapping or
@@ -520,6 +532,31 @@ static uint32_t h_AtracSetDataAndGetID(CpuState *s) {
     return (uint32_t)id;
 }
 static Atrac *atrac_of(uint32_t id) { return id < 8 && s_atrac[id].used ? &s_atrac[id] : 0; }
+/* sceAtracSetHalfwayBufferAndGetID(buf, readSize, bufSize): header parsed from what's loaded. */
+static uint32_t h_AtracSetHalfwayBufferAndGetID(CpuState *s) {
+    uint32_t read = A1;
+    s->r[5] = A2;                                   /* treat the full buffer as the data size */
+    uint32_t id = h_AtracSetDataAndGetID(s);
+    if (id < 8 && s_atrac[id].endSample == ATRAC_SAMPLES_PER_FRAME * 1024)
+        s_atrac[id].endSample = atrac_riff_samples(A0, read) > 0 ? atrac_riff_samples(A0, read)
+                                                                   : s_atrac[id].endSample;
+    return id;
+}
+static uint32_t h_AtracGetBitrate(CpuState *s) {
+    if (!atrac_of(A0)) return 0x80630002u;
+    if (A1) MEM_W32(A1, 64);                        /* kbps; ATRAC3plus mono/stereo typical */
+    return 0;
+}
+static uint32_t h_AtracGetMaxSample(CpuState *s) {
+    if (!atrac_of(A0)) return 0x80630002u;
+    if (A1) MEM_W32(A1, ATRAC_SAMPLES_PER_FRAME);
+    return 0;
+}
+static uint32_t h_AtracGetInternalErrorInfo(CpuState *s) {
+    if (!atrac_of(A0)) return 0x80630002u;
+    if (A1) MEM_W32(A1, 0);
+    return 0;
+}
 static uint32_t h_AtracReleaseAtracID(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->used = 0; return 0; }
 static uint32_t h_AtracDecodeData(CpuState *s) {
     /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, sp+16=*remainFrames. */
@@ -829,7 +866,9 @@ static uint32_t h_KernelPrintf(CpuState *s) {
     return 0;
 }
 
-typedef struct { int used; uint32_t lba, size, off; int64_t async_res; FILE *host; } Fd;
+/* block: raw UMD device ("umd0:"/"umd1:" with no path). Seek offsets and read sizes are in
+ * 2048-byte sectors on that fd (PPSSPP ISOFileSystem isBlockSectorMode); off/size stay bytes. */
+typedef struct { int used; uint32_t lba, size, off; int64_t async_res; FILE *host; int block; } Fd;
 static Fd s_fds[64];
 
 /* Map a guest path to a host scratch file under the writable fs/ directory (storage the
@@ -868,6 +907,15 @@ static uint32_t h_IoOpen(CpuState *s) {
     for (int i = 1; i < 64; i++) if (!s_fds[i].used) { slot = i; break; }
     if (slot < 0) return 0x80010018;  /* too many open files */
 
+    /* Raw UMD block device: the whole disc, addressed in sectors. */
+    if ((!strncmp(path, "umd0:", 5) || !strncmp(path, "umd1:", 5)) &&
+        (path[5] == 0 || (path[5] == '/' && path[6] == 0))) {
+        memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
+        s_fds[slot].used = 1; s_fds[slot].block = 1;
+        s_fds[slot].size = iso_num_sectors() * 2048u;
+        return (uint32_t)slot;
+    }
+
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
     uint32_t lba, size;
@@ -889,11 +937,13 @@ static uint32_t h_IoOpen(CpuState *s) {
             return 0x80010002;
         }
         fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+        s_fds[slot].block = 0;
         s_fds[slot].used = 1; s_fds[slot].host = fp; s_fds[slot].lba = 0;
         s_fds[slot].size = (uint32_t)(sz < 0 ? 0 : sz); s_fds[slot].off = 0;
         return (uint32_t)slot;
     }
 from_iso:
+    s_fds[slot].block = 0;
     s_fds[slot].used = 1; s_fds[slot].host = NULL;
     s_fds[slot].lba = lba; s_fds[slot].size = size; s_fds[slot].off = 0;
     return (uint32_t)slot;
@@ -922,6 +972,7 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd >= 64 || !s_fds[fd].used) return 0x80010009;
     Fd *f = &s_fds[fd];
+    if (f->block) count *= 2048u;                 /* sectors -> bytes */
     if (f->off + count > f->size) count = f->size - f->off;
     /* Read in chunks straight into guest memory, from the host file or the ISO. */
     uint8_t tmp[4096];
@@ -941,17 +992,18 @@ static uint32_t h_IoRead(CpuState *s) {
         if (n++ < 4000)
             fprintf(stderr, "Read fd=%u off=%u size=%u -> %u\n", fd, f->off - done, count, done);
     }
-    return done;
+    return f->block ? done / 2048u : done;
 }
 static uint32_t h_IoLseek32(CpuState *s) {
     /* a0=fd, a1=offset, a2=whence. Returns new position (32-bit). */
-    uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
+    uint32_t fd = A0; int64_t off = (int32_t)A1; uint32_t whence = A2;
     if (fd >= 64 || !s_fds[fd].used) return 0x80010009;
     Fd *f = &s_fds[fd];
+    if (f->block) off *= 2048;                    /* sectors */
     int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
     int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
     f->off = (uint32_t)np;
-    return f->off;
+    return f->block ? f->off / 2048u : f->off;
 }
 static uint32_t h_IoLseek(CpuState *s) {
     /* a0=fd, [a2:a3]=64-bit offset, [sp+16]=whence. Returns 64-bit pos in v0:v1. */
@@ -960,9 +1012,11 @@ static uint32_t h_IoLseek(CpuState *s) {
     uint32_t whence = stack_arg(s, 0);
     if (fd >= 64 || !s_fds[fd].used) { s->r[3] = 0xFFFFFFFF; return 0x80010009; }
     Fd *f = &s_fds[fd];
+    if (f->block) off *= 2048;                    /* sectors */
     int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
     int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
     f->off = (uint32_t)np;
+    if (f->block) np /= 2048;
     s->r[3] = (uint32_t)((uint64_t)np >> 32);
     return (uint32_t)np;
 }
@@ -1094,6 +1148,27 @@ static uint32_t h_AudioOutputPannedBlocking(CpuState *s) {
     return audio_output(s, A0, A3, (int)(A1 & 0xFFFF), (int)(A2 & 0xFFFF));
 }
 static uint32_t h_AudioRestLen(CpuState *s) { (void)s; return 0; }         /* never backed up */
+
+/* sceAudioOutput2*: the single 44.1 kHz stereo "SRC" output, mapped onto host channel 7
+ * (reserved here so sceAudioChReserve(-1) never hands it out while Output2 is active). */
+#define AUDIO2_CH 7
+static uint32_t h_AudioOutput2Reserve(CpuState *s) {
+    if (s_audio_ch[AUDIO2_CH]) return 0x80260002;          /* SCE_ERROR_AUDIO_CHANNEL_ALREADY_RESERVED */
+    s_audio_ch[AUDIO2_CH] = 1; s_audio_len[AUDIO2_CH] = A0; s_audio_fmt[AUDIO2_CH] = 0;
+    return 0;
+}
+static uint32_t h_AudioOutput2Release(CpuState *s) { (void)s; s_audio_ch[AUDIO2_CH] = 0; return 0; }
+static uint32_t h_AudioOutput2ChangeLength(CpuState *s) {
+    if (A0 > 0 && A0 <= 65536) s_audio_len[AUDIO2_CH] = A0;
+    return 0;
+}
+static uint32_t h_AudioOutput2OutputBlocking(CpuState *s) {
+    /* sceAudioOutput2OutputBlocking(vol, buf) */
+    return audio_output(s, AUDIO2_CH, A1, (int)(A0 & 0xFFFF), (int)(A0 & 0xFFFF));
+}
+
+/* Exported for hle_ext.c: guest path -> flattened host file under fs/. */
+void sr_host_path(const char *guest, char *out, int max) { host_path(guest, out, max); }
 
 /* SR_CALLCOUNT instrumentation: per-NID call tallies, dumped at the capture point. */
 static struct { uint32_t nid; const char *nm; unsigned long n; } g_cc[512];
@@ -1402,6 +1477,72 @@ static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uin
     ge_call_guest(s, cb->finish_func, list_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
 }
 
+/* ---- GE list queue ----
+ * Lists run in queue order. The head list executes until its END or until it reaches its stall
+ * address; a stalled head blocks the lists behind it until sceGeListUpdateStallAddr moves the
+ * stall forward (games that build a frame's list incrementally rely on this). */
+typedef struct { int used; int32_t seq; uint32_t id, cbid, arg; GeListCtx ctx; } GeQList;
+static GeQList s_geq[32];
+static int32_t s_geq_tail = 0, s_geq_head = 0;
+
+static GeQList *geq_find(uint32_t id) {
+    for (int i = 0; i < 32; i++) if (s_geq[i].used && s_geq[i].id == id) return &s_geq[i];
+    return NULL;
+}
+static GeQList *geq_head(void) {
+    GeQList *h = NULL;
+    for (int i = 0; i < 32; i++)
+        if (s_geq[i].used && (!h || s_geq[i].seq < h->seq)) h = &s_geq[i];
+    return h;
+}
+static void ge_pump(CpuState *s) {
+    GeQList *h;
+    while ((h = geq_head()) != NULL) {
+        if (!ge_run_ctx(&h->ctx)) return;          /* stalled: wait for more commands */
+        uint32_t id = h->id, cbid = h->cbid, arg = h->arg;
+        h->used = 0;
+        ge_finish_callback(s, cbid, id, arg);
+    }
+}
+static uint32_t ge_enqueue(CpuState *s, uint32_t list, uint32_t stall, uint32_t cbid,
+                           uint32_t arg, int at_head, uint32_t list_id) {
+    for (int i = 0; i < 32; i++) {
+        if (s_geq[i].used) continue;
+        GeQList *q = &s_geq[i];
+        memset(q, 0, sizeof(*q));
+        q->used = 1;
+        q->seq = at_head ? --s_geq_head : ++s_geq_tail;
+        q->id = list_id; q->cbid = cbid; q->arg = arg;
+        q->ctx.pc = q->ctx.list_addr = list;
+        q->ctx.stall = stall;
+        ge_pump(s);
+        return list_id;
+    }
+    return 0x80000021;   /* SCE_KERNEL_ERROR_OUT_OF_MEMORY: queue full */
+}
+static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
+    GeQList *q = geq_find(A0);
+    if (!q) return 0;                  /* already finished */
+    q->ctx.stall = A1;
+    ge_pump(s);
+    return 0;
+}
+/* sceGeListSync(id, mode): 0 COMPLETED, 1 QUEUED, 2 DRAWING, 3 STALL_REACHED. */
+static uint32_t h_GeListSync(CpuState *s) {
+    GeQList *q = geq_find(A0);
+    if (!q) return 0;
+    if (A1 == 0) return 0;             /* wait mode: nothing more we can run without the game */
+    return q == geq_head() ? 3u : 1u;
+}
+static uint32_t h_GeListEnQueueHead(CpuState *s) {
+    uint32_t list_id = 0x35000000u | (s_ge_list_next++ & 0x00ffffffu);
+    return ge_enqueue(s, A0, A1, A2, A3, 1, list_id);
+}
+static uint32_t h_GeUnsetCallback(CpuState *s) {
+    if (A0 < (uint32_t)(sizeof(s_ge_cb) / sizeof(s_ge_cb[0]))) s_ge_cb[A0].used = 0;
+    return 0;
+}
+
 static uint32_t h_GeListEnQueue(CpuState *s) {
     /* a0=list ptr, a1=stall, a2=cbid, a3=arg. With SR_GEDUMP set, log the first list's commands
      * once (bring-up aid for the GE display-list interpreter). */
@@ -1428,8 +1569,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
             }
         }
     }
-    ge_run_list(A0);   /* process the list now (sets GE state, rasterises any PRIM) */
-    ge_finish_callback(s, A2, list_id, A3);
+    ge_enqueue(s, A0, A1, A2, A3, 0, list_id);   /* runs now unless stalled or queued behind one */
     if (getenv("SR_GESIG")) {
         extern unsigned long g_ge_list_sig, g_ge_prim_count;
         static unsigned long last_sig = 0; static int call = 0;
@@ -1477,9 +1617,15 @@ typedef struct {
     int voll, volr;               /* 0..0x1000 */
     int16_t buf[28]; int bufn, bufi;
     uint32_t frac;                /* 12-bit fixed-point resample remainder */
+    int type;                     /* 0 VAG ADPCM, 1 16-bit PCM, 2 noise */
+    int paused;
+    uint32_t pcm, pcm_len, pcm_pos; int pcm_loop;   /* PCM voice: s16 mono samples */
+    uint32_t noise;               /* noise LFSR state */
+    uint32_t adsr_env1, adsr_env2, adsr_mode; int sustain;   /* stored, not yet applied */
 } SasVoice;
 static SasVoice s_sasv[SAS_VOICES];
 static int s_sas_grain = 256;
+static int s_sas_outmode = 0;
 
 static const int vag_f0[5] = { 0, 60, 115,  98, 122 };
 static const int vag_f1[5] = { 0,  0, -52, -55, -60 };
@@ -1516,7 +1662,30 @@ static void sas_mix(uint32_t out, int add) {
     for (int i = 0; i < n; i++) { mixl[i] = 0; mixr[i] = 0; }
     for (int vi = 0; vi < SAS_VOICES; vi++) {
         SasVoice *v = &s_sasv[vi];
-        if (!v->on) continue;
+        if (!v->on || v->paused) continue;
+        if (v->type == 1) {                              /* 16-bit PCM */
+            for (int i = 0; i < n; i++) {
+                if (v->pcm_pos >= v->pcm_len) {
+                    if (!v->pcm_loop) { v->on = 0; break; }
+                    v->pcm_pos = 0;
+                }
+                int samp = (int16_t)MEM_R16(v->pcm + v->pcm_pos * 2);
+                mixl[i] += (samp * v->voll) >> 12;
+                mixr[i] += (samp * v->volr) >> 12;
+                v->frac += (uint32_t)(v->pitch > 0 ? v->pitch : 0x1000);
+                while (v->frac >= 0x1000) { v->frac -= 0x1000; v->pcm_pos++; }
+            }
+            continue;
+        }
+        if (v->type == 2) {                              /* noise (LFSR) */
+            for (int i = 0; i < n; i++) {
+                v->noise = v->noise * 1103515245u + 12345u;
+                int samp = (int16_t)(v->noise >> 16) >> 2;
+                mixl[i] += (samp * v->voll) >> 12;
+                mixr[i] += (samp * v->volr) >> 12;
+            }
+            continue;
+        }
         for (int i = 0; i < n; i++) {
             if (v->bufi >= v->bufn && !sas_vag_block(v)) { v->on = 0; break; }
             int samp = v->buf[v->bufi];
@@ -1549,6 +1718,7 @@ static uint32_t h_SasInit(CpuState *s) {
 static uint32_t h_SasSetVoice(CpuState *s) {
     /* __sceSasSetVoice(core, voice, vagAddr, size, loopmode) */
     SasVoice *v = &s_sasv[A1 & 31u];
+    v->type = 0;
     v->vag = A2; v->vag_size = A3;
     v->pos = 0; v->loop_start = stack_arg(s, 0) ? 0 : -1;
     v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
@@ -1569,11 +1739,58 @@ static uint32_t h_SasGetEndFlag(CpuState *s) {
 }
 static uint32_t h_SasSetKeyOn(CpuState *s) {
     SasVoice *v = &s_sasv[A1 & 31u];
-    v->pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0;
+    v->pos = 0; v->hist1 = v->hist2 = 0; v->bufn = v->bufi = 0; v->frac = 0; v->pcm_pos = 0;
     if (!v->voll && !v->volr) { v->voll = 0x1000; v->volr = 0x1000; }  /* keyed before SetVolume */
-    v->on = v->vag && v->vag_size >= 16;
+    if (v->type == 1) v->on = v->pcm && v->pcm_len > 0;
+    else if (v->type == 2) v->on = 1;
+    else v->on = v->vag && v->vag_size >= 16;
     return 0;
 }
+
+/* __sceSasSetVoicePCM(core, voice, pcmAddr, sampleCount, loopPos): s16 mono source. */
+static uint32_t h_SasSetVoicePCM(CpuState *s) {
+    SasVoice *v = &s_sasv[A1 & 31u];
+    v->type = 1; v->pcm = A2; v->pcm_len = A3; v->pcm_loop = (int32_t)stack_arg(s, 0) >= 0;
+    v->pcm_pos = 0; v->frac = 0;
+    return 0;
+}
+/* __sceSasSetNoise(core, voice, freq) */
+static uint32_t h_SasSetNoise(CpuState *s) {
+    SasVoice *v = &s_sasv[A1 & 31u];
+    v->type = 2; v->noise = 0x1234u + A2;
+    return 0;
+}
+/* __sceSasSetPause(core, voiceBits, pause) / __sceSasGetPauseFlag(core) */
+static uint32_t h_SasSetPause(CpuState *s) {
+    for (int i = 0; i < SAS_VOICES; i++) if (A1 & (1u << i)) s_sasv[i].paused = A2 != 0;
+    return 0;
+}
+static uint32_t h_SasGetPauseFlag(CpuState *s) {
+    (void)s; uint32_t m = 0;
+    for (int i = 0; i < SAS_VOICES; i++) if (s_sasv[i].paused) m |= 1u << i;
+    return m;
+}
+/* ADSR: stored for the later envelope implementation; the mixer still gates on/off. */
+static uint32_t h_SasSetADSR(CpuState *s) {   /* (core, voice, flag, a, d, s, r) */
+    SasVoice *v = &s_sasv[A1 & 31u]; v->adsr_mode = A2; (void)v; return 0;
+}
+static uint32_t h_SasSetADSRmode(CpuState *s) { s_sasv[A1 & 31u].adsr_mode = A2; return 0; }
+static uint32_t h_SasSetSL(CpuState *s) { s_sasv[A1 & 31u].sustain = (int)A2; return 0; }
+static uint32_t h_SasSetSimpleADSR(CpuState *s) {
+    SasVoice *v = &s_sasv[A1 & 31u]; v->adsr_env1 = A2; v->adsr_env2 = A3; return 0;
+}
+/* __sceSasGetAllEnvelopeHeights(core, int heights[32]) */
+static uint32_t h_SasGetAllEnvelopeHeights(CpuState *s) {
+    for (int i = 0; i < SAS_VOICES; i++) MEM_W32(A1 + (uint32_t)i * 4, s_sasv[i].on ? 0x40000000u : 0);
+    return 0;
+}
+static uint32_t h_SasGetGrain(CpuState *s) { (void)s; return (uint32_t)s_sas_grain; }
+static uint32_t h_SasSetGrain(CpuState *s) {
+    if ((int)A1 > 0 && (int)A1 <= 1024) s_sas_grain = (int)A1;
+    return 0;
+}
+static uint32_t h_SasGetOutputmode(CpuState *s) { (void)s; return (uint32_t)s_sas_outmode; }
+static uint32_t h_SasSetOutputmode(CpuState *s) { s_sas_outmode = (int)A1; return 0; }
 static uint32_t h_SasSetKeyOff(CpuState *s) { s_sasv[A1 & 31u].on = 0; return 0; }
 static uint32_t h_SasGetEnvelopeHeight(CpuState *s) { return s_sasv[A1 & 31u].on ? 0x40000000u : 0; }
 static uint32_t h_SasCore(CpuState *s)        { sas_mix(A1, 0); return 0; }
@@ -1622,6 +1839,17 @@ static uint32_t h_SignalSema(CpuState *s) {
     m->count += (int)A1;
     sched_wake(A0);
     sched_preempt();    /* a woken higher-priority waiter runs immediately */
+    return 0;
+}
+/* sceKernelCancelSema(uid, newCount, int *numWaitThreads): used by hle_ext.c. newCount -1
+ * restores the initial count; waiters are woken (they re-check and keep waiting if the count
+ * is still too low, which is close enough to WAIT_CANCEL for bring-up). */
+uint32_t sr_sema_cancel(uint32_t uid, int32_t new_count, uint32_t out_waiters) {
+    Sync *m = sync_find(uid); if (!m) return 0x80020199;
+    if (new_count > m->maxc) return 0x800201bd;
+    if (out_waiters) MEM_W32(out_waiters, 0);
+    m->count = new_count < 0 ? m->count : new_count;
+    sched_wake(uid);
     return 0;
 }
 static uint32_t h_PollSema(CpuState *s) {
@@ -1932,6 +2160,45 @@ void sr_hle_init(void) {
     sr_hle_register(0x402fcf22, "sceKernelWaitEventFlag", h_WaitEventFlag);
     sr_hle_register(0x328c546a, "sceKernelWaitEventFlagCB", h_WaitEventFlag);
     sr_hle_register(0x30fd48f0, "sceKernelPollEventFlag", h_PollEventFlag);
+
+    sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetHalfwayBufferAndGetID);
+    sr_hle_register(0x132f1eca, "sceAtracReinit", h_ok);
+    sr_hle_register(0xa554a158, "sceAtracGetBitrate", h_AtracGetBitrate);
+    sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
+    sr_hle_register(0xe88f759b, "sceAtracGetInternalErrorInfo", h_AtracGetInternalErrorInfo);
+    sr_hle_register(0xa11c7026, "sceMpegAvcDecodeMode", h_ok);
+    sr_hle_register(0x8c1e027d, "sceMpegGetPcmAu", h_MpegGetPcmAu);
+    sr_hle_register(0xe1cd9561, "__sceSasSetVoicePCM", h_SasSetVoicePCM);
+    sr_hle_register(0xb7660a23, "__sceSasSetNoise", h_SasSetNoise);
+    sr_hle_register(0x787d04d5, "__sceSasSetPause", h_SasSetPause);
+    sr_hle_register(0x2c8e6ab3, "__sceSasGetPauseFlag", h_SasGetPauseFlag);
+    sr_hle_register(0x019b25eb, "__sceSasSetADSR", h_SasSetADSR);
+    sr_hle_register(0x9ec3676a, "__sceSasSetADSRmode", h_SasSetADSRmode);
+    sr_hle_register(0x5f9529f6, "__sceSasSetSL", h_SasSetSL);
+    sr_hle_register(0xcbcd4f79, "__sceSasSetSimpleADSR", h_SasSetSimpleADSR);
+    sr_hle_register(0x07f58c24, "__sceSasGetAllEnvelopeHeights", h_SasGetAllEnvelopeHeights);
+    sr_hle_register(0xbd11b7c2, "__sceSasGetGrain", h_SasGetGrain);
+    sr_hle_register(0xd1e0a01e, "__sceSasSetGrain", h_SasSetGrain);
+    sr_hle_register(0xe175ef66, "__sceSasGetOutputmode", h_SasGetOutputmode);
+    sr_hle_register(0xe855bf76, "__sceSasSetOutputmode", h_SasSetOutputmode);
+    sr_hle_register(0x267a6dd2, "__sceSasRevParam", h_ok);
+    sr_hle_register(0x33d4ab37, "__sceSasRevType", h_ok);
+    sr_hle_register(0xd5a229c9, "__sceSasRevEVOL", h_ok);
+    sr_hle_register(0xf983b186, "__sceSasRevVON", h_ok);
+    sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
+    sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
+    sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
+    sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2OutputBlocking);
+    sr_hle_register(0x647cef33, "sceAudioOutput2GetRestSample", h_AudioRestLen);
+    sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
+    sr_hle_register(0x03444eb4, "sceGeListSync", h_GeListSync);
+    sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
+    sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
+    sr_hle_register(0x4c06e472, "sceGeContinue", h_ok);
+    sr_hle_register(0xb448ec0d, "sceGeBreak", h_ok);
+
+    extern void sr_hle_init_ext(void);
+    sr_hle_init_ext();
 }
 
 /* ---- dispatch ---- */
