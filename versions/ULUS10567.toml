@@ -1,0 +1,29 @@
+# The 3rd Birthday — North America (primary target)
+# All game addresses for this release live here, never hardcoded in C.
+
+[disc]
+disc_id      = "ULUS10567"
+title        = "The 3rd Birthday"
+disc_version = "1.00"
+app_ver      = "01.00"
+psp_system_ver = "6.37"
+iso_size     = 1467547648
+iso_sha256   = "908b89f1dd4f1f521a17fa0cfc339f8390faa0b6da5bd54ff58a8150a4b24928"
+iso_md5      = "47a7cb8e9e73d8aabef8139db7ee522b"
+
+[eboot]
+# /PSP_GAME/SYSDIR/EBOOT.BIN — encrypted, BOOT.BIN is an all-zero dummy
+module_name    = "pe"
+encrypted_size = 5664064
+elf_size       = 5663725
+psp_tag        = 0xD91613F0
+# decrypted_elf_sha256 = ""   # fill in after dumping with PPSSPP
+
+[assets]
+archive = "/PSP_GAME/USRDIR/3rd.pkg"   # 1345484800 bytes, all game data
+index   = "/PSP_GAME/USRDIR/3rd.fsd"   # 7932 bytes, presumably the pkg index
+
+[functions]
+# name = 0x08xxxxxx   (filled in from Ghidra as they are identified)
+# camera_update =
+# projection_setup =

@@ -1,0 +1,34 @@
+# Game data — never commit anything owned by Square Enix
+*.iso
+*.cso
+*.pkg
+*.fsd
+*.BIN
+*.bin
+*.elf
+*.prx
+*.PRX
+*.AT3
+*.pmf
+extracted/
+dumps/
+
+# Recompiler output is derived from game code: regenerate, never commit
+generated/
+
+# Build output
+build/
+out/
+*.exe
+*.pdb
+
+# Ghidra project binaries (export names/types to text instead)
+ghidra/*.rep/
+ghidra/*.gpr
+ghidra/*.lock*
+
+# PPSSPP save states / logs
+*.ppst
+logs/
+
+__pycache__/
