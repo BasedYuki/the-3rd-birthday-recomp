@@ -11,6 +11,7 @@
 #include "recomp.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define SR_VFPU_OTHER   0
@@ -407,4 +408,144 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
     }
 
     return SR_VFPU_OTHER;
+}
+
+
+/* ---- sr_vfpu_ext: VFPU encodings the codegen does not translate inline ----
+ * The codegen emits `sr_vfpu_ext(s, word);` for these (see codegen.py vfpu_ext_supported).
+ * Semantics follow PPSSPP Core/MIPS/InterpreterVFPU.cpp. Integer-typed lanes are read raw;
+ * a non-identity S prefix on them is not modelled (the game uses these with default prefixes). */
+
+static void write_raw(CpuState *s, const uint8_t *idx, const uint32_t *d, int n) {
+    uint32_t dp = s->vfpuCtrl[2];
+    for (int i = 0; i < n; i++) if (!((dp >> (8 + i)) & 1)) s->vi[idx[i]] = d[i];
+}
+
+static uint32_t vrnd_next(CpuState *s) {
+    uint32_t x = s->vfpuCtrl[8] ? s->vfpuCtrl[8] : 0x3f800001u;   /* RCX0 as xorshift state */
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    s->vfpuCtrl[8] = x;
+    return x;
+}
+
+void sr_vfpu_ext(CpuState *s, uint32_t w) {
+    uint32_t op = w >> 26;
+    int vd = w & 0x7F, vs = (w >> 8) & 0x7F, vt = (w >> 16) & 0x7F;
+    int n = vsize(w);
+    uint8_t di[4], si[4];
+
+    if (op == 0x34) {
+        int jump = (w >> 21) & 0x1F, sub = (w >> 16) & 0x1F;
+        if (jump >= 16 && jump <= 19) {                         /* vf2in/z/u/d */
+            float f[4]; uint32_t d[4];
+            vreg_idx(vs, n, si); vreg_idx(vd, n, di);
+            sr_vread(f, s, si, n, s->vfpuCtrl[0]);
+            double mult = (double)(1u << sub);
+            for (int i = 0; i < n; i++) {
+                if (isnan(f[i])) { d[i] = 0x7FFFFFFFu; continue; }
+                double v = f[i] * mult;
+                if (v > 2147483647.0) d[i] = 0x7FFFFFFFu;
+                else if (v <= -2147483648.0) d[i] = 0x80000000u;
+                else if (jump == 16) d[i] = (uint32_t)(int32_t)nearbyint(v);
+                else if (jump == 17) d[i] = (uint32_t)(int32_t)(f[i] >= 0 ? floor(v) : ceil(v));
+                else if (jump == 18) d[i] = (uint32_t)(int32_t)ceil(v);
+                else d[i] = (uint32_t)(int32_t)floor(v);
+            }
+            write_raw(s, di, d, n); eat_prefix(s); return;
+        }
+        if (jump == 20) {                                       /* vi2f */
+            float d[4];
+            vreg_idx(vs, n, si); vreg_idx(vd, n, di);
+            float mult = 1.0f / (float)(1u << sub);
+            for (int i = 0; i < n; i++) d[i] = (float)(int32_t)s->vi[si[i]] * mult;
+            sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return;
+        }
+        if (jump == 1 && sub >= 1 && sub <= 3) {                /* vrndi / vrndf1 / vrndf2 */
+            uint32_t d[4];
+            vreg_idx(vd, n, di);
+            for (int i = n - 1; i >= 0; i--) {
+                uint32_t r = vrnd_next(s);
+                d[i] = sub == 1 ? r : sub == 2 ? (0x3F800000u | (r & 0x007FFFFFu))
+                                               : (0x40000000u | (r & 0x007FFFFFu));
+            }
+            write_raw(s, di, d, n); eat_prefix(s); return;
+        }
+        if (jump == 1 && sub == 0) {                            /* vrnds: seed */
+            vreg_idx(vd, 1, di);
+            s->vfpuCtrl[8] = s->vi[di[0]] ? s->vi[di[0]] : 1u;
+            eat_prefix(s); return;
+        }
+        if (jump == 1 && sub >= 24 && sub <= 27) {              /* vuc2i / vc2i / vus2i / vs2i */
+            uint32_t d[4] = {0, 0, 0, 0}; int on = 4;
+            vreg_idx(vs, n, si);
+            uint32_t v0 = s->vi[si[0]];
+            switch (sub & 3) {
+            case 0: for (int i = 0; i < 4; i++) { d[i] = ((v0 & 0xFFu) * 0x01010101u) >> 1; v0 >>= 8; } break;
+            case 1: d[0] = (v0 & 0xFFu) << 24; d[1] = (v0 & 0xFF00u) << 16;
+                    d[2] = (v0 & 0xFF0000u) << 8; d[3] = v0 & 0xFF000000u; break;
+            default: {
+                int in = n >= 2 ? 2 : 1;
+                on = in * 2;
+                for (int i = 0; i < in; i++) {
+                    uint32_t v = s->vi[si[i]];
+                    if ((sub & 3) == 2) { d[i * 2] = (v & 0xFFFFu) << 15; d[i * 2 + 1] = (v & 0xFFFF0000u) >> 1; }
+                    else                { d[i * 2] = (v & 0xFFFFu) << 16; d[i * 2 + 1] = v & 0xFFFF0000u; }
+                }
+            }
+            }
+            vreg_idx(vd, on, di);
+            write_raw(s, di, d, on); eat_prefix(s); return;
+        }
+        if (jump == 1 && sub >= 28) {                           /* vi2uc / vi2c / vi2us / vi2s */
+            int32_t sv[4] = {0, 0, 0, 0}; uint32_t d[2] = {0, 0}; int on = 1;
+            vreg_idx(vs, n, si);
+            for (int i = 0; i < n; i++) sv[i] = (int32_t)s->vi[si[i]];
+            switch (sub & 3) {
+            case 0: for (int i = 0; i < 4; i++) { int v = sv[i] < 0 ? 0 : sv[i] >> 23; d[0] |= ((uint32_t)v & 0xFFu) << (i * 8); } break;
+            case 1: for (int i = 0; i < 4; i++) d[0] |= ((uint32_t)sv[i] >> 24) << (i * 8); break;
+            case 2: case 3: {
+                int elems = (n + 1) / 2;
+                for (int i = 0; i < elems; i++) {
+                    if ((sub & 3) == 2) {
+                        int lo = sv[i * 2] < 0 ? 0 : sv[i * 2] >> 15, hi = sv[i * 2 + 1] < 0 ? 0 : sv[i * 2 + 1] >> 15;
+                        d[i] = (uint32_t)lo | ((uint32_t)hi << 16);
+                    } else {
+                        d[i] = ((uint32_t)sv[i * 2] >> 16) | (((uint32_t)sv[i * 2 + 1] >> 16) << 16);
+                    }
+                }
+                on = n >= 3 ? 2 : 1;
+            }
+            }
+            vreg_idx(vd, on, di);
+            write_raw(s, di, d, on); eat_prefix(s); return;
+        }
+        if (jump == 2 && (sub == 6 || sub == 7)) {              /* vfad / vavg */
+            float f[4], d;
+            vreg_idx(vs, n, si); vreg_idx(vd, 1, di);
+            sr_vread(f, s, si, n, s->vfpuCtrl[0]);
+            d = 0.0f;
+            for (int i = 0; i < n; i++) d += f[i];
+            if (sub == 7) d /= (float)n;
+            sr_vwrite(s, di, &d, 1, s->vfpuCtrl[2]); eat_prefix(s); return;
+        }
+    }
+    if (op == 0x3C) {
+        int sel = (w >> 21) & 0x1F;
+        if (sel >= 16 && sel <= 19) {                           /* vmscl: matrix * scalar */
+            uint8_t ti[1]; vreg_idx(vt, 1, ti);
+            float t = s->v[ti[0]], tmp[16];
+            for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+                tmp[j * 4 + i] = s->v[mreg_idx(vs, n, j, i)] * t;
+            for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+                s->v[mreg_idx(vd, n, j, i)] = tmp[j * 4 + i];
+            eat_prefix(s); return;
+        }
+        if (sel == 28 && ((w >> 16) & 0xF) == 0) {             /* vmmov */
+            float tmp[16];
+            for (int j = 0; j < n; j++) for (int i = 0; i < n; i++) tmp[j * 4 + i] = s->v[mreg_idx(vs, n, j, i)];
+            for (int j = 0; j < n; j++) for (int i = 0; i < n; i++) s->v[mreg_idx(vd, n, j, i)] = tmp[j * 4 + i];
+            eat_prefix(s); return;
+        }
+    }
+    fprintf(stderr, "sr_vfpu_ext: unhandled VFPU word 0x%08x\n", w);
 }

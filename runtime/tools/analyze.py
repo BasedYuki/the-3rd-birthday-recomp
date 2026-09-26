@@ -170,7 +170,7 @@ def trace_function(elf, start, ranges, covered, calls):
                 break
             # Branches: REGIMM (1), beq/bne/blez/bgtz (4-7) and their likely forms (20-23),
             # and FPU bc1 (cop1 with rs=8). Target is intra-function; fork and continue.
-            is_branch = op in (1, 4, 5, 6, 7, 20, 21, 22, 23) or (op == 0x11 and ((word >> 21) & 0x1F) == 8)
+            is_branch = op in (1, 4, 5, 6, 7, 20, 21, 22, 23) or (op in (0x11, 0x12) and ((word >> 21) & 0x1F) == 8)
             if is_branch:
                 off = word & 0xFFFF
                 off = off - 0x10000 if off & 0x8000 else off

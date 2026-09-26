@@ -144,6 +144,9 @@ def effect(addr, w):
             if sub == 0x02: return wr(rd(w), f"((({R(rt(w))} & 0x00FF00FFu) << 8) | (({R(rt(w))} >> 8) & 0x00FF00FFu))"), None, 0  # wsbh
             if sub == 0x10: return wr(rd(w), f"((uint32_t)(int32_t)(int8_t){R(rt(w))})"), None, 0   # seb
             if sub == 0x18: return wr(rd(w), f"((uint32_t)(int32_t)(int16_t){R(rt(w))})"), None, 0  # seh
+            if sub == 0x03: return wr(rd(w), f"__builtin_bswap32({R(rt(w))})"), None, 0  # wsbw (Allegrex)
+            if sub == 0x14:  # bitrev (Allegrex)
+                return wr(rd(w), f"sr_bitrev({R(rt(w))})"), None, 0
         raise Unsupported(f"SPECIAL3 funct 0x{fn:02x} at 0x{addr:08x}")
     # loads
     if op == 0x20: return wr(rt(w), f"((uint32_t)(int32_t)(int8_t)MEM_R8({R(rs(w))} + {simm(w)}))"), None, 0   # lb
@@ -165,8 +168,29 @@ def effect(addr, w):
     if op == 0x31: return f"s->fi[{rt(w)}] = MEM_R32({R(rs(w))} + {simm(w)});", None, 0  # lwc1
     if op == 0x39: return f"MEM_W32({R(rs(w))} + {simm(w)}, s->fi[{rt(w)}]);", f"({R(rs(w))} + {simm(w)})", 4  # swc1
     if op == 0x11: return fpu_effect(addr, w)
-    if op in (0x36, 0x3e, 0x32, 0x3a, 0x12, 0x18, 0x19, 0x1b, 0x37, 0x34, 0x3c): return vfpu_effect(addr, w)
+    if op == 0x2F: return "(void)0;", None, 0   # cache: no data cache to maintain
+    if op == 0x3F:  # vnop/vsync/vflush: no-ops; all but 0xFFFF0000 eat the VFPU prefixes
+        return ("(void)0;" if (w & 0xFFFF0000) == 0xFFFF0000 else _EAT.strip()), None, 0
+    if op in (0x36, 0x3e, 0x32, 0x3a, 0x12, 0x18, 0x19, 0x1b, 0x37, 0x34, 0x3c):
+        if vfpu_ext_supported(w):
+            return f"sr_vfpu_ext(s, 0x{w:08x}u);", None, 0
+        return vfpu_effect(addr, w)
     raise Unsupported(f"opcode 0x{op:02x} at 0x{addr:08x}")
+
+
+def vfpu_ext_supported(w):
+    # VFPU encodings implemented by the runtime's sr_vfpu_ext (vfpu_interp.c) rather than inline.
+    op = w >> 26
+    if op == 0x34:
+        jump, sub = (w >> 21) & 0x1F, (w >> 16) & 0x1F
+        if 16 <= jump <= 20: return True                       # vf2in/z/u/d, vi2f
+        if jump == 1 and (sub <= 3 or sub >= 24): return True  # vrnd*, v(u)c2i/v(u)s2i, vi2(u)c/vi2(u)s
+        if jump == 2 and sub in (6, 7): return True            # vfad, vavg
+    if op == 0x3C:
+        sel = (w >> 21) & 0x1F
+        if 16 <= sel <= 19: return True                        # vmscl
+        if sel == 28 and ((w >> 16) & 0xF) == 0: return True   # vmmov
+    return False
 
 
 def _arr(idx):
@@ -563,7 +587,8 @@ def fpu_effect(addr, w):
 
 def is_cond_branch(w):
     op = w >> 26
-    return op in (4, 5, 6, 7, 20, 21, 22, 23) or op == 1 or (op == 0x11 and rs(w) == 8)
+    return (op in (4, 5, 6, 7, 20, 21, 22, 23) or op == 1 or (op == 0x11 and rs(w) == 8)
+            or (op == 0x12 and rs(w) == 8))   # bvf/bvt/bvfl/bvtl
 
 
 def cond_expr(w):
@@ -583,12 +608,16 @@ def cond_expr(w):
     if op == 0x11 and rs(w) == 8:
         tf = (w >> 16) & 1
         return f"(s->fpcond {'!=' if tf else '=='} 0)"        # bc1t/bc1f
+    if op == 0x12 and rs(w) == 8:
+        imm3, tf = (w >> 18) & 7, (w >> 16) & 1
+        return f"(((s->vfpuCtrl[3] >> {imm3}) & 1u) == {tf}u)"  # bvt (tf=1) / bvf (tf=0) on VFPU_CC
     raise Unsupported(f"branch op 0x{op:02x}")
 
 
 def is_likely(w):
     op = w >> 26
-    return op in (20, 21, 22, 23) or (op == 1 and rt(w) in (2, 3)) or (op == 0x11 and rs(w) == 8 and ((w >> 17) & 1))
+    return (op in (20, 21, 22, 23) or (op == 1 and rt(w) in (2, 3))
+            or (op in (0x11, 0x12) and rs(w) == 8 and ((w >> 17) & 1)))   # bc1*l, bv*l
 
 
 def is_link(w):  # branch that also writes $ra
@@ -681,6 +710,16 @@ def emit_function(elf, start, ranges, known):
     consumed = set()
     for addr in sorted(insns):
         if addr in consumed:
+            # A branch elsewhere targets this delay slot: it runs as plain code and continues
+            # at addr+4. Emit it behind a skip so the preceding transfer's fall-through path
+            # (which already ran it as the delay slot) does not execute it twice.
+            if addr in labels:
+                w = read32(elf, addr)
+                out.append(f"    goto L_ds_{addr:08x};")
+                out.append(f"  L_{addr:08x}: ;")
+                if w is not None:
+                    out.append(normal_line(addr, w))
+                out.append(f"  L_ds_{addr:08x}: ;")
             continue
         if addr in labels:
             out.append(f"  L_{addr:08x}: ;")
