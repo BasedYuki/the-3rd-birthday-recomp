@@ -1665,6 +1665,39 @@ static void draw_prim(uint32_t op) {
     int type = (op >> 16) & 7;
     int count = op & 0xFFFF;
     VFmt vf; decode_vtype(ge.vtype, &vf);
+    /* SR_SKINDBG=<frame>: at the first weighted draw from that frame on, print the last 96 GE
+     * commands executed (where did the bone matrices come from?). */
+    {
+        static int at = -2;
+        if (at == -2) { const char *e = getenv("SR_SKINDBG"); at = e ? atoi(e) : -1; }
+        if (at >= 0 && vf.w_n && s_ge_frame >= (uint32_t)at) {
+            extern uint32_t g_ge_ring_op[96], g_ge_ring_pc[96]; extern unsigned g_ge_ring_n;
+            fprintf(stderr, "SKINDBG f=%u draw vtype=0x%06x; last GE commands:\n", s_ge_frame, ge.vtype);
+            for (unsigned k = g_ge_ring_n > 96 ? g_ge_ring_n - 96 : 0; k < g_ge_ring_n; k++)
+                fprintf(stderr, "  %08x: %02x %06x\n", g_ge_ring_pc[k % 96], g_ge_ring_op[k % 96] >> 24,
+                        g_ge_ring_op[k % 96] & 0xFFFFFF);
+            at = -1;
+        }
+    }
+    /* SR_VTSTAT=1: histogram of vtypes per 60-frame window (weights, morph count, prim types),
+     * to find draws the decoder doesn't handle (e.g. morphing). */
+    {
+        static int on = -1;
+        if (on < 0) on = getenv("SR_VTSTAT") ? 1 : 0;
+        if (on) {
+            static uint32_t vt[64]; static unsigned long n[64]; static int nv = 0; static uint32_t win = 0;
+            if (s_ge_frame / 60 != win) {
+                for (int i = 0; i < nv; i++)
+                    fprintf(stderr, "VTSTAT f=%u vtype=0x%06x through=%u weights=%u(fmt%u) morph=%u draws=%lu\n",
+                            s_ge_frame, vt[i], (vt[i] >> 23) & 1, ((vt[i] >> 9) & 3) ? ((vt[i] >> 14) & 7) + 1 : 0,
+                            (vt[i] >> 9) & 3, ((vt[i] >> 18) & 7) + 1, n[i]);
+                nv = 0; win = s_ge_frame / 60;
+            }
+            int i = 0; while (i < nv && vt[i] != ge.vtype) i++;
+            if (i == nv && nv < 64) { vt[nv] = ge.vtype; n[nv] = 0; nv++; }
+            if (i < 64) n[i]++;
+        }
+    }
     if (s_gelog < 0) s_gelog = getenv("SR_GEDUMP") ? 1 : 0;
     if (s_gewatch < 0) s_gewatch = getenv("SR_GEWATCH") ? 1 : 0;
     if (s_gewatch_after < 0) { const char *p=getenv("SR_GEWATCH_AFTER"); s_gewatch_after=p?atoi(p):0; }
@@ -2127,6 +2160,7 @@ unsigned long g_ge_list_sig=0, g_ge_prim_count=0;
  * also drew non-black content into it, and which buffer it targeted. */
 unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
 static int ge_run_list_inner(GeListCtx *c);
+uint32_t g_ge_ring_op[96], g_ge_ring_pc[96]; unsigned g_ge_ring_n;   /* SR_SKINDBG history */
 
 void ge_run_list(uint32_t addr) {
     GeListCtx c;
@@ -2189,6 +2223,8 @@ static int ge_run_list_inner(GeListCtx *c) {
             return 0;    /* reached the stall address: wait for UpdateStallAddr */
         }
         uint32_t op=MEM_R32(addr); addr+=4;
+        { extern uint32_t g_ge_ring_op[96], g_ge_ring_pc[96]; extern unsigned g_ge_ring_n;
+          g_ge_ring_op[g_ge_ring_n % 96] = op; g_ge_ring_pc[g_ge_ring_n % 96] = addr - 4; g_ge_ring_n++; }
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
         sig=sig*1000003ul+op;
         switch (cmd) {

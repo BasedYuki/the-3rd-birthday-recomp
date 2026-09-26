@@ -77,7 +77,9 @@ class Dbg:
                 return json.loads(msg.decode(errors="replace")) if op in (0, 1) else None
 
     # ---- API ----
-    def request(self, event, timeout=10.0, **params):
+    def request(self, event, timeout=10.0, expect=None, **params):
+        """Send a request and wait for its reply. `expect` also accepts a broadcast of that
+        event name as the answer (cpu.stepping/cpu.resume reply that way in v1.20)."""
         self.ticket += 1
         t = str(self.ticket)
         self._send(json.dumps(dict(event=event, ticket=t, **params)))
@@ -87,7 +89,7 @@ class Dbg:
             m = self._recv()
             if m is None:
                 continue
-            if m.get("ticket") == t:
+            if m.get("ticket") == t or (expect and m.get("event") == expect):
                 if m.get("event") == "error":
                     raise RuntimeError(m.get("message"))
                 return m
