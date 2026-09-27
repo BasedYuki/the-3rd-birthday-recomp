@@ -19,6 +19,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>                        /* GDI text for the toast */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +54,9 @@ static VkDeviceMemory  s_staging_mem;
 static void           *s_staging_map;
 static VkImage         s_fbimg;
 static VkDeviceMemory  s_fbimg_mem;
+static VkImage         s_visimg;           /* visible part of a GE target at render scale */
+static VkDeviceMemory  s_visimg_mem;
+static int             s_scale = 0;        /* internal render scale (sdl3vk_render_scale) */
 
 static uint32_t s_buttons;
 static uint8_t  s_lx = 128, s_ly = 128;
@@ -138,6 +143,134 @@ static int create_swapchain(void) {
     return 1;
 }
 
+/* ---- toast: a short status message in the window corner ("Game saved") -------------------
+ * The text is drawn with GDI into a small bitmap (the system UI font, antialiased), then
+ * copied onto the swapchain image after the frame blit. It is sized from the window height
+ * and re-rendered only when the message or the size changes. */
+#define TOAST_MAX_W 1400
+#define TOAST_MAX_H 160
+static char     s_toast_msg[96];
+static Uint64   s_toast_until = 0;            /* SDL_GetTicks() deadline */
+static char     s_toast_drawn[96];
+static int      s_toast_w = 0, s_toast_h = 0, s_toast_px = 0;
+static VkBuffer s_toast_buf; static VkDeviceMemory s_toast_mem; static void *s_toast_map;
+
+void sdl3vk_toast(const char *msg, int ms) {
+    SDL_strlcpy(s_toast_msg, msg ? msg : "", sizeof(s_toast_msg));
+    s_toast_until = SDL_GetTicks() + (Uint64)(ms > 0 ? ms : 2500);
+}
+
+/* Render the toast bitmap for a font of `px` pixels. Returns 0 if unavailable. */
+static int toast_render(int px) {
+    if (!strcmp(s_toast_drawn, s_toast_msg) && s_toast_px == px && s_toast_w) return 1;
+    if (!s_toast_buf) {
+        VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = (VkDeviceSize)TOAST_MAX_W * TOAST_MAX_H * 4;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (vkCreateBuffer(s_dev, &bci, NULL, &s_toast_buf) != VK_SUCCESS) return 0;
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, s_toast_buf, &mr);
+        VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        mai.allocationSize = mr.size;
+        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(s_dev, &mai, NULL, &s_toast_mem) != VK_SUCCESS) return 0;
+        vkBindBufferMemory(s_dev, s_toast_buf, s_toast_mem, 0);
+        vkMapMemory(s_dev, s_toast_mem, 0, VK_WHOLE_SIZE, 0, &s_toast_map);
+    }
+    HDC dc = CreateCompatibleDC(NULL);
+    HFONT font = CreateFontA(-px, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+    HGDIOBJ oldf = SelectObject(dc, font);
+    SIZE ts; GetTextExtentPoint32A(dc, s_toast_msg, (int)strlen(s_toast_msg), &ts);
+    int pad = px * 2 / 3, bar = px / 5 > 2 ? px / 5 : 2;
+    int w = ts.cx + pad * 2 + bar, h = ts.cy + pad;
+    if (w > TOAST_MAX_W) w = TOAST_MAX_W;
+    if (h > TOAST_MAX_H) h = TOAST_MAX_H;
+    BITMAPINFO bi = {0};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;       /* top-down */
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    HBITMAP bm = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    int ok = bm && bits;
+    if (ok) {
+        HGDIOBJ oldb = SelectObject(dc, bm);
+        uint32_t *p = (uint32_t *)bits;
+        for (int i = 0; i < w * h; i++) p[i] = 0x00141414u;              /* dark panel (BGRX) */
+        for (int y = 0; y < h; y++) for (int x = 0; x < bar; x++) p[y * w + x] = 0x00E08A2Eu;  /* orange edge */
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(240, 240, 240));
+        TextOutA(dc, bar + pad, pad / 2, s_toast_msg, (int)strlen(s_toast_msg));
+        GdiFlush();
+        uint32_t *dst = (uint32_t *)s_toast_map;
+        for (int i = 0; i < w * h; i++) dst[i] = p[i] | 0xFF000000u;   /* BGRA, opaque */
+        SelectObject(dc, oldb);
+        DeleteObject(bm);
+    }
+    SelectObject(dc, oldf);
+    DeleteObject(font);
+    DeleteDC(dc);
+    if (!ok) return 0;
+    s_toast_w = w; s_toast_h = h; s_toast_px = px;
+    SDL_strlcpy(s_toast_drawn, s_toast_msg, sizeof(s_toast_drawn));
+    return 1;
+}
+
+/* Record the toast copy onto a swapchain image in TRANSFER_DST layout. */
+static void toast_record(VkImage dst) {
+    if (!s_toast_msg[0] || SDL_GetTicks() >= s_toast_until) return;
+    int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
+    int px = dh / 28; if (px < 14) px = 14; if (px > 64) px = 64;
+    if (!toast_render(px)) return;
+    int margin = px;
+    if (s_toast_w + margin > dw || s_toast_h + margin > dh) return;
+    VkBufferImageCopy c = {0};
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.bufferRowLength = (uint32_t)s_toast_w;
+    c.imageOffset.x = dw - s_toast_w - margin;
+    c.imageOffset.y = dh - s_toast_h - margin;
+    c.imageExtent.width = (uint32_t)s_toast_w; c.imageExtent.height = (uint32_t)s_toast_h; c.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, s_toast_buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+}
+
+/* ---- render scale ------------------------------------------------------------------ */
+
+/* Internal resolution multiplier for the GPU renderer (1 = PSP native 480x272, 4 = 1920x1088).
+ * From SR_SCALE, else graphics.cfg in the working directory:
+ *   render_scale=0   (0 = match the display: the smallest scale that covers its height)
+ * A missing graphics.cfg is written with the default so it can be edited. */
+int sdl3vk_render_scale(void) {
+    if (s_scale > 0) return s_scale;
+    int want = 0;
+    const char *e = getenv("SR_SCALE");
+    if (e && e[0]) want = atoi(e);
+    else {
+        FILE *f = fopen("graphics.cfg", "r");
+        if (f) {
+            char line[128];
+            while (fgets(line, sizeof(line), f)) { int v; if (sscanf(line, "render_scale=%d", &v) == 1) want = v; }
+            fclose(f);
+        } else if ((f = fopen("graphics.cfg", "w")) != NULL) {
+            fprintf(f, "render_scale=0\n");
+            fclose(f);
+        }
+    }
+    if (want <= 0) {                                /* auto: cover the display height */
+        want = 2;
+        SDL_DisplayID d = s_win ? SDL_GetDisplayForWindow(s_win) : SDL_GetPrimaryDisplay();
+        const SDL_DisplayMode *m = d ? SDL_GetCurrentDisplayMode(d) : NULL;
+        if (m && m->h > 0) {
+            int ph = (int)(m->h * (m->pixel_density > 0.0f ? m->pixel_density : 1.0f));
+            want = (ph + PSP_H - 1) / PSP_H;
+        }
+    }
+    if (want < 1) want = 1;
+    if (want > 8) want = 8;
+    s_scale = want;
+    return s_scale;
+}
+
 /* ---- init --------------------------------------------------------------------------- */
 
 int sdl3vk_init(const char *title) {
@@ -145,8 +278,15 @@ int sdl3vk_init(const char *title) {
         fprintf(stderr, "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
         return 0;
     }
+    /* Window: the whole-number multiple of 480x272 nearest to 3/4 of the screen height
+     * (1440x816 on a 1080p screen), at least 2x. F11 / Alt+Enter toggles fullscreen. */
+    int wk = 2;
+    {
+        const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        if (m && m->h > 0) { wk = (m->h * 3 / 4 + PSP_H / 2) / PSP_H; if (wk < 2) wk = 2; }
+    }
     s_win = SDL_CreateWindow(title ? title : "PSP Recomp",
-                             PSP_W * 2, PSP_H * 2,
+                             PSP_W * wk, PSP_H * wk,
                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -172,16 +312,29 @@ int sdl3vk_init(const char *title) {
     /* Physical device: first one with a graphics queue that can present to our surface. */
     VkPhysicalDevice devs[16]; uint32_t nd = 16;
     VK_TRY(vkEnumeratePhysicalDevices(s_inst, &nd, devs));
+    /* Pick the best device that can present: a discrete GPU over an integrated one (laptops
+     * list the integrated GPU first). SR_GPU_DEVICE=<name substring> picks one explicitly. */
     s_pdev = VK_NULL_HANDLE;
-    for (uint32_t d = 0; d < nd && !s_pdev; d++) {
-        VkQueueFamilyProperties qf[16]; uint32_t nq = 16;
-        vkGetPhysicalDeviceQueueFamilyProperties(devs[d], &nq, qf);
-        for (uint32_t q = 0; q < nq; q++) {
-            VkBool32 can_present = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(devs[d], q, s_surf, &can_present);
-            if ((qf[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && can_present) {
-                s_pdev = devs[d]; s_qfam = q; break;
+    {
+        const char *want = getenv("SR_GPU_DEVICE");
+        int best = -1;
+        for (uint32_t d = 0; d < nd; d++) {
+            VkQueueFamilyProperties qf[16]; uint32_t nq = 16;
+            vkGetPhysicalDeviceQueueFamilyProperties(devs[d], &nq, qf);
+            int fam = -1;
+            for (uint32_t q = 0; q < nq && fam < 0; q++) {
+                VkBool32 can_present = VK_FALSE;
+                vkGetPhysicalDeviceSurfaceSupportKHR(devs[d], q, s_surf, &can_present);
+                if ((qf[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && can_present) fam = (int)q;
             }
+            if (fam < 0) continue;
+            VkPhysicalDeviceProperties pp;
+            vkGetPhysicalDeviceProperties(devs[d], &pp);
+            int score = pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3
+                      : pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
+            if (want && want[0] && SDL_strcasestr(pp.deviceName, want)) score = 10;
+            fprintf(stderr, "sdl3vk: device %u: %s (score %d)\n", d, pp.deviceName, score);
+            if (score > best) { best = score; s_pdev = devs[d]; s_qfam = (uint32_t)fam; }
         }
     }
     if (!s_pdev) { fprintf(stderr, "sdl3vk: no usable Vulkan device\n"); return 0; }
@@ -252,6 +405,18 @@ int sdl3vk_init(const char *title) {
     VK_TRY(vkAllocateMemory(s_dev, &mai, NULL, &s_fbimg_mem));
     VK_TRY(vkBindImageMemory(s_dev, s_fbimg, s_fbimg_mem, 0));
 
+    /* GPU-rendered frames: the visible part of a target, at the internal render scale */
+    {
+        const int sc = sdl3vk_render_scale();
+        imi.extent.width = (uint32_t)(PSP_W * sc); imi.extent.height = (uint32_t)(PSP_H * sc);
+        VK_TRY(vkCreateImage(s_dev, &imi, NULL, &s_visimg));
+        vkGetImageMemoryRequirements(s_dev, s_visimg, &mr);
+        mai.allocationSize = mr.size;
+        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_TRY(vkAllocateMemory(s_dev, &mai, NULL, &s_visimg_mem));
+        VK_TRY(vkBindImageMemory(s_dev, s_visimg, s_visimg_mem, 0));
+    }
+
     if (!create_swapchain()) return 0;
 
     if (SDL_HasGamepad()) {
@@ -274,6 +439,9 @@ static void poll_input(int *quit) {
         case SDL_EVENT_QUIT: *quit = 1; break;
         case SDL_EVENT_KEY_DOWN:
             if (ev.key.key == SDLK_ESCAPE) *quit = 1;
+            if (!ev.key.repeat && (ev.key.key == SDLK_F11 ||
+                                   (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
+                SDL_SetWindowFullscreen(s_win, !(SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN));
             break;
         case SDL_EVENT_GAMEPAD_ADDED:
             if (!s_pad) s_pad = SDL_OpenGamepad(ev.gdevice.which);
@@ -290,7 +458,7 @@ static void poll_input(int *quit) {
     uint32_t b = 0;
     const bool *k = SDL_GetKeyboardState(NULL);
     /* Same bindings as the GDI front-end (gui.c read_keys). */
-    if (k[SDL_SCANCODE_RETURN]) b |= 0x0008;                       /* START   */
+    if (k[SDL_SCANCODE_RETURN] && !(SDL_GetModState() & SDL_KMOD_ALT)) b |= 0x0008;   /* START (Alt+Enter: fullscreen) */
     if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= 0x0001; /* SELECT */
     if (k[SDL_SCANCODE_X]) b |= 0x4000;                            /* CROSS   */
     if (k[SDL_SCANCODE_Z]) b |= 0x2000;                            /* CIRCLE  */
@@ -429,8 +597,8 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
             /* A GE target is 512 wide. Scaling its 480x272 sub-rect with a linear blit makes
              * the last screen column blend in the off-screen texels at x=480 (blit filtering
              * clamps at the image edge, not the region's), so copy the visible part 1:1 into
-             * the 480x272 fb image first and scale from that. */
-            barrier(s_cmd, s_fbimg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+             * the visible-size image first and scale from that. */
+            barrier(s_cmd, s_visimg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     0, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             VkImageBlit cp = {0};
@@ -438,13 +606,13 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
             cp.srcSubresource.layerCount = 1;
             cp.srcOffsets[1].x = srcw; cp.srcOffsets[1].y = srch; cp.srcOffsets[1].z = 1;
             cp.dstSubresource = cp.srcSubresource;
-            cp.dstOffsets[1].x = PSP_W; cp.dstOffsets[1].y = PSP_H; cp.dstOffsets[1].z = 1;
+            cp.dstOffsets[1].x = srcw; cp.dstOffsets[1].y = srch; cp.dstOffsets[1].z = 1;
             vkCmdBlitImage(s_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           s_fbimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp, VK_FILTER_NEAREST);
-            barrier(s_cmd, s_fbimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           s_visimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp, VK_FILTER_NEAREST);
+            barrier(s_cmd, s_visimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-            src = s_fbimg; srcw = PSP_W; srch = PSP_H;
+            src = s_visimg;
         }
 
         /* fb image -> swapchain, aspect-correct letterbox blit */
@@ -472,6 +640,10 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         vkCmdBlitImage(s_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &blt, VK_FILTER_LINEAR);
+        barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        toast_record(s_swap_img[idx]);
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -514,8 +686,9 @@ int sdl3vk_present_rgba(const uint32_t *px) {
 }
 
 int sdl3vk_present_image(void *vk_image) {
-    /* 512x272 GE target: only the visible 480x272 region is shown */
-    return present_common((VkImage)vk_image, PSP_W, PSP_H, 0);
+    /* GE target (512x272 times the render scale): only the visible 480x272 region is shown */
+    const int sc = sdl3vk_render_scale();
+    return present_common((VkImage)vk_image, PSP_W * sc, PSP_H * sc, 0);
 }
 
 void sdl3vk_shutdown(void) {

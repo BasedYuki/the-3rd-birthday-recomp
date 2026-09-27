@@ -187,6 +187,7 @@ void gui_init(const char *title) {
                 QueryPerformanceFrequency(&s_freq);
                 QueryPerformanceCounter(&s_last);
                 s_on = 1;
+                if (getenv("SR_TOAST_TEST")) sdl3vk_toast(getenv("SR_TOAST_TEST"), 60000);
                 /* GPU rasterizer: captures GE triangles/sprites and renders them with Vulkan.
                  * On by default; SR_GPU_GE=0 selects the software rasterizer in ge.c, which
                  * costs ~17 ms of host time per frame in this game and halves movie speed. */
@@ -231,6 +232,12 @@ int gui_on(void) { return s_on; }
 uint32_t gui_buttons(void) { return s_buttons; }
 void gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 void gui_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
+void gui_toast(const char *msg) {
+    fprintf(stderr, "toast: %s\n", msg);
+#ifdef SR_SDL3VK
+    if (s_sdl3) sdl3vk_toast(msg, 3000);
+#endif
+}
 int gui_sens_steps(void) {
 #ifdef SR_SDL3VK
     if (s_sdl3) return sdl3vk_sens_steps();
@@ -279,6 +286,25 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             shown = sdl3vk_present_rgba(s_px);
         }
         if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+        /* SR_PACELOG=1: every 5 s, how evenly frames were presented (stutter hunting) */
+        {
+            static int on = -1;
+            if (on < 0) on = getenv("SR_PACELOG") ? 1 : 0;
+            if (on) {
+                static LARGE_INTEGER prev, t0;
+                static unsigned n, slow, vslow; static double maxgap;
+                LARGE_INTEGER now; QueryPerformanceCounter(&now);
+                if (prev.QuadPart) {
+                    double g = (double)(now.QuadPart - prev.QuadPart) * 1000.0 / (double)s_freq.QuadPart;
+                    n++; if (g > 40.0) slow++; if (g > 70.0) vslow++; if (g > maxgap) maxgap = g;
+                } else t0 = now;
+                prev = now;
+                if ((double)(now.QuadPart - t0.QuadPart) / (double)s_freq.QuadPart >= 5.0) {
+                    fprintf(stderr, "PACE 5s: presents %u, gaps >40ms %u, >70ms %u, max %.0f ms\n", n, slow, vslow, maxgap);
+                    n = slow = vslow = 0; maxgap = 0; t0 = now;
+                }
+            }
+        }
         s_buttons = sdl3vk_buttons();
         sdl3vk_analog(&s_lx, &s_ly);
         sdl3vk_rstick(&s_rx, &s_ry);

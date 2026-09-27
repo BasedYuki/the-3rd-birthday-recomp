@@ -52,8 +52,10 @@ vec4 depal_texel(ivec2 p) {
     return texelFetch(u_clut, ivec2(int(idx), pc.depal.z), 0);
 }
 
-/* uv in texel units. Linear filtering happens after the palette lookup, as on the PSP. */
+/* uv in 1x texel units. Linear filtering happens after the palette lookup, as on the PSP.
+ * The target image may be rendered at a higher internal resolution: address its pixels. */
 vec4 depal_sample(vec2 uv) {
+    uv *= vec2(textureSize(u_tex, 0)) / pc.texsize.xy;
     if (((pc.depal.x >> 8) & 1) == 0) return depal_texel(ivec2(floor(uv)));
     vec2 q = uv - 0.5;
     ivec2 i = ivec2(floor(q));

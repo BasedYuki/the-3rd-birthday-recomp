@@ -31,6 +31,13 @@ int  sdl3vk_present_rgba(const uint32_t *px);
  * blitted with the same letterboxing as sdl3vk_present_rgba. Same return semantics. */
 int  sdl3vk_present_image(void *vk_image);
 
+/* Internal render scale for GE targets (SR_SCALE or graphics.cfg render_scale, 0 = auto from
+ * the display height). Fixed after the first call. */
+int  sdl3vk_render_scale(void);
+
+/* Show a short status message in the window corner for ms milliseconds (0 = 2.5 s). */
+void sdl3vk_toast(const char *msg, int ms);
+
 /* Input state captured by the last present (PSP sceCtrl button mask / analog stick). */
 uint32_t sdl3vk_buttons(void);
 void     sdl3vk_analog(uint8_t *lx, uint8_t *ly);

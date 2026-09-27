@@ -47,7 +47,6 @@ static const GUID L_MF_LOW_LATENCY      = {0x9c27891a,0xed7a,0x40e1,{0x88,0xe8,0
 #define MF_E_NOTACCEPTING ((HRESULT)0xC00D36B5L)
 #endif
 
-typedef struct { uint32_t off, len; int64_t pts; } EsChunk;
 
 typedef struct {
     int used;
@@ -57,10 +56,9 @@ typedef struct {
     int drained;
     /* MPEG-PS input accumulation (unparsed tail) */
     uint8_t *ps; uint32_t psLen, psCap, psPos;
-    /* demuxed H.264 ES byte fifo + chunk table (one chunk per video PES payload) */
-    uint8_t *es; uint32_t esLen, esCap;
-    EsChunk *ck; uint32_t nCk, capCk, curCk;
-    LONGLONG fakeTime;             /* synthetic input timestamp when the PES had no PTS */
+    /* demuxed H.264 ES byte fifo; esCur = first byte not yet handed to the decoder */
+    uint8_t *es; uint32_t esLen, esCap, esCur;
+    LONGLONG nextTime;             /* synthetic input timestamp (100 ns) */
 } Dec;
 
 #define MAX_DEC 4
@@ -81,37 +79,19 @@ static int buf_reserve(uint8_t **d, uint32_t *cap, uint32_t need) {
 }
 
 static void es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts) {
+    (void)pts;                      /* pictures are delimited by AUD NALs, not PTS (feed_one) */
     if (!buf_reserve(&d->es, &d->esCap, d->esLen + n)) return;
-    if (d->nCk == d->capCk) {
-        uint32_t c = d->capCk ? d->capCk * 2 : 256;
-        EsChunk *t = (EsChunk *)realloc(d->ck, c * sizeof(EsChunk));
-        if (!t) return;
-        d->ck = t; d->capCk = c;
-    }
     memcpy(d->es + d->esLen, p, n);
-    d->ck[d->nCk].off = d->esLen;
-    d->ck[d->nCk].len = n;
-    d->ck[d->nCk].pts = pts;
-    d->nCk++;
     d->esLen += n;
 }
 
-/* Drop consumed bytes so the fifos stay small (the ring is ~1.2MB; the game feeds as we drain). */
+/* Drop consumed bytes so the fifo stays small (the ring is ~1.2MB; the game feeds as we drain). */
 static void es_compact(Dec *d) {
-    if (d->curCk == 0 || d->curCk < d->nCk / 2 || d->esLen < (1u << 20)) return;
-    if (d->curCk >= d->nCk) {       /* everything consumed: ck[curCk] would be past the table */
-        d->esLen = 0; d->nCk = 0; d->curCk = 0;
-        return;
-    }
-    uint32_t base = d->ck[d->curCk].off;
-    memmove(d->es, d->es + base, d->esLen - base);
-    d->esLen -= base;
-    uint32_t live = d->nCk - d->curCk;
-    for (uint32_t i = 0; i < live; i++) {
-        d->ck[i] = d->ck[d->curCk + i];
-        d->ck[i].off -= base;
-    }
-    d->nCk = live; d->curCk = 0;
+    if (d->esCur == d->esLen) { d->esLen = d->esCur = 0; return; }
+    if (d->esCur < (1u << 20)) return;
+    memmove(d->es, d->es + d->esCur, d->esLen - d->esCur);
+    d->esLen -= d->esCur;
+    d->esCur = 0;
 }
 
 /* ---- MPEG program-stream demux --------------------------------------------------------- */
@@ -226,42 +206,44 @@ static int dec_open(Dec *d) {
 
 /* Push the next demuxed ES chunk into the MFT. Returns 1 on progress, 0 when the MFT is not
  * accepting (caller should drain output first), -1 on hard failure. */
-/* A video frame (access unit) spans several PES packets; only the first carries a PTS. The
- * decoder runs in low-latency mode, which treats every input sample as a whole frame, so feeding
- * PES-sized pieces decoded only the first slices of each picture (smeared, half-missing frames).
- * Gather chunks from curCk up to the next PTS-bearing chunk into one sample. Returns the number
- * of chunks in the unit, or 0 if its end hasn't arrived yet (and eos is false). */
-static uint32_t au_span(Dec *d, int eos) {
-    uint32_t i = d->curCk + 1;
-    while (i < d->nCk && d->ck[i].pts < 0) i++;
-    if (i >= d->nCk && !eos) return 0;
-    return i - d->curCk;
+/* The decoder runs in low-latency mode, which treats every input sample as exactly one picture.
+ * A picture spans several PES packets, and these movies carry a PTS only about every 16th
+ * picture, so neither PES nor PTS boundaries delimit pictures (grouping up to the next PTS
+ * handed the MFT ~16 pictures per sample: block corruption and smears in the movies). Every
+ * access unit starts with an access-unit delimiter NAL (type 9), so split there.
+ * Returns the offset of the next delimiter's start code at or after `from`, or esLen. */
+static uint32_t next_aud(Dec *d, uint32_t from) {
+    const uint8_t *e = d->es;
+    for (uint32_t i = from; i + 3 < d->esLen; i++) {
+        if (e[i + 2] > 1) { i += 2; continue; }           /* quick skip: can't be 00 00 01 */
+        if (e[i] == 0 && e[i + 1] == 0 && e[i + 2] == 1 && (e[i + 3] & 0x1F) == 9)
+            return (i > from && e[i - 1] == 0) ? i - 1 : i;  /* keep a 4-byte start code whole */
+    }
+    return d->esLen;
 }
 static int s_feed_eos = 0;   /* set by sr_h264_frame for the current call */
 
 static int feed_one(Dec *d) {
-    uint32_t span = au_span(d, s_feed_eos);
-    if (!span) return 2;                         /* frame incomplete: wait for more feed */
-    EsChunk *c = &d->ck[d->curCk];
-    EsChunk *last = &d->ck[d->curCk + span - 1];
-    uint32_t len = last->off + last->len - c->off;
+    if (d->esCur >= d->esLen) return 2;
+    uint32_t end = next_aud(d, d->esCur + 4);
+    if (end >= d->esLen && !s_feed_eos) return 2;  /* picture incomplete: wait for more feed */
+    uint32_t len = end - d->esCur;
     IMFSample *smp = NULL; IMFMediaBuffer *mb = NULL;
     BYTE *base = NULL;
     int ret = -1;
     if (FAILED(MFCreateMemoryBuffer(len, &mb))) return -1;
     if (SUCCEEDED(IMFMediaBuffer_Lock(mb, &base, NULL, NULL))) {
-        memcpy(base, d->es + c->off, len);
+        memcpy(base, d->es + d->esCur, len);
         IMFMediaBuffer_Unlock(mb);
         IMFMediaBuffer_SetCurrentLength(mb, len);
         if (SUCCEEDED(MFCreateSample(&smp))) {
             IMFSample_AddBuffer(smp, mb);
-            /* 90 kHz -> 100 ns; synthesize a monotonic time when the PES had no PTS (the MFT
-             * wants timestamps but we never read them back -- frame pacing is the game's). */
-            LONGLONG t = c->pts >= 0 ? (LONGLONG)c->pts * 1000 / 9 : d->fakeTime;
-            d->fakeTime = t + 1;
-            IMFSample_SetSampleTime(smp, t);
+            /* The MFT wants increasing timestamps but we never read them back (frame pacing is
+             * the game's): one 29.97 Hz frame per sample, in 100 ns units. */
+            IMFSample_SetSampleTime(smp, d->nextTime);
+            IMFSample_SetSampleDuration(smp, 333667);
             HRESULT hr = IMFTransform_ProcessInput(d->xf, 0, smp, 0);
-            if (SUCCEEDED(hr)) { d->curCk += span; es_compact(d); ret = 1; }
+            if (SUCCEEDED(hr)) { d->esCur = end; d->nextTime += 333667; es_compact(d); ret = 1; }
             else ret = (hr == MF_E_NOTACCEPTING) ? 0 : -1;
             IMFSample_Release(smp);
         }
@@ -384,7 +366,7 @@ void sr_h264_destroy(int id) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return;
     Dec *d = &s_dec[id];
     if (d->xf) IMFTransform_Release(d->xf);
-    free(d->ps); free(d->es); free(d->ck);
+    free(d->ps); free(d->es);
     memset(d, 0, sizeof(*d));
 }
 
@@ -408,7 +390,7 @@ void sr_h264_feed(int id, const uint8_t *data, uint32_t len) {
 uint32_t sr_h264_pending_bytes(int id) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return 0;
     Dec *d = &s_dec[id];
-    uint32_t es = d->curCk < d->nCk ? d->esLen - d->ck[d->curCk].off : 0;
+    uint32_t es = d->esLen - d->esCur;
     /* An unparsed PS tail shorter than one packet can be trailing padding that never forms a
      * complete element; counting it kept packetsAvail at 1 forever at end of stream, so the
      * game never saw the movie end (it froze on the opening's last frame). */
@@ -428,7 +410,7 @@ int sr_h264_frame(int id, int eos, uint8_t *dst, int frameWidth, int pixelMode) 
         int r = pump_out(d, dst, frameWidth, pixelMode);
         if (r > 0) return 1;
         if (r < 0) { d->failed = 1; return -1; }
-        if (d->curCk < d->nCk) {
+        if (d->esCur < d->esLen) {
             int f = feed_one(d);
             if (f < 0) { d->failed = 1; return -1; }
             if (f == 0) return 0;           /* MFT full but no output: shouldn't happen */

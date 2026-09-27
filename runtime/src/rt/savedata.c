@@ -586,6 +586,15 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_MAKEDATA: case SD_MAKEDATASECURE:
         case SD_WRITEDATA: case SD_WRITEDATASECURE: {
             uint32_t r = do_save(param, game, save);
+            /* The PSP shows its own "saving / save complete" UI; ours writes instantly and
+             * silently, so tell the player. System data (settings) saves stay quiet. */
+            if (!strstr(save, "SYS")) {
+                char msg[64];
+                if (r) snprintf(msg, sizeof(msg), "Save failed");
+                else if (!strncmp(save, "DATA", 4) && save[4]) snprintf(msg, sizeof(msg), "Game saved  (slot %d)", atoi(save + 4) + 1);
+                else snprintf(msg, sizeof(msg), "Game saved");
+                gui_toast(msg);
+            }
             /* PPSSPP: MAKEDATA reports a full stick with the RW error code */
             if (r == 0x80110381u && (mode == SD_MAKEDATA || mode == SD_MAKEDATASECURE))
                 r = ERR_RW_MS_FULL;
