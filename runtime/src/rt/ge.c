@@ -102,6 +102,9 @@ GeState *ge_state_ptr(void) { return &ge; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
 }
+void sr_gpu_vram_read(uint32_t addr, uint32_t bytes) {
+    if (s_gpu && s_gpu->vram_read) s_gpu->vram_read(addr, bytes);
+}
 
 /* Decode a GE 24-bit float mantissa word to IEEE-754 float.
  * The GE stores floats as the upper 24 bits of a 32-bit float (mantissa only; exp+sign). */
@@ -1694,7 +1697,7 @@ static void draw_prim(uint32_t op) {
                     fprintf(stderr, "    sprite (%g,%g)-(%g,%g) uv (%g,%g)-(%g,%g)\n", x0, y0, x1, y1, u0, v0, u1, v1);
                 }
             }
-            if (type == 4 && vf.through && ((ge.vtype >> 11) & 3) == 0 && count <= 16) {   /* strip vertices */
+            if (type == 4 && ((ge.vtype >> 11) & 3) == 0 && count <= 16) {   /* strip vertices (raw) */
                 for (int k = 0; k < count; k++) {
                     float x, y, z, u = 0, v = 0;
                     const uint32_t a = ge.vaddr + (uint32_t)(k * vf.stride);

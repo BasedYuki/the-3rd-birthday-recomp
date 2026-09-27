@@ -280,6 +280,8 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
     if (getenv("SR_DMALOG")) fprintf(stderr, "DmacMemcpy dst=0x%08x src=0x%08x n=0x%x\n", dst, src, n);
+    extern void sr_gpu_vram_read(uint32_t addr, uint32_t bytes);
+    sr_gpu_vram_read(src, n);          /* a GPU-resident framebuffer source must be in VRAM */
     for (uint32_t i = 0; i < n; i++) MEM_W8(dst + i, MEM_R8(src + i));
     extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
     sr_gpu_vram_dirty(dst, n);   /* DMA into a GPU-cached framebuffer must invalidate it */

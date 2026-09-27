@@ -105,6 +105,9 @@ typedef struct GeGpuHooks {
      * this blit per frame (motion blur, pause capture); the CPU route costs a GPU drain +
      * PCIe readback + re-upload each time, which dwarfs the frame itself on discrete GPUs. */
     int  (*xfer)(uint32_t startdata);
+    /* The CPU is about to READ guest memory (DMA memcpy source): write back any GPU-resident
+     * framebuffer overlapping [addr, addr+bytes) into guest VRAM first. */
+    void (*vram_read)(uint32_t addr, uint32_t bytes);
 } GeGpuHooks;
 
 /* Implemented in ge.c. */
@@ -112,6 +115,9 @@ void      ge_set_gpu_hooks(const GeGpuHooks *h);
 /* CPU-side writes to guest memory that may alias GPU-cached framebuffers (movie decode,
  * DMA memcpy). No-op when no GPU backend is registered. */
 void      sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
+/* CPU-side reads of guest memory that may alias GPU-resident framebuffers (DMA memcpy
+ * source): materializes them in guest VRAM. No-op without a GPU backend. */
+void      sr_gpu_vram_read(uint32_t addr, uint32_t bytes);
 GeState  *ge_state_ptr(void);
 uint16_t *ge_zbuf_ptr(void);        /* 272*512 entries, row stride = ge_zbuf_stride() */
 uint32_t  ge_zbuf_stride(void);

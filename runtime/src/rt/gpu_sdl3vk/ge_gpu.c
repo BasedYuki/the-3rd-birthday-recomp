@@ -714,6 +714,14 @@ static uint64_t tex_hash(void) {
     const uint8_t *p = (const uint8_t *)SR_HOST(s_ge->tex_addr);
     uint64_t h = 1469598103934665603ull;
     h = fnv64(h, &bytes, sizeof(bytes));
+    /* VRAM textures are often drawn into by the CPU a little at a time (the boot "saves data
+     * automatically" notice is text written into a mostly black 512x512 image): sparse samples
+     * miss that and the stale first upload shows (black). Hash all of it, 8 bytes at a time. */
+    if ((s_ge->tex_addr & 0x0F000000u) == 0x04000000u) {
+        const uint64_t *w = (const uint64_t *)p;
+        for (uint64_t i = 0; i < bytes / 8; i++) h = (h ^ w[i]) * 0x100000001b3ull + (h >> 29);
+        return h;
+    }
     uint64_t step = bytes / 64; if (step < 16) step = 16;
     for (uint64_t off = 0; off + 16 <= bytes; off += step) h = fnv64(h, p + off, 16);
     if (bytes >= 16) h = fnv64(h, p + bytes - 16, 16);
@@ -1279,6 +1287,24 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     }
 }
 
+/* CPU reads of VRAM (DMA memcpy source): materialize overlapping GPU-resident targets first. */
+static void hook_vram_read(uint32_t addr, uint32_t bytes) {
+    if (!s_ready) return;
+    if ((addr & 0x0F000000u) != 0x04000000u) return;
+    uint32_t a0 = addr & 0x001FFFFFu;
+    int pending = 1;
+    for (int i = 0; i < MAX_TGT; i++) {
+        Target *t = &s_tgts[i];
+        if (!t->used || !t->gpu_valid) continue;
+        uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
+        uint32_t flen = t->stride * FB_H * bpp_t;
+        if (a0 < t->fba + flen && t->fba < a0 + bytes) {
+            if (pending) { submit_pending(); pending = 0; }
+            target_readback(t);
+        }
+    }
+}
+
 /* ---- GE block transfer: GPU-side image blit ------------------------------------------------ */
 
 /* Find the target whose address range contains VRAM offset `a` (gpu_valid not required). */
@@ -1425,7 +1451,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 /* ---- init ----------------------------------------------------------------------------------- */
 
 static const GeGpuHooks k_hooks = {
-    hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer,
+    hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer, hook_vram_read,
 };
 
 int gegpu_init(void) {
