@@ -40,6 +40,7 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
 static int s_on = -1;
 static float s_speed = 1.0f;
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
+static unsigned s_ticks = 0, s_hook_tick = 0;        /* pad reads, and the last one with a camera hook */
 
 /* The eye we last wrote into each camera object, so a second pass in the same frame (the
  * game calls these routines more than once) doesn't rotate it again. */
@@ -58,6 +59,9 @@ static void init_once(void) {
 void sr_twinstick_tick(void) {
     init_once();
     if (!s_on) return;
+    /* Only while the gameplay camera is live (its hooks ran within the last few frames):
+     * a stick push during a movie or menu must not bank an offset for later. */
+    if (++s_ticks - s_hook_tick > 4) return;
     float rx = 0.0f, ry = 0.0f;
     if (gui_on()) gui_rstick(&rx, &ry);
     if (g_script_rx != 0.0f || g_script_ry != 0.0f) { rx = g_script_rx; ry = g_script_ry; }
@@ -109,17 +113,62 @@ static void rotate_camera(uint32_t base, const char *why) {
     memcpy(s_last[slot].eye, e, sizeof(e));
 }
 
+/* Camera-cut detection, run on the view camera's source before it is rotated. A cut (new shot,
+ * cutscene camera, respawn) shows up as a different source object or as a jump of the game's
+ * own (unrotated) target or eye that no follow motion produces in one frame; the offset is
+ * then dropped so the new shot starts exactly as the game frames it. */
+static uint32_t s_cut_src = 0;
+static float s_cut_tgt[3], s_cut_eye[3];
+
+static void reset_offset(const char *why) {
+    if (s_yaw_off != 0.0f || s_pitch_off != 0.0f)
+        fprintf(stderr, "twinstick: camera cut (%s), offset reset\n", why);
+    s_yaw_off = s_pitch_off = 0.0f;
+    memset(s_last, 0, sizeof(s_last));
+}
+
+static void check_cut(uint32_t src) {
+    if (src < 0x08800000u || src >= 0x0A000000u - 0x40u) return;
+    float e[3] = { rdf(src + 0x10), rdf(src + 0x14), rdf(src + 0x18) };
+    const float t[3] = { rdf(src + 0x20), rdf(src + 0x24), rdf(src + 0x28) };
+    /* Our own rotated eye from earlier this frame is not the game's: compare against the
+     * last fresh one instead, which is what the game would have left there. */
+    for (int i = 0; i < MAX_CAMS; i++)
+        if (s_last[i].base == src && memcmp(e, s_last[i].eye, sizeof(e)) == 0) { memcpy(e, s_cut_eye, sizeof(e)); break; }
+    if (!s_cut_src) reset_offset("first camera");
+    else {
+        const float dt = sqrtf((t[0] - s_cut_tgt[0]) * (t[0] - s_cut_tgt[0]) + (t[1] - s_cut_tgt[1]) * (t[1] - s_cut_tgt[1]) +
+                               (t[2] - s_cut_tgt[2]) * (t[2] - s_cut_tgt[2]));
+        const float de = sqrtf((e[0] - s_cut_eye[0]) * (e[0] - s_cut_eye[0]) + (e[1] - s_cut_eye[1]) * (e[1] - s_cut_eye[1]) +
+                               (e[2] - s_cut_eye[2]) * (e[2] - s_cut_eye[2]));
+        const float dist = sqrtf((e[0] - t[0]) * (e[0] - t[0]) + (e[1] - t[1]) * (e[1] - t[1]) + (e[2] - t[2]) * (e[2] - t[2]));
+        if (src != s_cut_src) {
+            static int n = 0;
+            if (n++ < 30) fprintf(stderr, "twinstick: view camera source 0x%08x -> 0x%08x\n", s_cut_src, src);
+            reset_offset("new camera source");
+        }
+        else if (dt > fmaxf(0.3f * dist, 60.0f)) reset_offset("target jump");
+        else if (de > fmaxf(0.5f * dist, 100.0f)) reset_offset("eye jump");
+    }
+    s_cut_src = src;
+    memcpy(s_cut_tgt, t, sizeof(t));
+    memcpy(s_cut_eye, e, sizeof(e));
+}
+
 void sr_func_hook(CpuState *s, uint32_t addr) {
     init_once();
     if (!s_on) return;
+    s_hook_tick = s_ticks;
     switch (addr) {
     case HOOK_CAMERA_DERIVE:   /* a0 = camera object base (logic camera) */
         if (s->r[4] == MEM_R32(ADDR_CAMERA_PTR) + ADDR_CAMERA_EYE_OFF - 0x10u)
             rotate_camera(s->r[4], "logic camera");
         break;
     case HOOK_CAMERA_COPY:     /* copy(dst = a0, src = a1): the view camera's source */
-        if (s->r[4] == MEM_R32(ADDR_VIEWCAM_PTR) && s->r[5] != s->r[4])
+        if (s->r[4] == MEM_R32(ADDR_VIEWCAM_PTR) && s->r[5] != s->r[4]) {
+            check_cut(s->r[5]);
             rotate_camera(s->r[5], "view camera source");
+        }
         break;
     default: break;
     }
