@@ -56,6 +56,7 @@ static uint32_t read_keys(void) {
  * Input or DS4Windows). DirectInput covers a DualShock 4 / generic HID gamepad connected directly.
  * Both feed the same PSP pad mask plus the analog left stick (Lx/Ly, 0..255, 128=centre). */
 static uint8_t s_lx = 128, s_ly = 128;     /* live left-stick, latched each present */
+static float s_rx = 0.0f, s_ry = 0.0f;     /* live right stick (-1..1), latched each present */
 static int s_pad_present = 0;               /* a controller is currently connected */
 
 /* XInput (dynamically loaded so we don't hard-depend on a specific xinput*.dll at link time). */
@@ -229,6 +230,7 @@ void gui_init(const char *title) {
 int gui_on(void) { return s_on; }
 uint32_t gui_buttons(void) { return s_buttons; }
 void gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
+void gui_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
 int gui_pad_present(void) { return s_pad_present; }
 
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.
@@ -273,6 +275,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
         s_buttons = sdl3vk_buttons();
         sdl3vk_analog(&s_lx, &s_ly);
+        sdl3vk_rstick(&s_rx, &s_ry);
         s_pad_present = sdl3vk_pad_present();
         goto pace;
     }

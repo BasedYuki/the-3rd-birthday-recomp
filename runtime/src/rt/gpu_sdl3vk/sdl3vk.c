@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define PSP_W 480
 #define PSP_H 272
@@ -54,6 +55,7 @@ static VkDeviceMemory  s_fbimg_mem;
 
 static uint32_t s_buttons;
 static uint8_t  s_lx = 128, s_ly = 128;
+static float    s_rx = 0.0f, s_ry = 0.0f;   /* right stick, -1..1 (twin-stick camera) */
 static int      s_pad_present;
 
 #define VK_TRY(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
@@ -301,6 +303,12 @@ static void poll_input(int *quit) {
     if (k[SDL_SCANCODE_RIGHT]) b |= 0x0020;
 
     uint8_t lx = 128, ly = 128;
+    /* Right stick for the camera: I/J/K/L on the keyboard, the gamepad's right stick below. */
+    float rx = 0.0f, ry = 0.0f;
+    if (k[SDL_SCANCODE_J]) rx -= 1.0f;
+    if (k[SDL_SCANCODE_L]) rx += 1.0f;
+    if (k[SDL_SCANCODE_I]) ry -= 1.0f;
+    if (k[SDL_SCANCODE_K]) ry += 1.0f;
     s_pad_present = s_pad != NULL;
     if (s_pad) {
         #define PB(sdlb, bit) do { if (SDL_GetGamepadButton(s_pad, sdlb)) b |= (bit); } while (0)
@@ -323,7 +331,18 @@ static void poll_input(int *quit) {
         int ay = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTY);
         if (ax < -7849 || ax > 7849) lx = (uint8_t)((ax + 32768) * 255 / 65535);
         if (ay < -7849 || ay > 7849) ly = (uint8_t)((ay + 32768) * 255 / 65535);
+        /* Right stick with a radial deadzone, rescaled so movement starts at 0 past it. */
+        float gx = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f;
+        float gy = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f;
+        float mag = sqrtf(gx * gx + gy * gy);
+        const float dz = 0.2f;
+        if (mag > dz) {
+            float sc = (mag > 1.0f ? 1.0f : (mag - dz) / (1.0f - dz)) / mag;
+            rx += gx * sc; ry += gy * sc;
+        }
     }
+    s_rx = rx < -1.0f ? -1.0f : rx > 1.0f ? 1.0f : rx;
+    s_ry = ry < -1.0f ? -1.0f : ry > 1.0f ? 1.0f : ry;
     s_buttons = b;
     s_lx = lx; s_ly = ly;
 }
@@ -341,6 +360,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
 uint32_t sdl3vk_buttons(void) { return s_buttons; }
 void sdl3vk_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 int  sdl3vk_pad_present(void) { return s_pad_present; }
+void sdl3vk_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
 
 /* ---- present ------------------------------------------------------------------------ */
 

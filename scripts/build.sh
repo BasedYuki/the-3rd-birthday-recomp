@@ -24,11 +24,12 @@ mkdir -p "$OUT" "$GEN"
 
 # 1. Relocate, map imports, discover functions, generate C.
 if [ $REGEN = 1 ] || [ ! -f "$OUT/recomp.c" ] || [ "$ELF" -nt "$OUT/recomp.c" ] \
-   || [ "$RT/tools/codegen.py" -nt "$OUT/recomp.c" ]; then
+   || [ "$RT/tools/codegen.py" -nt "$OUT/recomp.c" ] || [ "$ROOT/versions/$GAME.toml" -nt "$OUT/recomp.c" ]; then
   python "$RT/tools/prxload.py"  "$ELF" $BASE --out="$OUT/image.bin"
   python "$RT/tools/imports.py"  "$ELF" $BASE --toml="$OUT/imports.toml" > /dev/null
   python "$RT/tools/analyze.py"  "$ELF" --base=$BASE --toml="$OUT/functions.toml" --quiet
   python "$RT/tools/codegen.py"  "$ELF" "$OUT/recomp.c" --base=$BASE --toml="$OUT/functions.toml" \
+    --hooks="$(python "$ROOT/tools/toml_addrs.py" --hooks "$ROOT/versions/$GAME.toml")" \
     | grep -v '^DEBUG'
   rm -rf "$GEN"
   python "$ROOT/tools/split_recomp.py" "$OUT/recomp.c" "$GEN"
@@ -66,9 +67,12 @@ for st in vert frag; do
   fi
 done
 
+# Game addresses: versions/<game>.toml [addresses] -> ADDR_* defines (nothing hardcoded in C).
+python "$ROOT/tools/toml_addrs.py" "$ROOT/versions/$GAME.toml" "$OUT/game_addrs.h"
+
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
-         savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
-gcc "${CFLAGS[@]}" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
+         savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c twinstick.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
+gcc "${CFLAGS[@]}" -I"$OUT" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \
   -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic

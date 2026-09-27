@@ -1183,6 +1183,7 @@ static uint32_t h_CtrlButtons(void) {
                     }
                     fclose(fp);
                 }
+                fprintf(stderr, "PADSCRIPT_AFTER starts at frame %u\n", (unsigned)s_vcount_fwd);
                 stop_at = -1;
             }
         }
@@ -1190,13 +1191,33 @@ static uint32_t h_CtrlButtons(void) {
             /* A mask with bit 31 set is an analog-stick line: bits 8-15 = X, bits 0-7 = Y. */
             extern int g_script_lx, g_script_ly;
             g_script_lx = g_script_ly = -1;
+            int rs_set = 0;
             for (int i = 0; i < scr_n; i++)
                 if (s_vcount_fwd >= scr[i].f && s_vcount_fwd < scr[i].f + scr[i].w) {
-                    if (scr[i].mask & 0x80000000u) {
+                    if (scr[i].mask & 0x40000000u) {
+                        /* bit 30: dump user RAM to ram_<frame>.bin (for diffing game state
+                         * across scripted input), once per line */
+                        static uint32_t dumped[256];
+                        if (dumped[i] != scr[i].f + 1) {
+                            dumped[i] = scr[i].f + 1;
+                            char fn[48]; snprintf(fn, sizeof fn, "ram_%u.bin", (unsigned)s_vcount_fwd);
+                            FILE *rf = fopen(fn, "wb");
+                            if (rf) { fwrite(SR_HOST(0x08800000u), 1, 0x01800000u, rf); fclose(rf); }
+                            fprintf(stderr, "PADSCRIPT ramdump f=%u -> %s\n", (unsigned)s_vcount_fwd, fn);
+                        }
+                    } else if (scr[i].mask & 0x20000000u) {
+                        /* bit 29: right stick for the twin-stick camera, X in bits 8-15 and
+                         * Y in bits 0-7 (128 = centre) */
+                        extern float g_script_rx, g_script_ry;
+                        g_script_rx = ((int)((scr[i].mask >> 8) & 0xFF) - 128) / 127.0f;
+                        g_script_ry = ((int)(scr[i].mask & 0xFF) - 128) / 127.0f;
+                        rs_set = 1;
+                    } else if (scr[i].mask & 0x80000000u) {
                         g_script_lx = (int)((scr[i].mask >> 8) & 0xFF);
                         g_script_ly = (int)(scr[i].mask & 0xFF);
                     } else keys |= scr[i].mask;
                 }
+            if (!rs_set) { extern float g_script_rx, g_script_ry; g_script_rx = g_script_ry = 0.0f; }
             return keys;
         }
     }
@@ -1277,7 +1298,13 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
 static uint32_t ctrl_fill(uint32_t buf, uint32_t count, int negate) {
     return ctrl_fill_n(buf, count, negate, 0);
 }
-static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
+/* The game polls the pad once per frame, before its camera update: apply the PC right stick
+ * to the camera here (twinstick.c). */
+static uint32_t h_CtrlReadBuffer(CpuState *s) {
+    extern void sr_twinstick_tick(void);
+    sr_twinstick_tick();
+    return ctrl_fill(A0, A1, 0);
+}
 
 /* sceDisplay: remember the framebuffer; vblank waits block until the next delivered vblank. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);

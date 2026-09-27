@@ -695,11 +695,18 @@ def normal_line(addr, w):
     return f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 
 
+# Function entries that call the runtime's sr_func_hook(s, addr) first (--hooks=0x..,0x..):
+# lets the runtime adjust game state at a precise point in the game's own code.
+HOOKS = set()
+
+
 def emit_function(elf, start, ranges, known):
     insns, labels = function_flow(elf, start, ranges, known)
     out = []
     out.append(f"void f_{start:08x}(CpuState *s) {{")
     out.append("    SR_YIELD(s);")   # preemption point (no-op unless the scheduler is active)
+    if start in HOOKS:
+        out.append(f"    sr_func_hook(s, 0x{start:08x}u);")
     # Instructions are emitted in address order, but execution must begin at the entry. When the
     # entry is not the lowest address (the function contains code reached via a back-edge to a
     # lower address), jump to the entry's label first; otherwise control would start mid-body.
@@ -821,6 +828,8 @@ def main(argv):
             base = int(o.split("=", 1)[1], 16)
         elif o.startswith("--toml="):
             toml_path = o.split("=", 1)[1]
+        elif o.startswith("--hooks="):
+            HOOKS.update(int(h, 16) for h in o.split("=", 1)[1].split(",") if h)
 
     elf = Elf(args[0], base=base)
 

@@ -32,3 +32,28 @@ index   = "/PSP_GAME/USRDIR/3rd.fsd"   # 7932 bytes, presumably the pkg index
 # name = 0x08xxxxxx   (filled in from Ghidra as they are identified)
 # camera_update =
 # projection_setup =
+
+[addresses]
+# Emitted as ADDR_<NAME> into build/<game>/game_addrs.h by tools/toml_addrs.py.
+# Global pointer to the gameplay camera (an orbit camera). Found 2026-09-27 by diffing RAM
+# around scripted input (tools/ram_camdiff.py); stable across runs, the struct is on the heap.
+camera_ptr        = 0x08C3C664
+camera_eye_off    = 0x20   # vec3 eye position (derived)
+camera_target_off = 0x30   # vec3 look-at target
+camera_up_off     = 0x40   # vec3 up, (0,1,0) in gameplay
+camera_pitch_off  = 0x50   # float radians (negative = looking down)
+camera_yaw_off    = 0x54   # float radians
+camera_dist_off   = 0x58   # float orbit distance
+camera_fov_off    = 0x60   # float radians (0.6981 = 40 deg)
+# A second camera object with the same layout starting 0x10 earlier (eye at +0x10): the one
+# the rendered view follows (changing only the camera above moves the logic, not the picture).
+viewcam_ptr       = 0x08C3C58C
+
+[hooks]
+# Functions whose entry calls sr_func_hook(s, addr) (codegen --hooks); emitted as HOOK_<NAME>.
+# Camera: derives pitch/yaw/distance from eye (a0+0x10) and target (a0+0x20) of the render
+# camera (a0 = *camera_ptr + 0x10); called from the camera setters at 0x08B20A44..0x08B20BF0.
+camera_derive = 0x08B219DC
+# Camera copy: copy(dst=a0, src=a1) of the camera fields from +0x10. The rendered view camera
+# (viewcam_ptr) is filled this way from another camera object every frame.
+camera_copy   = 0x08B20774

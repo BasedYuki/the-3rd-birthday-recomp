@@ -170,6 +170,9 @@ void     gui_init(const char *title);
 int      gui_on(void);
 uint32_t gui_buttons(void);
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
+void     gui_rstick(float *rx, float *ry);        /* live right stick (-1..1; PC-only input) */
+/* Called at the entry of game functions listed in versions/<game>.toml [hooks] (codegen --hooks). */
+void     sr_func_hook(CpuState *s, uint32_t addr);
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 void     gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
 
