@@ -56,6 +56,16 @@ for c in atrac atrac3 atrac3plus atrac3plusdec atrac3plusdsp get_bits compat fft
 done
 g++ -O2 -Wall -I"$AT3" -I"$RT/src/rt" -c "$RT/src/rt/at3_bridge.cpp" -o "$OUT/at3/at3_bridge.o"
 
+# Vulkan shaders: GLSL -> embedded SPIR-V (psp_*.inc) when the source is newer. Needs glslc
+# (pacman -S mingw-w64-ucrt-x86_64-shaderc); without it the committed .inc files are used.
+SH="$RT/src/rt/gpu_sdl3vk"
+for st in vert frag; do
+  if [ "$SH/shaders/psp.$st" -nt "$SH/psp_$st.inc" ]; then
+    if command -v glslc >/dev/null; then glslc -O -mfmt=c -o "$SH/psp_$st.inc" "$SH/shaders/psp.$st"
+    else echo "warning: shaders/psp.$st changed but glslc is missing; using the old psp_$st.inc"; fi
+  fi
+done
+
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
          savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
 gcc "${CFLAGS[@]}" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \

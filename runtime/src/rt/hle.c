@@ -1330,10 +1330,11 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
     const char *fd = getenv("SR_FBDUMP");
     if (fd && s_framebuf && s_vcount >= (uint32_t)atoi(fd)) {
         extern unsigned long g_ge_pixels;
+        /* Materialize GPU-rendered targets first so the dumps show what was displayed. */
+        { extern void gegpu_flush(const char *); gegpu_flush("syncall"); }
         dump_fb_fmt("fb_present.ppm", s_framebuf, (int)A2, A1 ? A1 : 512);
         /* Also snapshot the whole 2MB eDRAM so any rendered region can be found regardless of which
          * buffer/stride/format the game settled on. */
-        { extern void gegpu_flush(const char *); gegpu_flush("syncall"); }
         FILE *raw = fopen("edram.bin", "wb");
         if (raw) { for (uint32_t a = 0x04000000; a < 0x04200000; a += 4) { uint32_t w = MEM_R32(a); fwrite(&w, 4, 1, raw); } fclose(raw); }
         sr_trace_close();

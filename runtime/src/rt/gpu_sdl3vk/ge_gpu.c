@@ -1188,9 +1188,10 @@ static int hook_sprite(const GeVtx *p0, const GeVtx *p1, int persp) {
         u1 = p1->u / (p1->rw != 0.0f ? p1->rw : 1.0f);
         v1 = p1->v / (p1->rw != 0.0f ? p1->rw : 1.0f);
     }
-    float uw = (u1 - u0) / (xb - xa), vw = (v1 - v0) / (yb - ya);
-    float ua = u0 - 0.5f * uw, ub = u1 - 0.5f * uw;
-    float va = v0 - 0.5f * vw, vb = v1 - 0.5f * vw;
+    /* The quad's corners carry the vertex UVs, so each pixel centre interpolates to
+     * u0 + (x - xa + 0.5) * du: the same pixel-centre convention as triangles. */
+    float ua = u0, ub = u1;
+    float va = v0, vb = v1;
 
     float z = p1->z, fog = p1->fog;
     int r = p1->r, g = p1->g, bb_ = p1->b, a = p1->a;

@@ -400,6 +400,26 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
             barrier(s_cmd, s_fbimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        } else if (src != s_fbimg) {
+            /* A GE target is 512 wide. Scaling its 480x272 sub-rect with a linear blit makes
+             * the last screen column blend in the off-screen texels at x=480 (blit filtering
+             * clamps at the image edge, not the region's), so copy the visible part 1:1 into
+             * the 480x272 fb image first and scale from that. */
+            barrier(s_cmd, s_fbimg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            VkImageBlit cp = {0};
+            cp.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            cp.srcSubresource.layerCount = 1;
+            cp.srcOffsets[1].x = srcw; cp.srcOffsets[1].y = srch; cp.srcOffsets[1].z = 1;
+            cp.dstSubresource = cp.srcSubresource;
+            cp.dstOffsets[1].x = PSP_W; cp.dstOffsets[1].y = PSP_H; cp.dstOffsets[1].z = 1;
+            vkCmdBlitImage(s_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           s_fbimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp, VK_FILTER_NEAREST);
+            barrier(s_cmd, s_fbimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            src = s_fbimg; srcw = PSP_W; srch = PSP_H;
         }
 
         /* fb image -> swapchain, aspect-correct letterbox blit */

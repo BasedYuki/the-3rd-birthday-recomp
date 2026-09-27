@@ -561,7 +561,8 @@ static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
 static void sample_tex_f(float fu, float fv_coord, int *r, int *g, int *b, int *a) {
     static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
     int use_linear = !nobil && ((ge.tex_filter & 1) || ((ge.tex_filter >> 8) & 1));
-    if (!use_linear) { sample_tex((int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a); return; }
+    /* UVs arrive evaluated at pixel centres: nearest is floor(u), linear blends around u - 0.5. */
+    if (!use_linear) { sample_tex((int)floorf(fu), (int)floorf(fv_coord), r, g, b, a); return; }
     fu -= 0.5f; fv_coord -= 0.5f;
     int u0 = (int)floorf(fu), v0 = (int)floorf(fv_coord);
     int fx = (int)((fu - u0) * 256.0f), fy = (int)((fv_coord - v0) * 256.0f);
@@ -1633,9 +1634,9 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float uw =(xb>xa)?(u1-u0)/(float)(xb-xa):0;
     float uvv=(yb>ya)?(v1-v0)/(float)(yb-ya):0;
     for (int y=ya; y<yb; y++) {
-        float fv = v0 + (y-ya)*uvv;
+        float fv = v0 + ((float)(y-ya) + 0.5f)*uvv;     /* pixel centres, as for triangles */
         for (int x=xa; x<xb; x++) {
-            float u = u0 + (x-xa)*uw;
+            float u = u0 + ((float)(x-xa) + 0.5f)*uw;
             int r,g,b,a;
             if (!shade(u,fv,fog,p1->r,p1->g,p1->b,p1->a,&r,&g,&b,&a)) continue;
             if (use_z) put_px_rgba_z(x,y,pz,r,g,b,a);
@@ -1684,6 +1685,24 @@ static void draw_prim(uint32_t op) {
                     ge.fbp, ge.fbw, ge.fbfmt, ge.tex_enable, ge.tex_addr, ge.tex_fmt, ge.tex_bufw, ge.tex_w,
                     ge.tex_h, ge.tex_func, ge.clut_addr, ge.clut_fmt, ge.blend_enable, ge.blend_mode,
                     ge.material, ge.material_alpha);
+            if (type == 6 && vf.through && ((ge.vtype >> 11) & 3) == 0) {   /* non-indexed sprite rects */
+                for (int k = 0; k + 1 < count && k < 8; k += 2) {
+                    float x0, y0, z0, x1, y1, z1, u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+                    const uint32_t a0 = ge.vaddr + (uint32_t)(k * vf.stride), a1 = a0 + (uint32_t)vf.stride;
+                    read_pos(a0, &vf, &x0, &y0, &z0); read_pos(a1, &vf, &x1, &y1, &z1);
+                    if (vf.tc_fmt) { read_tc(a0, &vf, &u0, &v0); read_tc(a1, &vf, &u1, &v1); }
+                    fprintf(stderr, "    sprite (%g,%g)-(%g,%g) uv (%g,%g)-(%g,%g)\n", x0, y0, x1, y1, u0, v0, u1, v1);
+                }
+            }
+            if (type == 4 && vf.through && ((ge.vtype >> 11) & 3) == 0 && count <= 16) {   /* strip vertices */
+                for (int k = 0; k < count; k++) {
+                    float x, y, z, u = 0, v = 0;
+                    const uint32_t a = ge.vaddr + (uint32_t)(k * vf.stride);
+                    read_pos(a, &vf, &x, &y, &z);
+                    if (vf.tc_fmt) read_tc(a, &vf, &u, &v);
+                    fprintf(stderr, "    v%d (%g,%g) uv (%g,%g)\n", k, x, y, u, v);
+                }
+            }
             break;
         }
     }

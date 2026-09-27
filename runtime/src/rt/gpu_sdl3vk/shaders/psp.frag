@@ -42,10 +42,12 @@ void main() {
     if ((flags & 32) == 0) {
         if ((flags & 1) != 0) {
             /* Recover texel coords (u*rw interpolated affinely, divided per pixel; in
-             * through mode rw==1). Nearest filtering matches (int)(u+0.5) via the shift. */
+             * through mode rw==1). UVs are evaluated at pixel centres like the PSP, so the
+             * sampler's own rules match it: nearest takes floor(u), linear blends around
+             * u - 0.5. (A +0.5 shift here used to push every nearest-filtered triangle one
+             * texel right and down: a garbage column at x=479 and a black row at y=271.) */
             float rw = max(abs(v_rw), 1e-20);
             vec2 uv = v_uv / rw;
-            if ((flags & 64) != 0) uv += vec2(0.5);
             uv += pc.texsize.zw;
             vec4 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
             int  tf    = pc.cfg.x & 7;
