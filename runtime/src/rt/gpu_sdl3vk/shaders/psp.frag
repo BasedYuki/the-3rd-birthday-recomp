@@ -25,7 +25,43 @@ layout(push_constant) uniform PC {
     vec4  texenv;   /* rgb = GE_TEXENVCOLOR / 255 */
     vec4  fogcol;   /* rgb = GE_FOGCOLOR / 255 */
     vec4  texsize;  /* xy = tex dimensions, zw = texel offset (render-target sub-rect) */
+    ivec4 depal;    /* flag 512: x = target fmt | clut fmt<<4 | linear<<8,
+                       y = clut shift | mask<<8 | start<<16, z = palette row */
 } pc;
+
+/* Palettes for depal draws, one decoded palette per row (entry i at x = i). */
+layout(set = 1, binding = 0) uniform sampler2D u_clut;
+
+/* One texel of a render target read through the palette: rebuild the raw 16/32-bit value
+ * the PSP would hold in VRAM (8-bit channels truncated to the target format, like the
+ * PSP's own framebuffer writes), then index the palette exactly like ge.c clut_lookup. */
+vec4 depal_texel(ivec2 p) {
+    p = clamp(p, ivec2(0), textureSize(u_tex, 0) - 1);
+    uvec4 c = uvec4(texelFetch(u_tex, p, 0) * 255.0 + 0.5);
+    int sf = pc.depal.x & 3;
+    uint raw;
+    if (sf == 3)      raw = c.r | (c.g << 8) | (c.b << 16) | (c.a << 24);
+    else if (sf == 2) raw = (c.r >> 4) | ((c.g >> 4) << 4) | ((c.b >> 4) << 8) | ((c.a >> 4) << 12);
+    else if (sf == 1) raw = (c.r >> 3) | ((c.g >> 3) << 5) | ((c.b >> 3) << 10) | ((c.a >> 7) << 15);
+    else              raw = (c.r >> 3) | ((c.g >> 2) << 5) | ((c.b >> 3) << 11);
+    uint shift = uint(pc.depal.y) & 31u, mask = (uint(pc.depal.y) >> 8) & 255u;
+    uint start = (uint(pc.depal.y) >> 16) & 0x1FFu;
+    bool c32 = ((pc.depal.x >> 4) & 3) == 3;
+    uint idx = ((raw >> shift) & mask) | (start & (c32 ? 0xFFu : 0x1FFu));
+    idx &= c32 ? 511u : 1023u;
+    return texelFetch(u_clut, ivec2(int(idx), pc.depal.z), 0);
+}
+
+/* uv in texel units. Linear filtering happens after the palette lookup, as on the PSP. */
+vec4 depal_sample(vec2 uv) {
+    if (((pc.depal.x >> 8) & 1) == 0) return depal_texel(ivec2(floor(uv)));
+    vec2 q = uv - 0.5;
+    ivec2 i = ivec2(floor(q));
+    vec2 f = q - floor(q);
+    vec4 a = mix(depal_texel(i), depal_texel(i + ivec2(1, 0)), f.x);
+    vec4 b = mix(depal_texel(i + ivec2(0, 1)), depal_texel(i + ivec2(1, 1)), f.x);
+    return mix(a, b, f.y);
+}
 
 void main() {
     int flags = pc.cfg.x >> 8;
@@ -49,7 +85,7 @@ void main() {
             float rw = max(abs(v_rw), 1e-20);
             vec2 uv = v_uv / rw;
             uv += pc.texsize.zw;
-            vec4 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
+            vec4 t = ((flags & 512) != 0 ? depal_sample(uv) : texture(u_tex, uv / pc.texsize.xy)) * 255.0;
             int  tf    = pc.cfg.x & 7;
             bool rgba  = (flags & 2) != 0;
             float dscl = ((flags & 4) != 0) ? 2.0 : 1.0;

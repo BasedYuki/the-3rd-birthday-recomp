@@ -231,6 +231,12 @@ int gui_on(void) { return s_on; }
 uint32_t gui_buttons(void) { return s_buttons; }
 void gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 void gui_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
+int gui_sens_steps(void) {
+#ifdef SR_SDL3VK
+    if (s_sdl3) return sdl3vk_sens_steps();
+#endif
+    return 0;
+}
 int gui_pad_present(void) { return s_pad_present; }
 
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.

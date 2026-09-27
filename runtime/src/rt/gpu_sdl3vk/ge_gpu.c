@@ -71,9 +71,9 @@ static const uint32_t k_frag_spv[] =
 typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; } GpuVert;
 
 /* fragment push constants (must match psp.frag PC block) */
-typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize[4]; } PushPC;
+typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize[4]; int32_t depal[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
-       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256 };
+       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DEPAL = 512 };
 
 typedef struct {
     uint8_t blend_on, srcf, dstf, eq;      /* VkBlendFactor / VkBlendOp values */
@@ -161,6 +161,18 @@ static VkImageView s_snap_view; static VkImageLayout s_snap_layout;
 static VkSampler s_smp_n, s_smp_l;         /* shared nearest/linear samplers (clamp) */
 static VkDescriptorSet s_snap_n, s_snap_l;
 static Target *s_snap_src = NULL;          /* what the snapshot currently holds */
+
+/* Palettes for "depal" draws (a render target sampled as a CLUT16/CLUT32 texture): each
+ * row of this image holds one decoded palette (entry i at x = i), bound as set 1. Rows are
+ * handed out in a ring so pending batches keep the palette they were built with. */
+#define CLUT_W    1024
+#define CLUT_ROWS 64
+static VkImage s_clutimg; static VkDeviceMemory s_clutimg_mem;
+static VkImageView s_clut_view; static VkImageLayout s_clut_layout;
+static VkDescriptorSet s_clut_set;
+static int s_clut_row = -1;                /* row holding the palette below */
+static uint64_t s_clut_row_hash = 0;
+static unsigned long s_cnt_depal = 0;
 static uint64_t s_snap_srcgen = 0;
 
 static PipeEnt s_pipes[MAX_PIPES];
@@ -442,6 +454,7 @@ static int submit_pending(void) {
     VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_vbuf, &zero);
 
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 1, 1, &s_clut_set, 0, NULL);
     VkPipeline cur = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < s_nbatch; i++) {
         Batch *b = &s_batch[i];
@@ -476,10 +489,10 @@ static void stats_tick(void) {
     if (now - last_ms < 5000) return;
     last_ms = now;
     fprintf(stderr, "GEGPU stats: submits=%lu tris=%lu spr=%lu lines=%lu rtt=%lu snap=%lu "
-            "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu pipes=%d texs=%d\n",
+            "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu depal=%lu pipes=%d texs=%d\n",
             s_cnt_submit, s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_rtt, s_cnt_snap,
             s_cnt_present_gpu, s_cnt_present_cpu, s_cnt_upload, s_cnt_readback, s_cnt_texup,
-            s_cnt_dirty, s_cnt_xferblit, s_pipe_n, s_tex_n);
+            s_cnt_dirty, s_cnt_xferblit, s_cnt_depal, s_pipe_n, s_tex_n);
     fprintf(stderr, "GEGPU time (5 s): gpu waits %lu = %.0f ms, tex decode %.0f ms, readback %.0f ms, upload %.0f ms\n",
             s_n_wait, s_t_wait / 1000.0, s_t_texdec / 1000.0, s_t_readback / 1000.0, s_t_upload / 1000.0);
     s_n_wait = 0; s_t_wait = s_t_texdec = s_t_readback = s_t_upload = 0;
@@ -737,6 +750,37 @@ static uint64_t clut_hash(void) {
     h = fnv64(h, s_ge->clutram, sizeof(s_ge->clutram));
     h = fnv64(h, &s_ge->clut_fmt, sizeof(s_ge->clut_fmt));
     return h;
+}
+
+/* Decode the current CLUT into a palette row for a depal draw and return the row. The row
+ * is reused while the palette is unchanged; a wrap of the ring first renders the pending
+ * batches, which may still reference the rows being overwritten. */
+static int clut_row_get(void) {
+    uint64_t h = clut_hash();
+    if (s_clut_row >= 0 && h == s_clut_row_hash) return s_clut_row;
+    int row = s_clut_row + 1;
+    if (row >= CLUT_ROWS) { submit_pending(); row = 0; }
+    uint32_t *px = (uint32_t *)s_xfer_map;
+    const uint32_t epsm = s_ge->clut_fmt & 3;
+    for (uint32_t i = 0; i < CLUT_W; i++) {
+        uint32_t raw;
+        if (epsm == 3) memcpy(&raw, &s_ge->clutram[(i * 4) & 2047], 4);
+        else { uint16_t r16; memcpy(&r16, &s_ge->clutram[(i * 2) & 2047], 2); raw = r16; }
+        px[i] = fb_unpack(raw, epsm);
+    }
+    if (!cmd_begin()) return 0;
+    to_layout(s_cmd, s_clutimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_clut_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy bic = {0};
+    bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    bic.imageSubresource.layerCount = 1;
+    bic.imageOffset.y = row;
+    bic.imageExtent.width = CLUT_W; bic.imageExtent.height = 1; bic.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, s_xfer, s_clutimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+    to_layout(s_cmd, s_clutimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_clut_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    cmd_submit_wait();
+    s_clut_row = row;
+    s_clut_row_hash = h;
+    return row;
 }
 
 static uint64_t s_texlru = 1;
@@ -1012,9 +1056,21 @@ static void build_state(int persp, int sprite, Batch *b) {
              * tex_fmt must EQUAL the target's psm: reinterpreting one 16-bit format as
              * another scrambles channels/alpha and must go through VRAM pack/unpack.
              * SR_GPU_NORTT=1 forces the readback path for all draws (debug bisect). */
-            if (!nortt && g->tex_fmt == src->fmt && !g->tex_swizzle &&
+            /* A target read through a palette of the same texel width ("depal": CLUT32 over
+             * an 8888 buffer, CLUT16 over a 16-bit one) also stays on the GPU: the shader
+             * rebuilds the raw texel and looks it up in a palette row (clut_row_get). */
+            int depal = (g->tex_fmt == 7 && src->fmt == 3) || (g->tex_fmt == 6 && src->fmt != 3);
+            if (!nortt && (g->tex_fmt == src->fmt || depal) && !g->tex_swizzle &&
                 (g->tex_bufw == src->stride || g->tex_bufw == 0) && (toff % bpp_s) == 0) {
                 uint32_t pix = toff / bpp_s;
+                if (depal) {
+                    flags |= F_DEPAL;
+                    b->pc.depal[0] = (int32_t)(src->fmt | ((g->clut_fmt & 3) << 4) | (linear << 8));
+                    b->pc.depal[1] = (int32_t)(((g->clut_fmt >> 2) & 0x1F) | (((g->clut_fmt >> 8) & 0xFF) << 8)
+                                               | ((((g->clut_fmt >> 16) & 0x1F) << 4) << 16));
+                    b->pc.depal[2] = clut_row_get();
+                    s_cnt_depal++;
+                }
                 if (src == s_cur) {
                     /* feedback loop: sample a snapshot copy; reuse the previous snapshot
                      * while nothing new has rendered into the target */
@@ -1060,6 +1116,14 @@ static void build_state(int persp, int sprite, Batch *b) {
                 b->pc.texsize[3] = (float)(pix / src->stride);
             } else {
                 /* incompatible stride/format reinterpretation: VRAM + decoder (rare) */
+                static int nlog = 0;
+                if (nlog < 40 && getenv("SR_GPU_RTTLOG")) {
+                    nlog++;
+                    fprintf(stderr, "RTT slow: tex=%06x fmt=%u swz=%u bufw=%u %ux%u | tgt fba=%06x fmt=%u stride=%u cur=%d\n",
+                            (unsigned)(g->tex_addr & 0x1FFFFFu), (unsigned)g->tex_fmt, (unsigned)g->tex_swizzle,
+                            (unsigned)g->tex_bufw, (unsigned)g->tex_w, (unsigned)g->tex_h,
+                            (unsigned)src->fba, (unsigned)src->fmt, (unsigned)src->stride, src == s_cur);
+                }
                 target_readback(src);
                 b->dset = tex_get();
             }
@@ -1519,14 +1583,15 @@ int gegpu_init(void) {
     dpc.maxSets = MAX_TEX; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   /* LRU eviction */
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_tex));
-    VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * MAX_TGT + 3 };
-    dpc.maxSets = 2 * MAX_TGT + 3; dpc.pPoolSizes = &dpsf;
+    VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * MAX_TGT + 4 };
+    dpc.maxSets = 2 * MAX_TGT + 4; dpc.pPoolSizes = &dpsf;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_fix));
 
     VkPushConstantRange pcr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) };
     VkPipelineLayoutCreateInfo plc = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    plc.setLayoutCount = 1; plc.pSetLayouts = &s_dlayout;
+    VkDescriptorSetLayout sets[2] = { s_dlayout, s_dlayout };   /* texture, depal palettes */
+    plc.setLayoutCount = 2; plc.pSetLayouts = sets;
     plc.pushConstantRangeCount = 1; plc.pPushConstantRanges = &pcr;
     VKC(vkCreatePipelineLayout(s_dev, &plc, NULL, &s_playout));
 
@@ -1567,6 +1632,18 @@ int gegpu_init(void) {
     s_snap_n = make_descriptor(s_snap_view, s_smp_n, s_dpool_fix);
     s_snap_l = make_descriptor(s_snap_view, s_smp_l, s_dpool_fix);
     if (!s_snap_n || !s_snap_l) return 0;
+
+    /* palette rows for depal draws; row contents are defined before any draw reads them */
+    if (!make_image(CLUT_W, CLUT_ROWS, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    &s_clutimg, &s_clutimg_mem)) return 0;
+    if (!make_view(s_clutimg, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &s_clut_view)) return 0;
+    s_clut_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!cmd_begin()) return 0;
+    to_layout(s_cmd, s_clutimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_clut_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (!cmd_submit_wait()) return 0;
+    s_clut_set = make_descriptor(s_clut_view, s_smp_n, s_dpool_fix);
+    if (!s_clut_set) return 0;
 
     s_ready = 1;
     ge_set_gpu_hooks(&k_hooks);

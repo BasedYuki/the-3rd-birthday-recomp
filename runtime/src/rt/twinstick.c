@@ -15,7 +15,8 @@
  * aim camera is one of them. L aims along Aya's facing, so pressing it with the camera turned
  * first turns her to the camera's direction through the game's own movement input.
  *
- * SR_TWINSTICK=0 disables it; SR_TWINSTICK_SPEED scales the turn rate (default 1).
+ * SR_TWINSTICK=0 disables it. Sensitivity and inversion live in twinstick.cfg (see below);
+ * the - and = keys adjust sensitivity in game.
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -26,23 +27,38 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 float g_script_rx = 0.0f, g_script_ry = 0.0f;   /* SR_PADSCRIPT right-stick override */
 
 static float rdf(uint32_t a) { uint32_t w = MEM_R32(a); float f; memcpy(&f, &w, 4); return f; }
 static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a, w); }
 
-/* Radians per controller read at full deflection; the game reads the pad at 30 Hz in
- * gameplay, so 0.07 is ~2 rad/s (about 120 degrees a second). */
-#define YAW_RATE   0.07f
-#define PITCH_RATE 0.04f
+/* Turn rates at full deflection and sensitivity 1, in radians per second of real time (so
+ * the feel doesn't depend on how often the game reads the pad): about 120 and 70 degrees
+ * a second. Stick deflection goes through a squared response curve, so small pushes give
+ * fine control and only a full push turns at the full rate. */
+#define YAW_RATE   2.1f
+#define PITCH_RATE 1.2f
+#define SMOOTH_S   0.06f    /* time constant of the turn-speed smoothing (seconds) */
 /* Limits on the final elevation of the eye above the target (radians). */
 #define ELEV_MIN (-0.35f)   /* a little below the target */
 #define ELEV_MAX (1.2f)     /* high overhead */
 
+/* Settings, kept in twinstick.cfg next to the executable's working directory:
+ *   sensitivity=1.0   (the - and = keys change it in game, 0.2 to 4)
+ *   invert_x=0
+ *   invert_y=0
+ * SR_TWINSTICK_SPEED overrides the saved sensitivity for one run. */
+#define CFG_FILE "twinstick.cfg"
+#define SENS_MIN 0.2f
+#define SENS_MAX 4.0f
+
 static int s_on = -1;
 static float s_speed = 1.0f;
+static int s_inv_x = 0, s_inv_y = 0;
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
+static float s_yaw_vel = 0.0f, s_pitch_vel = 0.0f;   /* smoothed turn speed (rad/s) */
 static unsigned s_ticks = 0, s_hook_tick = 0;        /* pad reads, and the last one with a camera hook */
 
 /* The eye we last wrote into each camera object, so a second pass in the same frame (the
@@ -50,32 +66,89 @@ static unsigned s_ticks = 0, s_hook_tick = 0;        /* pad reads, and the last 
 #define MAX_CAMS 8
 static struct { uint32_t base; float eye[3]; } s_last[MAX_CAMS];
 
+static void cfg_save(void) {
+    FILE *f = fopen(CFG_FILE, "w");
+    if (!f) return;
+    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\n", s_speed, s_inv_x, s_inv_y);
+    fclose(f);
+}
+
 static void init_once(void) {
     if (s_on >= 0) return;
     const char *e = getenv("SR_TWINSTICK");
     s_on = !(e && e[0] == '0');
+    FILE *f = fopen(CFG_FILE, "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f)) {
+            float v;
+            if (sscanf(line, "sensitivity=%f", &v) == 1) s_speed = v;
+            else if (sscanf(line, "invert_x=%f", &v) == 1) s_inv_x = v != 0.0f;
+            else if (sscanf(line, "invert_y=%f", &v) == 1) s_inv_y = v != 0.0f;
+        }
+        fclose(f);
+    } else {
+        cfg_save();                                  /* write the defaults so they can be edited */
+    }
     const char *sp = getenv("SR_TWINSTICK_SPEED");
     if (sp) s_speed = (float)atof(sp);
+    if (!(s_speed >= SENS_MIN)) s_speed = SENS_MIN;
+    if (s_speed > SENS_MAX) s_speed = SENS_MAX;
+}
+
+static double now_s(void) {
+    struct timespec ts; timespec_get(&ts, TIME_UTC);
+    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
 /* Once per controller read: integrate the right stick into the orbit offset. */
 void sr_twinstick_tick(void) {
     init_once();
     if (!s_on) return;
+    static double last = 0.0;
+    const double t = now_s();
+    float dt = last > 0.0 ? (float)(t - last) : 0.0f;
+    last = t;
+    if (dt > 0.1f) dt = 0.1f;                        /* a hitch must not become a big jump */
+
+    if (gui_on()) {
+        const int steps = gui_sens_steps();
+        if (steps) {
+            s_speed *= powf(1.15f, (float)steps);
+            if (s_speed < SENS_MIN) s_speed = SENS_MIN;
+            if (s_speed > SENS_MAX) s_speed = SENS_MAX;
+            cfg_save();
+            fprintf(stderr, "twinstick: camera sensitivity %.2f\n", s_speed);
+        }
+    }
     /* Only while the gameplay camera is live (its hooks ran within the last few frames):
      * a stick push during a movie or menu must not bank an offset for later. */
-    if (++s_ticks - s_hook_tick > 4) return;
+    if (++s_ticks - s_hook_tick > 4) { s_yaw_vel = s_pitch_vel = 0.0f; return; }
     float rx = 0.0f, ry = 0.0f;
     if (gui_on()) gui_rstick(&rx, &ry);
     if (g_script_rx != 0.0f || g_script_ry != 0.0f) { rx = g_script_rx; ry = g_script_ry; }
-    if (fabsf(rx) >= 0.01f) {
-        s_yaw_off -= rx * YAW_RATE * s_speed;
+    /* squared radial response: direction kept, magnitude m becomes m*m */
+    const float m = sqrtf(rx * rx + ry * ry);
+    if (m > 1.0f) { rx /= m; ry /= m; }
+    else          { rx *= m; ry *= m; }
+    if (s_inv_x) rx = -rx;
+    if (s_inv_y) ry = -ry;
+    /* scripted runs (turbo) step one pad read at a fixed 30 Hz rate */
+    const float step = (g_script_rx != 0.0f || g_script_ry != 0.0f) ? 1.0f / 30.0f : dt;
+    /* ease the turn speed toward the stick so 30 Hz pad reads don't step visibly */
+    const float k = step > 0.0f ? 1.0f - expf(-step / SMOOTH_S) : 1.0f;
+    s_yaw_vel   += (-rx * YAW_RATE * s_speed - s_yaw_vel) * k;
+    s_pitch_vel += ( ry * PITCH_RATE * s_speed - s_pitch_vel) * k;   /* stick up = look up (eye lower) */
+    if (fabsf(rx) < 1e-4f && fabsf(s_yaw_vel) < 0.01f) s_yaw_vel = 0.0f;
+    if (fabsf(ry) < 1e-4f && fabsf(s_pitch_vel) < 0.01f) s_pitch_vel = 0.0f;
+    if (s_yaw_vel != 0.0f) {
+        s_yaw_off += s_yaw_vel * step;
         const float pi = 3.14159265f;
         while (s_yaw_off > pi) s_yaw_off -= 2.0f * pi;
         while (s_yaw_off < -pi) s_yaw_off += 2.0f * pi;
     }
-    if (fabsf(ry) >= 0.01f) {
-        s_pitch_off += ry * PITCH_RATE * s_speed;          /* stick up = look up (eye lower) */
+    if (s_pitch_vel != 0.0f) {
+        s_pitch_off += s_pitch_vel * step;
         if (s_pitch_off > ELEV_MAX - ELEV_MIN) s_pitch_off = ELEV_MAX - ELEV_MIN;
         if (s_pitch_off < ELEV_MIN - ELEV_MAX) s_pitch_off = ELEV_MIN - ELEV_MAX;
     }
