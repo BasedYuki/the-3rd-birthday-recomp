@@ -1251,6 +1251,10 @@ void sr_ctrl_sample(void) {
     if (gui_on()) gui_analog(&lx, &ly);
     s_ctrl_ring[s_ctrl_w].btn = h_CtrlButtons();
     if (g_script_lx >= 0) { lx = (uint8_t)g_script_lx; ly = (uint8_t)g_script_ly; }
+    {   /* twin-stick camera: turn Aya toward the camera before an aim (twinstick.c) */
+        extern void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly);
+        sr_twinstick_filter(&s_ctrl_ring[s_ctrl_w].btn, &lx, &ly);
+    }
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
     s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;

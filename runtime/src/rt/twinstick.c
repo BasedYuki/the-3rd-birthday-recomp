@@ -11,6 +11,9 @@
  *   - camera_copy (dst = a0, src = a1), which fills the rendered view camera (viewcam_ptr) from
  *     another camera every frame: its source is rotated just before the copy.
  * The game's own camera logic, lock-on and aim run unchanged underneath (PLAN.md: free orbit).
+ * Camera cuts (a new view-camera source, or a target/eye jump) reset the offset; the game's
+ * aim camera is one of them. L aims along Aya's facing, so pressing it with the camera turned
+ * first turns her to the camera's direction through the game's own movement input.
  *
  * SR_TWINSTICK=0 disables it; SR_TWINSTICK_SPEED scales the turn rate (default 1).
  */
@@ -75,6 +78,32 @@ void sr_twinstick_tick(void) {
         s_pitch_off += ry * PITCH_RATE * s_speed;          /* stick up = look up (eye lower) */
         if (s_pitch_off > ELEV_MAX - ELEV_MIN) s_pitch_off = ELEV_MAX - ELEV_MIN;
         if (s_pitch_off < ELEV_MIN - ELEV_MAX) s_pitch_off = ELEV_MIN - ELEV_MAX;
+    }
+}
+
+/* Aim along the camera: L aims wherever Aya faces, and turning the camera doesn't turn her.
+ * When L is pressed with the camera turned (and the left stick idle), hold L back for a few
+ * samples and feed "left stick forward" instead: the game's own camera-relative movement turns
+ * Aya to face where the camera looks, then L goes through and she aims that way. Runs on every
+ * pad sample (60 Hz), before the game sees it. SR_TWINSTICK_AIMTURN=0 disables it. */
+#define AIM_TURN_SAMPLES 10
+void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
+    static int on = -1, phase = 0, prev_l = 0;
+    init_once();
+    if (on < 0) { const char *e = getenv("SR_TWINSTICK_AIMTURN"); on = s_on && !(e && e[0] == '0'); }
+    if (!on) return;
+    const int l = (*btn & 0x0100u) != 0;
+    const int stick_idle = abs((int)*lx - 128) < 40 && abs((int)*ly - 128) < 40;
+    if (l && !prev_l && stick_idle && fabsf(s_yaw_off) > 0.2f && s_ticks - s_hook_tick <= 4) {
+        phase = AIM_TURN_SAMPLES;
+        fprintf(stderr, "twinstick: aim along the camera (turning Aya %.2f rad first)\n", s_yaw_off);
+    }
+    prev_l = l;
+    if (!l) phase = 0;
+    if (phase > 0) {
+        phase--;
+        *btn &= ~0x0100u;          /* L waits */
+        *lx = 128; *ly = 0;        /* stick forward: face the camera's direction */
     }
 }
 

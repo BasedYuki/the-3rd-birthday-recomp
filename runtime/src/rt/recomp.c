@@ -442,6 +442,9 @@ void sr_trace_close(void) {
  * executes as guest code (HLE-side writes attribute to the syscall site). */
 static uint32_t s_watch_addr = 0;
 static int s_watch_on = -1;
+/* Point the SR_WATCH machinery at an address found at runtime (e.g. a heap object a hook just
+ * saw). Starts watching even without SR_WATCH set. */
+void sr_watch_set(uint32_t addr) { s_watch_addr = addr; s_watch_on = addr ? 1 : 0; }
 void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
     /* SR_PCCOUNT=<hex>,<hex>,...: count executions of up to 16 pcs (e.g. function entries);
      * log at 1, 10, 100, 1000, ... hits so a missing link in a call chain shows up. */
