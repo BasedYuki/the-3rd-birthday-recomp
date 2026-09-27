@@ -116,6 +116,7 @@
 - [ ] Health: recent commits, responsive issues, other games booting
 
 Kill rule: the framework that gets closest to showing anything wins. If none gets past the lift step, write our own recompiler and take the runtime from the best candidate.
+- **Boot notice black on the GPU renderer (2026-09-27):** the autosave notice is drawn once into a framebuffer, then the game copies that framebuffer to VRAM 0x178000 with sceDmacMemcpy and draws it from there. GPU framebuffers live on the GPU, so the copy read stale (black) guest VRAM. Fix: a new vram_read backend hook (sr_gpu_vram_read) reads back overlapping GPU targets before the DMA copy. VRAM textures are also hashed in full now.
 
 ## Open, not blocking
 - Controller remapping and config UI
