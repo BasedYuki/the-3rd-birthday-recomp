@@ -171,6 +171,15 @@ static void vtime_refresh(void) {
     }
 }
 
+static uint64_t s_run0 = 0;          /* when the current thread was last switched in */
+
+/* Host time the current thread has run so far, including its current slice. Differences across
+ * an HLE call are that call's exclusive cost, even if it blocked and other threads ran. */
+uint64_t sched_cur_cpu_us(void) {
+    if (s_cur < 0) return qpc_us();
+    return s_tcb[s_cur].cpu_us + (qpc_us() - s_run0);
+}
+
 static uint64_t s_idle_us = 0;       /* host time the scheduler spent sleeping (SR_SCHEDSTAT) */
 
 /* Sleep (host) until the virtual clock reaches target_us. Real-time mode only. */
@@ -754,6 +763,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             t->fiber = CreateFiberEx((SIZE_T)1 << 18, (SIZE_T)64 << 20, 0, fiber_proc, t);
         }
         const uint64_t run0 = qpc_us();
+        s_run0 = run0;
         SwitchToFiber(t->fiber);           /* run until it yields/blocks/exits */
         t->cpu_us += qpc_us() - run0;
         s_cur = -1;

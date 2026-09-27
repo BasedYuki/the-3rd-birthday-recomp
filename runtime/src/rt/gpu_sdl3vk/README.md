@@ -41,7 +41,7 @@ mapping as gui.c). Deliverable: pixel-identical output to the GDI build at lower
 resizable window, fullscreen-capable.
 
 ### Phase 1 — GE draw capture → Vulkan rasterization (DONE, `ge_gpu.c`)
-Enabled with `SR_GPU_GE=1`. Implementation:
+On by default in the SDL3 build (`SR_GPU_GE=0` selects the software rasterizer). Implementation:
 - Capture seam: runtime hooks (`GeGpuHooks` in `src/rt/ge_shared.h`, registered via
   `ge_set_gpu_hooks`) at the top of `raster_tri` and `fill_sprite`. ge.c still does
   vertex decode, T&L, near-clipping, primitive acceptance and cull-order reordering;
@@ -99,7 +99,7 @@ Enabled with `SR_GPU_GE=1`. Implementation:
 
 ## Environment variables
 
-- `SR_GPU_GE=1` — enable the GPU rasterizer (SDL3 build only; default off).
+- `SR_GPU_GE=0` — disable the GPU rasterizer and use the software one (SDL3 build; GPU is the default).
 - `SR_GPU_LOG=1` — one line per flush (reason, batches, verts, target).
 - `SR_VIDEO=gdi` — Phase-0 fallback to the classic GDI window.
 

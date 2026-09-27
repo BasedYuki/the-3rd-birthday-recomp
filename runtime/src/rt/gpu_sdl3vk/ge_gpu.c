@@ -268,13 +268,23 @@ static int cmd_begin(void) {
     VKC(vkBeginCommandBuffer(s_cmd, &bi));
     return 1;
 }
+/* Host time spent in a few hot paths, reported with the 5 s stats line (microseconds). */
+static uint64_t s_t_wait, s_t_texdec, s_t_readback, s_t_upload;
+static unsigned long s_n_wait;
+static uint64_t now_us(void) {
+    struct timespec ts; timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)(ts.tv_nsec / 1000);
+}
+
 static int cmd_submit_wait(void) {
+    const uint64_t t0 = now_us();
     VKC(vkEndCommandBuffer(s_cmd));
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &s_cmd;
     VKC(vkQueueSubmit(s_queue, 1, &si, s_fence));
     VKC(vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX));
     VKC(vkResetFences(s_dev, 1, &s_fence));
+    s_t_wait += now_us() - t0; s_n_wait++;
     return 1;
 }
 
@@ -470,12 +480,24 @@ static void stats_tick(void) {
             s_cnt_submit, s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_rtt, s_cnt_snap,
             s_cnt_present_gpu, s_cnt_present_cpu, s_cnt_upload, s_cnt_readback, s_cnt_texup,
             s_cnt_dirty, s_cnt_xferblit, s_pipe_n, s_tex_n);
+    fprintf(stderr, "GEGPU time (5 s): gpu waits %lu = %.0f ms, tex decode %.0f ms, readback %.0f ms, upload %.0f ms\n",
+            s_n_wait, s_t_wait / 1000.0, s_t_texdec / 1000.0, s_t_readback / 1000.0, s_t_upload / 1000.0);
+    s_n_wait = 0; s_t_wait = s_t_texdec = s_t_readback = s_t_upload = 0;
 }
 
 /* ---- targets ----------------------------------------------------------------------------- */
 
-/* Write the target's GPU contents back to guest VRAM (eviction, CLUT-from-VRAM). */
+static int target_readback_impl(Target *t);
+static int target_upload_impl(Target *t);
 static int target_readback(Target *t) {
+    const uint64_t t0 = now_us(); int r = target_readback_impl(t); s_t_readback += now_us() - t0; return r;
+}
+static int target_upload(Target *t) {
+    const uint64_t t0 = now_us(); int r = target_upload_impl(t); s_t_upload += now_us() - t0; return r;
+}
+
+/* Write the target's GPU contents back to guest VRAM (eviction, CLUT-from-VRAM). */
+static int target_readback_impl(Target *t) {
     if (!t->gpu_valid) return 1;
     if (t == s_cur && s_nbatch) submit_pending();
     if (t->clean_gen == t->render_gen) return 1;   /* VRAM already current */
@@ -505,7 +527,7 @@ static int target_readback(Target *t) {
 }
 
 /* Fill the target's color image from guest VRAM (creation / CPU-dirty reacquire). */
-static int target_upload(Target *t) {
+static int target_upload_impl(Target *t) {
     uint32_t *dst = s_pxscratch;
     for (uint32_t y = 0; y < FB_H; y++) {
         if (t->fmt == 3) {
@@ -782,7 +804,7 @@ static VkDescriptorSet tex_get(void) {
         if (e->hash == hash) { e->pending = 1; return e->set; }
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
-        ge_decode_tex_rgba(s_texscratch);
+        { const uint64_t t0 = now_us(); ge_decode_tex_rgba(s_texscratch); s_t_texdec += now_us() - t0; }
         if (!tex_upload(e->img, s_texscratch, e->w, e->h)) return s_white_set;
         e->hash = hash;
         e->pending = 1;
@@ -794,7 +816,7 @@ static VkDescriptorSet tex_get(void) {
         submit_pending();   /* batches reference sets about to be freed */
         tex_evict_lru();
     }
-    ge_decode_tex_rgba(s_texscratch);
+    { const uint64_t t0 = now_us(); ge_decode_tex_rgba(s_texscratch); s_t_texdec += now_us() - t0; }
     TexEnt *e = &s_tex[s_tex_n];
     memset(e, 0, sizeof(*e));
     if (!tex_make(s_texscratch, w, h, linear, clamp_u, clamp_v, &e->img, &e->mem, &e->view, &e->smp))
@@ -1377,6 +1399,7 @@ void gegpu_flush(const char *reason) {
 int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     (void)stride;
     if (!s_ready) return -1;
+    stats_tick();
     uint32_t fba = fbaddr & 0x001FFFFFu;
     Target *t = NULL;
     for (int i = 0; i < MAX_TGT; i++)
@@ -1395,7 +1418,6 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (!cmd_submit_wait()) return -1;
     }
     s_cnt_present_gpu++;
-    stats_tick();
     return sdl3vk_present_image((void *)t->img);
 }
 

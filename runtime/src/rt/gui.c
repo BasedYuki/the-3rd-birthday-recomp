@@ -186,11 +186,12 @@ void gui_init(const char *title) {
                 QueryPerformanceFrequency(&s_freq);
                 QueryPerformanceCounter(&s_last);
                 s_on = 1;
-                /* Phase 1 GPU rasterizer (opt-in): captures GE triangles/sprites and
-                 * renders them on the GPU, writing results back to guest VRAM. */
+                /* GPU rasterizer: captures GE triangles/sprites and renders them with Vulkan.
+                 * On by default; SR_GPU_GE=0 selects the software rasterizer in ge.c, which
+                 * costs ~17 ms of host time per frame in this game and halves movie speed. */
                 {
                     const char *gge = getenv("SR_GPU_GE");
-                    if (gge && gge[0] && strcmp(gge, "0") != 0) {
+                    if (!gge || !gge[0] || strcmp(gge, "0") != 0) {
                         if (!gegpu_init())
                             fprintf(stderr, "gui_init: GPU GE init failed; software GE active\n");
                     }

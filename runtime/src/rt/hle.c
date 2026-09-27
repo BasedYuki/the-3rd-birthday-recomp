@@ -1111,15 +1111,19 @@ static uint32_t h_AudioOutput2OutputBlocking(CpuState *s) {
 void sr_host_path(const char *guest, char *out, int max) { host_path(guest, out, max); }
 
 /* SR_CALLCOUNT instrumentation: per-NID call tallies, dumped at the capture point. */
-static struct { uint32_t nid; const char *nm; unsigned long n; } g_cc[512];
+static struct { uint32_t nid; const char *nm; unsigned long n; uint64_t us, us111; } g_cc[512];
+static int cc_slot = -1; static uint64_t cc_t0 = 0;
 static int g_ncc = 0, g_callcount = 0;
 static void sr_dump_calls(void) {
     if (!g_callcount) return;
     for (int a = 0; a < g_ncc; a++) for (int b = a + 1; b < g_ncc; b++)
-        if (g_cc[b].n > g_cc[a].n) { __typeof__(g_cc[0]) t = g_cc[a]; g_cc[a] = g_cc[b]; g_cc[b] = t; }
+        if (g_cc[b].us > g_cc[a].us) { __typeof__(g_cc[0]) t = g_cc[a]; g_cc[a] = g_cc[b]; g_cc[b] = t; }
     fprintf(stderr, "--- top HLE calls ---\n");
     int lim = (getenv("SR_CALLCOUNT") && atoi(getenv("SR_CALLCOUNT")) >= 2) ? g_ncc : 18;   /* =2: all */
-    for (int a = 0; a < g_ncc && a < lim; a++) fprintf(stderr, "  %-32s 0x%08x  %lu\n", g_cc[a].nm, g_cc[a].nid, g_cc[a].n);
+    /* sorted by exclusive host time; "main" = the part spent on the game's main thread 0x111 */
+    for (int a = 0; a < g_ncc && a < lim; a++)
+        fprintf(stderr, "  %-32s 0x%08x  %lu calls  %.0f ms  (main %.0f ms)\n", g_cc[a].nm, g_cc[a].nid,
+                g_cc[a].n, g_cc[a].us / 1000.0, g_cc[a].us111 / 1000.0);
 }
 /* PSP controller ring buffer, modelled on PPSSPP (Core/HLE/sceCtrl.cpp): one sample is latched
  * per VBLANK into a 64-entry ring; sceCtrlReadBufferPositive returns the samples accumulated
@@ -2034,8 +2038,11 @@ void sr_syscall(CpuState *s, uint32_t nid) {
     }
     if (g_callcount) {
         int j = 0; for (; j < g_ncc; j++) if (g_cc[j].nid == nid) break;
-        if (j == g_ncc && g_ncc < 512) { g_cc[j].nid = nid; g_cc[j].nm = e->name; g_cc[j].n = 0; g_ncc++; }
+        if (j == g_ncc && g_ncc < 512) { g_cc[j].nid = nid; g_cc[j].nm = e->name; g_cc[j].n = 0; g_cc[j].us = g_cc[j].us111 = 0; g_ncc++; }
         if (j < 512) g_cc[j].n++;
+        cc_slot = j < 512 ? j : -1;
+        extern uint64_t sched_cur_cpu_us(void);
+        cc_t0 = sched_cur_cpu_us();
     }
     /* Kernel callbacks (hle_ext.c) run only while their thread is in a ...CB call or
      * sceKernelCheckCallback: deliver pending ones before and after such calls. */
@@ -2044,8 +2051,15 @@ void sr_syscall(CpuState *s, uint32_t nid) {
     size_t nlen = strlen(e->name);
     int cb_point = (nlen > 2 && !strcmp(e->name + nlen - 2, "CB")) || nid == 0x349d6d6cu;
     if (cb_point && sr_callbacks_pending()) sr_run_callbacks(s);
+    const int my_slot = cc_slot; const uint64_t my_t0 = cc_t0;   /* nested calls (callbacks) reuse the globals */
     uint32_t ret = e->fn(s);
     if (cb_point && sr_callbacks_pending()) sr_run_callbacks(s);
+    if (g_callcount && my_slot >= 0) {
+        extern uint64_t sched_cur_cpu_us(void);
+        const uint64_t d = sched_cur_cpu_us() - my_t0;
+        g_cc[my_slot].us += d;
+        if (sched_current_uid() == 0x111) g_cc[my_slot].us111 += d;
+    }
     /* Poison caller-saved temps exactly like PPSSPP SetDeadbeefRegs: r1, r4-r15, r24, r25,
      * hi, lo. The return value in v0 (and v1) is written afterward and survives. */
     s->r[1] = 0xDEADBEEFu;
