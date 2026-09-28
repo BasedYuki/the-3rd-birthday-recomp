@@ -43,6 +43,7 @@ uint32_t sdl3vk_buttons(void);
 void     sdl3vk_analog(uint8_t *lx, uint8_t *ly);
 void     sdl3vk_rstick(float *rx, float *ry);   /* right stick, -1..1 */
 int      sdl3vk_sens_steps(void);   /* camera sensitivity key presses since last call (+ up, - down) */
+int      sdl3vk_cam_reset(void);    /* 1 once per camera-reset press (R3 / O) */
 int      sdl3vk_pad_present(void);
 
 /* Vulkan objects shared with the Phase-1 GPU rasterizer (ge_gpu.c). Handles are typed

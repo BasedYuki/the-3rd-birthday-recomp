@@ -51,10 +51,12 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
  *   invert_y=0
  * SR_TWINSTICK_SPEED overrides the saved sensitivity for one run. */
 /*   recenter=1        (ease the camera back behind Aya once the right stick is released)
- *   recenter_delay=0.8  (seconds of no right-stick input before it starts; it only runs while
- *                        Aya moves, so a camera turned to look around while standing stays put) */
+ *   recenter_delay=0.8  (seconds without right-stick input before it starts while Aya walks)
+ *   recenter_delay_still=2.0  (the same when the left stick is idle: Liberation dashes, fights)
+ * R3 (right stick click) or O snaps the camera back behind Aya at once. */
 #define CFG_FILE "twinstick.cfg"
 #define RECENTER_TC 0.35f   /* time constant of the recentre ease (seconds) */
+#define SNAP_TC     0.08f   /* the same for an R3 / O reset */
 #define SENS_MIN 0.2f
 #define SENS_MAX 4.0f
 
@@ -62,7 +64,8 @@ static int s_on = -1;
 static float s_speed = 1.0f;
 static int s_inv_x = 0, s_inv_y = 0;
 static int s_recenter = 1;
-static float s_recenter_delay = 0.8f;
+static float s_recenter_delay = 0.8f, s_recenter_delay_still = 2.0f;
+static int s_snap = 0;                               /* R3 / O reset in progress */
 static float s_idle_s = 0.0f;                        /* time since the right stick was last used */
 static int s_moving = 0;                             /* left stick pushed (last pad sample) */
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
@@ -77,8 +80,8 @@ static struct { uint32_t base; float eye[3]; } s_last[MAX_CAMS];
 static void cfg_save(void) {
     FILE *f = fopen(CFG_FILE, "w");
     if (!f) return;
-    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\n",
-            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay);
+    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\n",
+            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still);
     fclose(f);
 }
 
@@ -94,6 +97,7 @@ static void init_once(void) {
             if (sscanf(line, "sensitivity=%f", &v) == 1) s_speed = v;
             else if (sscanf(line, "invert_x=%f", &v) == 1) s_inv_x = v != 0.0f;
             else if (sscanf(line, "invert_y=%f", &v) == 1) s_inv_y = v != 0.0f;
+            else if (sscanf(line, "recenter_delay_still=%f", &v) == 1) s_recenter_delay_still = v;
             else if (sscanf(line, "recenter_delay=%f", &v) == 1) s_recenter_delay = v;
             else if (sscanf(line, "recenter=%f", &v) == 1) s_recenter = v != 0.0f;
         }
@@ -145,8 +149,10 @@ void sr_twinstick_tick(void) {
     else          { rx *= m; ry *= m; }
     if (s_inv_x) rx = -rx;
     if (s_inv_y) ry = -ry;
-    /* scripted runs (turbo) step one pad read at a fixed 30 Hz rate */
-    const float step = (g_script_rx != 0.0f || g_script_ry != 0.0f) ? 1.0f / 30.0f : dt;
+    /* scripted and turbo runs (real time meaningless there) step one pad read at 30 Hz */
+    static int turbo = -1;
+    if (turbo < 0) turbo = getenv("SR_NOVBPACE") ? 1 : 0;
+    const float step = (turbo || g_script_rx != 0.0f || g_script_ry != 0.0f) ? 1.0f / 30.0f : dt;
     /* ease the turn speed toward the stick so 30 Hz pad reads don't step visibly */
     const float k = step > 0.0f ? 1.0f - expf(-step / SMOOTH_S) : 1.0f;
     s_yaw_vel   += (-rx * YAW_RATE * s_speed - s_yaw_vel) * k;
@@ -164,19 +170,35 @@ void sr_twinstick_tick(void) {
         if (s_pitch_off > ELEV_MAX - ELEV_MIN) s_pitch_off = ELEV_MAX - ELEV_MIN;
         if (s_pitch_off < ELEV_MIN - ELEV_MAX) s_pitch_off = ELEV_MIN - ELEV_MAX;
     }
-    /* Recentre: once the right stick has been left alone for a moment and Aya is moving, ease
-     * the offset back to zero so the game's own follow camera (which keeps itself behind her,
-     * including in Liberation mode's fast dashes) takes over again. */
+    /* Recentre: once the right stick has been left alone, ease the offset back to zero so the
+     * game's own follow camera (which keeps itself behind Aya) takes over again. Walking starts
+     * it after recenter_delay; otherwise after recenter_delay_still, because Liberation mode
+     * dashes and attacks move Aya without the left stick. R3 / O snaps back at once. */
     if (m > 0.0f) s_idle_s = 0.0f;
     else          s_idle_s += step;
-    if (s_recenter && s_idle_s >= s_recenter_delay && s_moving &&
-        (s_yaw_off != 0.0f || s_pitch_off != 0.0f)) {
-        const float kr = 1.0f - expf(-step / RECENTER_TC);
+    if (gui_on() && gui_cam_reset()) {
+        s_snap = 1;
+        fprintf(stderr, "twinstick: camera reset\n");
+    }
+    static int recentring = 0;
+    const int due = s_snap || (s_recenter && s_idle_s >= (s_moving ? s_recenter_delay : s_recenter_delay_still));
+    if (due && (s_yaw_off != 0.0f || s_pitch_off != 0.0f)) {
+        if (!recentring) fprintf(stderr, "twinstick: recentring from yaw %.2f pitch %.2f\n", s_yaw_off, s_pitch_off);
+        recentring = 1;
+        const float kr = 1.0f - expf(-step / (s_snap ? SNAP_TC : RECENTER_TC));
         s_yaw_off   -= s_yaw_off * kr;
         s_pitch_off -= s_pitch_off * kr;
         if (fabsf(s_yaw_off) < 0.005f)   s_yaw_off = 0.0f;
         if (fabsf(s_pitch_off) < 0.005f) s_pitch_off = 0.0f;
+        if (s_yaw_off == 0.0f && s_pitch_off == 0.0f) {
+            fprintf(stderr, "twinstick: recentred\n");
+            recentring = 0; s_snap = 0;
+        }
+    } else {
+        recentring = 0;
+        if (s_yaw_off == 0.0f && s_pitch_off == 0.0f) s_snap = 0;
     }
+    if (m > 0.0f) s_snap = 0;                        /* the stick takes over again */
 }
 
 /* Aim along the camera: L aims wherever Aya faces, and turning the camera doesn't turn her.

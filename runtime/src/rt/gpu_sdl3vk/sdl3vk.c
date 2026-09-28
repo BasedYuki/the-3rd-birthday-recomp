@@ -62,6 +62,7 @@ static uint32_t s_buttons;
 static uint8_t  s_lx = 128, s_ly = 128;
 static float    s_rx = 0.0f, s_ry = 0.0f;   /* right stick, -1..1 (twin-stick camera) */
 static int      s_sens_steps = 0, s_sens_prev = 0;   /* camera sensitivity keys (- and =) */
+static int      s_camreset = 0, s_camreset_prev = 0; /* camera reset press (R3 / O) */
 static int      s_pad_present;
 
 #define VK_TRY(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
@@ -481,6 +482,11 @@ static void poll_input(int *quit) {
     { int sk = k[SDL_SCANCODE_EQUALS] ? 1 : k[SDL_SCANCODE_MINUS] ? -1 : 0;
       if (sk && sk != s_sens_prev) s_sens_steps += sk;
       s_sens_prev = sk; }
+    {   /* camera reset: right stick click (R3) or O */
+        int cr = k[SDL_SCANCODE_O] || (s_pad && SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK));
+        if (cr && !s_camreset_prev) s_camreset = 1;
+        s_camreset_prev = cr;
+    }
     s_pad_present = s_pad != NULL;
     if (s_pad) {
         #define PB(sdlb, bit) do { if (SDL_GetGamepadButton(s_pad, sdlb)) b |= (bit); } while (0)
@@ -534,6 +540,7 @@ void sdl3vk_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly =
 int  sdl3vk_pad_present(void) { return s_pad_present; }
 void sdl3vk_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
 int  sdl3vk_sens_steps(void) { int n = s_sens_steps; s_sens_steps = 0; return n; }
+int  sdl3vk_cam_reset(void) { int n = s_camreset; s_camreset = 0; return n; }
 
 /* ---- present ------------------------------------------------------------------------ */
 

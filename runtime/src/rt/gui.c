@@ -238,6 +238,12 @@ void gui_toast(const char *msg) {
     if (s_sdl3) sdl3vk_toast(msg, 3000);
 #endif
 }
+int gui_cam_reset(void) {
+#ifdef SR_SDL3VK
+    if (s_sdl3) return sdl3vk_cam_reset();
+#endif
+    return 0;
+}
 int gui_sens_steps(void) {
 #ifdef SR_SDL3VK
     if (s_sdl3) return sdl3vk_sens_steps();

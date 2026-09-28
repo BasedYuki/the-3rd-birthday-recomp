@@ -59,7 +59,7 @@
 static int s_sc = 1;
 #define SW ((uint32_t)(FB_W * s_sc))
 #define SH ((uint32_t)(FB_H * s_sc))
-#define MAX_VERTS  131072
+#define MAX_VERTS  524288
 #define MAX_BATCH  4096
 #define MAX_PIPES  192
 #define MAX_TEX    1024
@@ -141,7 +141,7 @@ static VkDevice   s_dev;
 static VkQueue    s_queue;
 static VkCommandPool s_pool;
 static VkCommandBuffer s_cmd;
-static VkFence    s_fence;
+
 
 static VkRenderPass s_rp;
 
@@ -179,6 +179,10 @@ static VkDescriptorSet s_clut_set;
 static int s_clut_row = -1;                /* row holding the palette below */
 static uint64_t s_clut_row_hash = 0;
 static unsigned long s_cnt_depal = 0;
+/* Readbacks drain the GPU, so the stats line lists which call sites (source lines) caused them
+ * in each 5 s window. */
+#define RB_SITES 16
+static struct { int line; unsigned long n; } s_rb_site[RB_SITES];
 static uint64_t s_snap_srcgen = 0;
 
 static PipeEnt s_pipes[MAX_PIPES];
@@ -278,14 +282,6 @@ static void to_layout(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspec
     *cur = want;
 }
 
-/* one-shot command buffer */
-static int cmd_begin(void) {
-    vkResetCommandBuffer(s_cmd, 0);
-    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VKC(vkBeginCommandBuffer(s_cmd, &bi));
-    return 1;
-}
 /* Host time spent in a few hot paths, reported with the 5 s stats line (microseconds). */
 static uint64_t s_t_wait, s_t_texdec, s_t_readback, s_t_upload;
 static unsigned long s_n_wait;
@@ -294,16 +290,71 @@ static uint64_t now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)(ts.tv_nsec / 1000);
 }
 
-static int cmd_submit_wait(void) {
-    const uint64_t t0 = now_us();
+/* Command buffers. Work is submitted without waiting: the single queue executes submissions
+ * in order and every layout change is an ALL_COMMANDS barrier, so GPU-side dependencies hold
+ * across submissions. The CPU only waits when it needs results (readback, gpu_idle) or before
+ * reusing a command buffer, staging range or vertex range the GPU may still be reading. (Each
+ * draw flush used to wait for the GPU: ~8 round trips per frame, over a quarter of the frame
+ * time at 4x resolution, which dropped frames and starved the audio in fights.) */
+#define CMD_RING 32
+static VkCommandBuffer s_cmds[CMD_RING];
+static VkFence  s_fences[CMD_RING];
+static int      s_inflight[CMD_RING];
+static int      s_ci = 0;
+
+static int cmd_begin(void) {
+    s_cmd = s_cmds[s_ci];
+    if (s_inflight[s_ci]) {
+        const uint64_t t0 = now_us();
+        VKC(vkWaitForFences(s_dev, 1, &s_fences[s_ci], VK_TRUE, UINT64_MAX));
+        VKC(vkResetFences(s_dev, 1, &s_fences[s_ci]));
+        s_inflight[s_ci] = 0;
+        s_t_wait += now_us() - t0; s_n_wait++;
+    }
+    vkResetCommandBuffer(s_cmd, 0);
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VKC(vkBeginCommandBuffer(s_cmd, &bi));
+    return 1;
+}
+
+/* Submit the command buffer begun by cmd_begin without waiting for it. */
+static int cmd_submit(void) {
     VKC(vkEndCommandBuffer(s_cmd));
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1; si.pCommandBuffers = &s_cmd;
-    VKC(vkQueueSubmit(s_queue, 1, &si, s_fence));
-    VKC(vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX));
-    VKC(vkResetFences(s_dev, 1, &s_fence));
-    s_t_wait += now_us() - t0; s_n_wait++;
+    VKC(vkQueueSubmit(s_queue, 1, &si, s_fences[s_ci]));
+    s_inflight[s_ci] = 1;
+    s_ci = (s_ci + 1) % CMD_RING;
     return 1;
+}
+
+/* Wait until the GPU has finished everything submitted so far. */
+static void gpu_idle(void) {
+    const uint64_t t0 = now_us();
+    vkQueueWaitIdle(s_queue);
+    s_t_wait += now_us() - t0; s_n_wait++;
+}
+
+/* Submit and wait: only where the CPU reads the results (readback into guest VRAM). */
+static int cmd_submit_wait(void) {
+    if (!cmd_submit()) return 0;
+    gpu_idle();
+    return 1;
+}
+
+/* Upload staging: a ring in one host-visible buffer. Every range is consumed by the submission
+ * recorded right after it is filled; when the ring wraps, the GPU is drained first so no pending
+ * copy still reads the range being overwritten. */
+#define UP_SIZE (32u << 20)
+static VkBuffer s_up; static VkDeviceMemory s_up_m; static uint8_t *s_up_map;
+static uint32_t s_up_off = 0;
+static uint32_t up_alloc(uint32_t n) {
+    n = (n + 255u) & ~255u;
+    if (s_up_off + n > UP_SIZE) { gpu_idle(); s_up_off = 0; }
+    const uint32_t o = s_up_off;
+    s_up_off += n;
+    return o;
 }
 
 /* ---- guest framebuffer <-> RGBA8 (must match ge.c unpack_color / pack_fb exactly) ----- */
@@ -434,7 +485,7 @@ static VkDescriptorSet make_descriptor(VkImageView view, VkSampler smp, VkDescri
 static uint32_t s_flushgen = 1;            /* bumped per submit: invalidates state template */
 
 static void batches_reset(void) {
-    s_nbatch = 0; s_nverts = 0;
+    s_nbatch = 0;            /* s_nverts keeps growing: the vertex buffer is a ring (ensure_room) */
     s_flushgen++;
     for (int i = 0; i < s_tex_n; i++) s_tex[i].pending = 0;
 }
@@ -478,7 +529,7 @@ static int submit_pending(void) {
     /* render pass final layouts (see init): color -> SHADER_READ_ONLY, depth stays */
     t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    int ok = cmd_submit_wait();
+    int ok = cmd_submit();
     t->gpu_valid = 1;
     t->render_gen++;
     s_cnt_submit++;
@@ -502,15 +553,26 @@ static void stats_tick(void) {
     fprintf(stderr, "GEGPU time (5 s): gpu waits %lu = %.0f ms, tex decode %.0f ms, readback %.0f ms, upload %.0f ms\n",
             s_n_wait, s_t_wait / 1000.0, s_t_texdec / 1000.0, s_t_readback / 1000.0, s_t_upload / 1000.0);
     s_n_wait = 0; s_t_wait = s_t_texdec = s_t_readback = s_t_upload = 0;
+    if (s_rb_site[0].line) {
+        fprintf(stderr, "GEGPU readbacks by site (5 s):");
+        for (int i = 0; i < RB_SITES && s_rb_site[i].line; i++)
+            fprintf(stderr, " L%d=%lu", s_rb_site[i].line, s_rb_site[i].n);
+        fprintf(stderr, "\n");
+        memset(s_rb_site, 0, sizeof(s_rb_site));
+    }
 }
 
 /* ---- targets ----------------------------------------------------------------------------- */
 
 static int target_readback_impl(Target *t);
 static int target_upload_impl(Target *t);
-static int target_readback(Target *t) {
+static int target_readback_at(Target *t, int line) {
+    if (t && t->gpu_valid && t->clean_gen != t->render_gen)
+        for (int i = 0; i < RB_SITES; i++)
+            if (s_rb_site[i].line == line || !s_rb_site[i].line) { s_rb_site[i].line = line; s_rb_site[i].n++; break; }
     const uint64_t t0 = now_us(); int r = target_readback_impl(t); s_t_readback += now_us() - t0; return r;
 }
+#define target_readback(t) target_readback_at((t), __LINE__)
 static int target_upload(Target *t) {
     const uint64_t t0 = now_us(); int r = target_upload_impl(t); s_t_upload += now_us() - t0; return r;
 }
@@ -590,20 +652,22 @@ static int target_upload_impl(Target *t) {
         }
         for (uint32_t x = t->stride; x < FB_W; x++) dst[y * FB_W + x] = 0;
     }
-    memcpy(s_xfer_map, s_pxscratch, FB_W * FB_H * 4);
+    const uint32_t uo = up_alloc(FB_W * FB_H * 4);
+    memcpy(s_up_map + uo, s_pxscratch, FB_W * FB_H * 4);
     if (!cmd_begin()) return 0;
     VkImage to = s_sc > 1 ? s_rsimg : t->img;
     to_layout(s_cmd, to, VK_IMAGE_ASPECT_COLOR_BIT, s_sc > 1 ? &s_rs_layout : &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy c = {0};
+    c.bufferOffset = uo;
     c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     c.imageSubresource.layerCount = 1;
     c.imageExtent.width = FB_W; c.imageExtent.height = FB_H; c.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(s_cmd, s_xfer, to, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    vkCmdCopyBufferToImage(s_cmd, s_up, to, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
     if (s_sc > 1) rs_blit(t, 0);             /* 1x VRAM image -> scaled target */
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    if (!cmd_submit_wait()) return 0;
+    if (!cmd_submit()) return 0;
     t->gpu_valid = 1;
     t->render_gen++;                       /* image content changed (snapshot reuse check) */
     t->clean_gen = t->render_gen;          /* VRAM is the source: in sync by definition */
@@ -613,6 +677,7 @@ static int target_upload_impl(Target *t) {
 
 static void target_destroy(Target *t) {
     if (!t->used) return;
+    gpu_idle();                            /* in-flight submissions may still use its image */
     if (s_snap_src == t) s_snap_src = NULL;
     if (t->fb) vkDestroyFramebuffer(s_dev, t->fb, NULL);
     if (t->set_n) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &t->set_n);
@@ -651,16 +716,18 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
     d->zba = zba; d->zstride = zstride; d->used = 1;
     /* initialize from the (CPU) software z-buffer once — games clear depth before use,
      * this just avoids garbage on the very first frame */
-    memcpy(s_xfer_map, s_zbuf, FB_W * FB_H * 2);
+    const uint32_t uo = up_alloc(FB_W * FB_H * 2);
+    memcpy(s_up_map + uo, s_zbuf, FB_W * FB_H * 2);
     if (cmd_begin()) {
         to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         VkBufferImageCopy c = {0};
+        c.bufferOffset = uo;
         c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
         c.imageSubresource.layerCount = 1;
         c.imageExtent.width = FB_W; c.imageExtent.height = FB_H; c.imageExtent.depth = 1;
         if (s_sc == 1) {
-            vkCmdCopyBufferToImage(s_cmd, s_xfer, d->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+            vkCmdCopyBufferToImage(s_cmd, s_up, d->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
         } else {                           /* scaled depth has no 1x source: start cleared */
             VkClearDepthStencilValue z0 = { 0.0f, 0 };
             VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
@@ -668,7 +735,7 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
         }
         to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-        cmd_submit_wait();
+        cmd_submit();
     }
     return d;
 }
@@ -806,7 +873,8 @@ static int clut_row_get(void) {
     if (s_clut_row >= 0 && h == s_clut_row_hash) return s_clut_row;
     int row = s_clut_row + 1;
     if (row >= CLUT_ROWS) { submit_pending(); row = 0; }
-    uint32_t *px = (uint32_t *)s_xfer_map;
+    const uint32_t uo = up_alloc(CLUT_W * 4);
+    uint32_t *px = (uint32_t *)(s_up_map + uo);
     const uint32_t epsm = s_ge->clut_fmt & 3;
     for (uint32_t i = 0; i < CLUT_W; i++) {
         uint32_t raw;
@@ -819,11 +887,12 @@ static int clut_row_get(void) {
     VkBufferImageCopy bic = {0};
     bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     bic.imageSubresource.layerCount = 1;
+    bic.bufferOffset = uo;
     bic.imageOffset.y = row;
     bic.imageExtent.width = CLUT_W; bic.imageExtent.height = 1; bic.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(s_cmd, s_xfer, s_clutimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+    vkCmdCopyBufferToImage(s_cmd, s_up, s_clutimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     to_layout(s_cmd, s_clutimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_clut_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    cmd_submit_wait();
+    cmd_submit();
     s_clut_row = row;
     s_clut_row_hash = h;
     return row;
@@ -851,17 +920,19 @@ static void tex_evict_lru(void) {
 }
 
 static int tex_upload(VkImage img, const uint32_t *px, int w, int h) {
-    memcpy(s_xfer_map, px, (size_t)w * (size_t)h * 4);
+    const uint32_t uo = up_alloc((uint32_t)w * (uint32_t)h * 4);
+    memcpy(s_up_map + uo, px, (size_t)w * (size_t)h * 4);
     if (!cmd_begin()) return 0;
     VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED;
     to_layout(s_cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, &lay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy bic = {0};
+    bic.bufferOffset = uo;
     bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     bic.imageSubresource.layerCount = 1;
     bic.imageExtent.width = (uint32_t)w; bic.imageExtent.height = (uint32_t)h; bic.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(s_cmd, s_xfer, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+    vkCmdCopyBufferToImage(s_cmd, s_up, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     to_layout(s_cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, &lay, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    return cmd_submit_wait();
+    return cmd_submit();
 }
 
 static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, int clamp_v,
@@ -1138,7 +1209,7 @@ static void build_state(int persp, int sprite, Batch *b) {
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                             to_layout(s_cmd, src->img, VK_IMAGE_ASPECT_COLOR_BIT, &src->layout,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                            cmd_submit_wait();
+                            cmd_submit();
                         }
                         s_snap_src = src;
                         s_snap_srcgen = src->render_gen;
@@ -1151,7 +1222,7 @@ static void build_state(int persp, int sprite, Batch *b) {
                     if (src->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && cmd_begin()) {
                         to_layout(s_cmd, src->img, VK_IMAGE_ASPECT_COLOR_BIT, &src->layout,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                        cmd_submit_wait();
+                        cmd_submit();
                     }
                     b->dset = linear ? src->set_l : src->set_n;
                 }
@@ -1251,8 +1322,13 @@ static void append(Batch *b, uint32_t first, uint32_t count) {
 }
 
 static void ensure_room(uint32_t verts) {
-    if (s_nverts + verts > MAX_VERTS || s_nbatch >= MAX_BATCH - 1)
+    if (s_nbatch >= MAX_BATCH - 1) submit_pending();
+    if (s_nverts + verts > MAX_VERTS) {
+        /* vertex ring full: submissions in flight may still read the start of the buffer */
         submit_pending();
+        gpu_idle();
+        s_nverts = 0;
+    }
 }
 
 /* ---- primitive hooks ---------------------------------------------------------------------- */
@@ -1473,7 +1549,7 @@ static int hook_xfer(uint32_t startdata) {
                    dst->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
     to_layout(s_cmd, dst->img, VK_IMAGE_ASPECT_COLOR_BIT, &dst->layout,
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    if (!cmd_submit_wait()) return 0;
+    if (!cmd_submit()) return 0;
     dst->render_gen++;                       /* content changed (snapshot/present tracking) */
     dst->lru = s_lru++;
     s_cnt_xferblit++;
@@ -1552,7 +1628,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (!cmd_begin()) return -1;
         to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        if (!cmd_submit_wait()) return -1;
+        if (!cmd_submit()) return -1;
     }
     s_cnt_present_gpu++;
     return sdl3vk_present_image((void *)t->img);
@@ -1582,10 +1658,11 @@ int gegpu_init(void) {
     cpi.queueFamilyIndex = vi.queue_family;
     VKC(vkCreateCommandPool(s_dev, &cpi, NULL, &s_pool));
     VkCommandBufferAllocateInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    cbi.commandPool = s_pool; cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbi.commandBufferCount = 1;
-    VKC(vkAllocateCommandBuffers(s_dev, &cbi, &s_cmd));
+    cbi.commandPool = s_pool; cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbi.commandBufferCount = CMD_RING;
+    VKC(vkAllocateCommandBuffers(s_dev, &cbi, s_cmds));
     VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    VKC(vkCreateFence(s_dev, &fci, NULL, &s_fence));
+    for (int i = 0; i < CMD_RING; i++) VKC(vkCreateFence(s_dev, &fci, NULL, &s_fences[i]));
+    s_cmd = s_cmds[0];
 
     /* render pass: LOAD/STORE both attachments; color ends SHADER_READ_ONLY so finished
      * targets are always samplable/presentable, depth stays an attachment */
@@ -1616,6 +1693,8 @@ int gegpu_init(void) {
                      &s_vbuf, &s_vbuf_m, (void **)&s_vmap)) return 0;
     if (!make_buffer(1u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &s_xfer, &s_xfer_m, &s_xfer_map)) return 0;
+    if (!make_buffer(UP_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     &s_up, &s_up_m, (void **)&s_up_map)) return 0;
 
     VkDescriptorSetLayoutBinding db = {0};
     db.binding = 0; db.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
