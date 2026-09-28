@@ -95,7 +95,11 @@ typedef struct {
     PushPC  pc;
     VkDescriptorSet dset;
     uint32_t first, count;
+    int32_t draw;                          /* frame-interpolation draw id (-1: 2D / none) */
 } Batch;
+
+/* vertex-stage push constants (frame interpolation reprojection, psp.vert), after PushPC */
+typedef struct { float R[16]; float vs[4]; float vc[4]; } PushVS;
 
 typedef struct {
     uint64_t key, hash;                    /* state key + content hash; 0,0 = empty */
@@ -210,6 +214,40 @@ static uint64_t s_lru = 1;
 
 static Batch    s_batch[MAX_BATCH];
 static uint32_t s_nbatch = 0, s_nverts = 0;
+
+/* ---- frame interpolation: per-frame recording ----------------------------------------------
+ * With interpolation on, every 3D GE draw gets an entry (its model->clip matrix, camera matrix,
+ * viewport and a match key) and every GPU submission of the frame is logged (target + batches).
+ * At the frame's end the log is replayed into shadow images with each draw's vertices moved
+ * halfway to where the previous frame had them (see fi_replay). */
+#define FI_MAX_DRAWS 8192
+#define FI_MAX_OPS   2048
+#define FI_MAX_BATCH 32768
+#define FI_HASH      16384                 /* power of two, > 2 * FI_MAX_DRAWS */
+typedef struct { float m[16], pv[16], vp[6], off[2]; uint32_t key[5], occ; } FiDraw;
+typedef struct { uint32_t k[6]; int idx; } FiSlot;       /* (key, occurrence) -> draw */
+typedef struct { uint32_t k[5]; uint32_t n; } FiOcc;     /* key -> occurrences so far */
+typedef struct {
+    FiDraw d[FI_MAX_DRAWS]; int nd;
+    FiSlot h[FI_HASH];
+    FiOcc  o[FI_HASH];
+} FiFrame;
+enum { FI_OP_RENDER, FI_OP_SNAP };
+typedef struct { int type, tgt; uint32_t b0, nb; } FiOp;
+
+static int      s_fi_on = 0;               /* interpolation enabled (graphics.cfg / SR_INTERP) */
+static int      s_fi_mem = 0;              /* recording buffers allocated */
+void gegpu_interp_set(int on);
+static FiFrame *s_fi[2];                   /* [s_fi_cur] = frame being recorded, other = previous */
+static int      s_fi_cur = 0;
+static int      s_fi_ok = 0;               /* the frame being recorded can be replayed */
+static int      s_fi_prev_ok = 0;          /* the previous frame's draw table is usable */
+static int32_t  s_fi_draw = -1;            /* draw id for batches appended now */
+static FiOp     s_fi_ops[FI_MAX_OPS];  static int s_fi_nops = 0;
+static Batch   *s_fi_b;                    /* FI_MAX_BATCH batches logged this frame */
+static uint32_t s_fi_nb = 0;
+static unsigned long s_cnt_interp = 0, s_cnt_interp_skip = 0;
+static void fi_invalidate(void) { s_fi_ok = 0; }
 
 static int s_log = 0;
 static unsigned long s_cnt_submit = 0, s_cnt_tri = 0, s_cnt_spr = 0, s_cnt_line = 0;
@@ -527,6 +565,18 @@ static int submit_pending(void) {
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_vbuf, &zero);
 
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 1, 1, &s_clut_set, 0, NULL);
+    {   /* live rendering: no reprojection */
+        static const PushVS none = { { 0 }, { 0, 0, 0, 0 }, { 0 } };
+        vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushPC), sizeof(PushVS), &none);
+    }
+    if (s_fi_on && s_fi_ok) {              /* log this submission for the interpolated replay */
+        if (s_fi_nops < FI_MAX_OPS && s_fi_nb + s_nbatch <= FI_MAX_BATCH) {
+            FiOp *op = &s_fi_ops[s_fi_nops++];
+            op->type = FI_OP_RENDER; op->tgt = (int)(t - s_tgts); op->b0 = s_fi_nb; op->nb = s_nbatch;
+            memcpy(&s_fi_b[s_fi_nb], s_batch, s_nbatch * sizeof(Batch));
+            s_fi_nb += s_nbatch;
+        } else fi_invalidate();
+    }
     VkPipeline cur = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < s_nbatch; i++) {
         Batch *b = &s_batch[i];
@@ -576,10 +626,10 @@ static void stats_tick(void) {
     if (now - last_ms < 5000) return;
     last_ms = now;
     fprintf(stderr, "GEGPU stats: submits=%lu tris=%lu spr=%lu lines=%lu rtt=%lu snap=%lu "
-            "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu depal=%lu pipes=%d texs=%d\n",
+            "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu depal=%lu interp=%lu/%lu pipes=%d texs=%d\n",
             s_cnt_submit, s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_rtt, s_cnt_snap,
             s_cnt_present_gpu, s_cnt_present_cpu, s_cnt_upload, s_cnt_readback, s_cnt_texup,
-            s_cnt_dirty, s_cnt_xferblit, s_cnt_depal, s_pipe_n, s_tex_n);
+            s_cnt_dirty, s_cnt_xferblit, s_cnt_depal, s_cnt_interp, s_cnt_interp_skip, s_pipe_n, s_tex_n);
     fprintf(stderr, "GEGPU time (5 s): gpu waits %lu = %.0f ms, tex decode %.0f ms, readback %.0f ms, upload %.0f ms\n",
             s_n_wait, s_t_wait / 1000.0, s_t_texdec / 1000.0, s_t_readback / 1000.0, s_t_upload / 1000.0);
     s_n_wait = 0; s_t_wait = s_t_texdec = s_t_readback = s_t_upload = 0;
@@ -709,6 +759,7 @@ static int target_upload_impl(Target *t) {
 static void target_destroy(Target *t) {
     if (!t->used) return;
     gpu_idle();                            /* in-flight submissions may still use its image */
+    fi_invalidate();                       /* logged submissions refer to targets by slot */
     if (s_snap_src == t) s_snap_src = NULL;
     if (t->fb) vkDestroyFramebuffer(s_dev, t->fb, NULL);
     if (t->set_n) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &t->set_n);
@@ -954,6 +1005,7 @@ static uint64_t s_texlru = 1;
 /* Evict the least-recently-used quarter of the cache (the working set survives; the
  * old full-clear rebuilt EVERY texture every frame once a scene exceeded the cap). */
 static void tex_evict_lru(void) {
+    fi_invalidate();                       /* logged batches may reference freed sets */
     vkDeviceWaitIdle(s_dev);
     int goal = s_tex_n - MAX_TEX / 4;
     while (s_tex_n > goal) {
@@ -1269,6 +1321,12 @@ static void build_state(int persp, int sprite, Batch *b) {
                         s_snap_src = src;
                         s_snap_srcgen = src->render_gen;
                         s_cnt_snap++;
+                        if (s_fi_on && s_fi_ok) {
+                            if (s_fi_nops < FI_MAX_OPS) {
+                                FiOp *op = &s_fi_ops[s_fi_nops++];
+                                op->type = FI_OP_SNAP; op->tgt = (int)(src - s_tgts); op->b0 = op->nb = 0;
+                            } else fi_invalidate();
+                        }
                     }
                     b->dset = linear ? s_snap_l : s_snap_n;
                 } else {
@@ -1361,9 +1419,10 @@ static void state_get(int persp, int sprite, Batch *out) {
 
 static void append(Batch *b, uint32_t first, uint32_t count) {
     if (b->sw <= 0 || count == 0) return;
+    b->draw = s_fi_draw;                  /* interpolation needs one draw's matrices per batch */
     if (s_nbatch) {
         Batch *last = &s_batch[s_nbatch - 1];
-        if (last->first + last->count == first &&
+        if (last->first + last->count == first && last->draw == b->draw &&
             !memcmp(&last->key, &b->key, sizeof(b->key)) &&
             last->sx == b->sx && last->sy == b->sy && last->sw == b->sw && last->sh == b->sh &&
             !memcmp(last->bconst, b->bconst, sizeof(b->bconst)) &&
@@ -1383,6 +1442,7 @@ static void ensure_room(uint32_t verts) {
         submit_pending();
         gpu_idle();
         s_nverts = 0;
+        fi_invalidate();                  /* this frame's earlier vertices are overwritten */
     }
 }
 
@@ -1607,6 +1667,7 @@ static int hook_xfer(uint32_t startdata) {
     if (dy + h > dst->used_h) dst->used_h = dy + h > FB_H ? FB_H : dy + h;
     dst->lru = s_lru++;
     s_cnt_xferblit++;
+    fi_invalidate();                       /* target-to-target blits are not logged */
     return 1;
 }
 
@@ -1656,6 +1717,320 @@ void gegpu_flush(const char *reason) {
     submit_pending();
 }
 
+/* ---- frame interpolation: matching, reprojection, replay ------------------------------------ */
+
+static uint32_t fi_hash(const uint32_t *k, int n) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < n; i++) { h ^= k[i]; h *= 16777619u; h ^= h >> 15; }
+    return h;
+}
+
+/* GE primitive start: register the draw in the frame table (3D only) and make it current. */
+static void hook_draw_begin(const GeDrawInfo *d) {
+    if (!s_fi_on) { s_fi_draw = -1; return; }
+    FiFrame *f = s_fi[s_fi_cur];
+    if (d->through || f->nd >= FI_MAX_DRAWS) { s_fi_draw = -1; if (!d->through) fi_invalidate(); return; }
+    /* occurrence of this key so far in the frame */
+    uint32_t occ = 0;
+    for (uint32_t i = fi_hash(d->key, 5) & (FI_HASH - 1);; i = (i + 1) & (FI_HASH - 1)) {
+        FiOcc *o = &f->o[i];
+        if (!o->n) { memcpy(o->k, d->key, sizeof(o->k)); o->n = 1; occ = 0; break; }
+        if (!memcmp(o->k, d->key, sizeof(o->k))) { occ = o->n++; break; }
+    }
+    FiDraw *x = &f->d[f->nd];
+    memcpy(x->m, d->m, sizeof(x->m)); memcpy(x->pv, d->pv, sizeof(x->pv));
+    memcpy(x->vp, d->vp, sizeof(x->vp)); memcpy(x->off, d->off, sizeof(x->off));
+    memcpy(x->key, d->key, sizeof(x->key)); x->occ = occ;
+    uint32_t k6[6]; memcpy(k6, d->key, 5 * sizeof(uint32_t)); k6[5] = occ;
+    for (uint32_t i = fi_hash(k6, 6) & (FI_HASH - 1);; i = (i + 1) & (FI_HASH - 1)) {
+        FiSlot *sl = &f->h[i];
+        if (sl->idx < 0) { memcpy(sl->k, k6, sizeof(k6)); sl->idx = f->nd; break; }
+    }
+    s_fi_draw = f->nd++;
+}
+
+static int fi_find(const FiFrame *f, const FiDraw *x) {
+    uint32_t k6[6]; memcpy(k6, x->key, 5 * sizeof(uint32_t)); k6[5] = x->occ;
+    for (uint32_t i = fi_hash(k6, 6) & (FI_HASH - 1);; i = (i + 1) & (FI_HASH - 1)) {
+        const FiSlot *sl = &f->h[i];
+        if (sl->idx < 0) return -1;
+        if (!memcmp(sl->k, k6, sizeof(k6))) return sl->idx;
+    }
+}
+
+static void fi_frame_clear(FiFrame *f) {
+    f->nd = 0;
+    for (int i = 0; i < FI_HASH; i++) { f->h[i].idx = -1; f->o[i].n = 0; }
+}
+
+/* 4x4 column-major inverse (Gauss-Jordan with partial pivoting). Returns 0 if singular. */
+static int inv44(const float *m, float *o) {
+    double a[4][8];
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) { a[r][c] = m[c * 4 + r]; a[r][c + 4] = r == c; }
+    }
+    for (int c = 0; c < 4; c++) {
+        int p = c;
+        for (int r = c + 1; r < 4; r++) if (fabs(a[r][c]) > fabs(a[p][c])) p = r;
+        if (fabs(a[p][c]) < 1e-12) return 0;
+        if (p != c) for (int k = 0; k < 8; k++) { double t = a[c][k]; a[c][k] = a[p][k]; a[p][k] = t; }
+        const double iv = 1.0 / a[c][c];
+        for (int k = 0; k < 8; k++) a[c][k] *= iv;
+        for (int r = 0; r < 4; r++) if (r != c) {
+            const double f = a[r][c];
+            if (f != 0.0) for (int k = 0; k < 8; k++) a[r][k] -= f * a[c][k];
+        }
+    }
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) o[c * 4 + r] = (float)a[r][c + 4];
+    return 1;
+}
+static void mul44(const float *a, const float *b, float *o) {
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+}
+
+/* The camera most draws of a frame use (its proj*view). */
+static const float *fi_main_pv(const FiFrame *f) {
+    int best = -1, bestn = 0;
+    const int lim = f->nd < 64 ? f->nd : 64;          /* candidates from the first draws */
+    for (int i = 0; i < lim; i++) {
+        int n = 0;
+        for (int j = 0; j < f->nd; j += (f->nd > 512 ? 4 : 1))
+            if (!memcmp(f->d[j].pv, f->d[i].pv, sizeof(f->d[i].pv))) n++;
+        if (n > bestn) { bestn = n; best = i; }
+    }
+    return best >= 0 ? f->d[best].pv : NULL;
+}
+
+/* Where a matrix sends a few points around the view, as a screen-scale distance: used to tell
+ * smooth motion from a camera cut, where interpolating would show a meaningless in-between. */
+static float fi_screen_jump(const float *pa, const float *pb) {
+    float ia[16];
+    if (!inv44(pa, ia)) return 1e9f;
+    static const float probe[3][4] = { { 0, 0, 0.5f, 1 }, { 0.5f, 0.5f, 0.5f, 1 }, { -0.5f, -0.5f, 0.9f, 1 } };
+    float worst = 0.0f;
+    for (int k = 0; k < 3; k++) {
+        /* a clip-space probe of frame a, back to world, into frame b */
+        float c[4] = { probe[k][0], probe[k][1], probe[k][2], probe[k][3] }, w[4], cb[4];
+        for (int r = 0; r < 4; r++) w[r] = ia[r] * c[0] + ia[4 + r] * c[1] + ia[8 + r] * c[2] + ia[12 + r] * c[3];
+        for (int r = 0; r < 4; r++) cb[r] = pb[r] * w[0] + pb[4 + r] * w[1] + pb[8 + r] * w[2] + pb[12 + r] * w[3];
+        if (cb[3] <= 1e-4f) return 1e9f;
+        const float dx = cb[0] / cb[3] - c[0], dy = cb[1] / cb[3] - c[1];
+        const float d = sqrtf(dx * dx + dy * dy);
+        if (d > worst) worst = d;
+    }
+    return worst;                                      /* in NDC units (2 = screen width) */
+}
+
+/* Shadow targets: private images the interpolated frame is replayed into, one per target slot.
+ * They share the real targets' depth buffers (the real frame is finished when they are used). */
+typedef struct {
+    VkImage img; VkDeviceMemory mem; VkImageView view; VkImageLayout layout;
+    VkDescriptorSet set_n, set_l;
+    VkFramebuffer fb; DepthEnt *fb_dep;
+} Shadow;
+static Shadow s_shadow[MAX_TGT];
+static PushVS *s_fi_vs;                    /* per-draw reprojection for the replay */
+
+static Shadow *shadow_get(int i) {
+    Shadow *s = &s_shadow[i];
+    Target *t = &s_tgts[i];
+    if (!t->used || !t->dep) return NULL;
+    if (!s->img) {
+        if (!make_image(SW, SH, VK_FORMAT_R8G8B8A8_UNORM,
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        &s->img, &s->mem)) { s->img = VK_NULL_HANDLE; return NULL; }
+        if (!make_view(s->img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &s->view)) return NULL;
+        s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        s->set_n = make_descriptor(s->view, s_smp_n, s_dpool_fix);
+        s->set_l = make_descriptor(s->view, s_smp_l, s_dpool_fix);
+    }
+    if (!s->fb || s->fb_dep != t->dep) {
+        if (s->fb) vkDestroyFramebuffer(s_dev, s->fb, NULL);
+        VkImageView views[2] = { s->view, t->dep->view };
+        VkFramebufferCreateInfo fbc = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+        fbc.renderPass = s_rp; fbc.attachmentCount = 2; fbc.pAttachments = views;
+        fbc.width = SW; fbc.height = SH; fbc.layers = 1;
+        if (vkCreateFramebuffer(s_dev, &fbc, NULL, &s->fb) != VK_SUCCESS) { s->fb = VK_NULL_HANDLE; return NULL; }
+        s->fb_dep = t->dep;
+    }
+    return s;
+}
+
+/* Replay the frame just finished into shadow targets, every 3D draw moved to time t between the
+ * previous frame (0) and this one (1). Returns the shadow slot holding `disp`, or -1. */
+static int fi_replay(Target *disp, float t) {
+    FiFrame *cur = s_fi[s_fi_cur], *prev = s_fi[s_fi_cur ^ 1];
+    if (!s_fi_ok || !s_fi_prev_ok || !s_fi_nops || !cur->nd) return -1;
+    const float *pvc = fi_main_pv(cur), *pvp = fi_main_pv(prev);
+    if (!pvc || !pvp) return -1;
+    if (fi_screen_jump(pvp, pvc) > 0.6f) return -1;       /* camera cut: nothing in between */
+    float cam[16], inv[16];                                /* camera-only step for unmatched draws */
+    {
+        float mid[16];
+        for (int k = 0; k < 16; k++) mid[k] = pvp[k] + (pvc[k] - pvp[k]) * t;
+        if (!inv44(pvc, inv)) return -1;
+        mul44(mid, inv, cam);
+    }
+    for (int i = 0; i < cur->nd; i++) {
+        const FiDraw *x = &cur->d[i];
+        PushVS *v = &s_fi_vs[i];
+        memset(v, 0, sizeof(*v));
+        const int j = fi_find(prev, x);
+        float R[16];
+        int have = 0;
+        if (j >= 0 && fi_screen_jump(prev->d[j].m, x->m) < 0.6f) {
+            float mid[16], ix[16];
+            for (int k = 0; k < 16; k++) mid[k] = prev->d[j].m[k] + (x->m[k] - prev->d[j].m[k]) * t;
+            if (inv44(x->m, ix)) { mul44(mid, ix, R); have = 1; }
+        }
+        if (!have && !memcmp(x->pv, pvc, sizeof(x->pv))) { memcpy(R, cam, sizeof(R)); have = 1; }
+        if (!have || x->vp[0] == 0.0f || x->vp[1] == 0.0f || x->vp[2] == 0.0f) continue;   /* drawn as is */
+        memcpy(v->R, R, sizeof(R));
+        v->vs[0] = x->vp[0]; v->vs[1] = x->vp[1]; v->vs[2] = x->vp[2]; v->vs[3] = 1.0f;
+        v->vc[0] = x->vp[3] - x->off[0]; v->vc[1] = x->vp[4] - x->off[1]; v->vc[2] = x->vp[5];
+    }
+
+    if (!cmd_begin()) return -1;
+    /* seed every shadow the log touches with its real target's finished image */
+    int used[MAX_TGT] = { 0 };
+    for (int o = 0; o < s_fi_nops; o++) used[s_fi_ops[o].tgt] = 1;
+    for (int i = 0; i < MAX_TGT; i++) {
+        if (!used[i]) continue;
+        Target *rt = &s_tgts[i];
+        Shadow *sh = shadow_get(i);
+        if (!sh || !rt->used) { vkEndCommandBuffer(s_cmd); return -1; }
+        to_layout(s_cmd, rt->img, VK_IMAGE_ASPECT_COLOR_BIT, &rt->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy ic = {0};
+        ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
+        ic.dstSubresource = ic.srcSubresource;
+        ic.extent.width = SW; ic.extent.height = SH; ic.extent.depth = 1;
+        vkCmdCopyImage(s_cmd, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sh->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+        to_layout(s_cmd, rt->img, VK_IMAGE_ASPECT_COLOR_BIT, &rt->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    VkDeviceSize zero = 0;
+    for (int o = 0; o < s_fi_nops; o++) {
+        const FiOp *op = &s_fi_ops[o];
+        Shadow *sh = &s_shadow[op->tgt];
+        if (op->type == FI_OP_SNAP) {                     /* feedback source copy, from the shadow */
+            to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkImageCopy ic = {0};
+            ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
+            ic.dstSubresource = ic.srcSubresource;
+            ic.extent.width = SW; ic.extent.height = SH; ic.extent.depth = 1;
+            vkCmdCopyImage(s_cmd, sh->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+            to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            continue;
+        }
+        Target *rt = &s_tgts[op->tgt];
+        to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        to_layout(s_cmd, rt->dep->img, VK_IMAGE_ASPECT_DEPTH_BIT, &rt->dep->layout,
+                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        VkRenderPassBeginInfo rbi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+        rbi.renderPass = s_rp; rbi.framebuffer = sh->fb;
+        rbi.renderArea.extent.width = SW; rbi.renderArea.extent.height = SH;
+        vkCmdBeginRenderPass(s_cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+        VkViewport vp = { 0, 0, (float)SW, (float)SH, 0.0f, 1.0f };
+        vkCmdSetViewport(s_cmd, 0, 1, &vp);
+        vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_vbuf, &zero);
+        vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 1, 1, &s_clut_set, 0, NULL);
+        VkPipeline curp = VK_NULL_HANDLE;
+        int last_draw = -2;
+        for (uint32_t k = 0; k < op->nb; k++) {
+            const Batch *b = &s_fi_b[op->b0 + k];
+            VkPipeline p = pipe_get(&b->key);
+            if (!p) continue;
+            if (p != curp) { vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p); curp = p; }
+            VkRect2D sc = { { b->sx * s_sc, b->sy * s_sc }, { (uint32_t)(b->sw * s_sc), (uint32_t)(b->sh * s_sc) } };
+            vkCmdSetScissor(s_cmd, 0, 1, &sc);
+            vkCmdSetBlendConstants(s_cmd, b->bconst);
+            vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(b->pc), &b->pc);
+            if (b->draw != last_draw) {
+                static const PushVS none = { { 0 }, { 0, 0, 0, 0 }, { 0 } };
+                const PushVS *v = (b->draw >= 0 && b->draw < cur->nd) ? &s_fi_vs[b->draw] : &none;
+                vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushPC), sizeof(PushVS), v);
+                last_draw = b->draw;
+            }
+            /* render-to-texture sources become their shadows */
+            VkDescriptorSet ds = b->dset;
+            for (int q = 0; q < MAX_TGT; q++) {
+                if (!s_tgts[q].used || !s_shadow[q].img) continue;
+                if (ds == s_tgts[q].set_n) { ds = s_shadow[q].set_n; break; }
+                if (ds == s_tgts[q].set_l) { ds = s_shadow[q].set_l; break; }
+            }
+            vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &ds, 0, NULL);
+            vkCmdDraw(s_cmd, b->count, 1, b->first, 0);
+        }
+        vkCmdEndRenderPass(s_cmd);
+        sh->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    cmd_submit();
+    s_snap_src = NULL;                     /* the snapshot image now holds shadow content */
+    s_cnt_interp++;
+    return (int)(disp - s_tgts);
+}
+
+/* Frame boundary (sceDisplaySetFrameBuf): replay the finished frame at time t into the shadow
+ * targets, then start recording the next frame. Returns the shadow image to show, or NULL. */
+void *gegpu_interp_frame(uint32_t fbaddr, int fmt, float t) {
+    if (!s_ready || !s_fi_on) return NULL;
+    if (s_nbatch) submit_pending();
+    uint32_t fba = fbaddr & 0x001FFFFFu;
+    Target *disp = NULL;
+    for (int i = 0; i < MAX_TGT; i++)
+        if (tgt_live(&s_tgts[i]) && s_tgts[i].fba == fba) { disp = &s_tgts[i]; break; }
+    int slot = -1;
+    if (t >= 0.0f && disp && (int)disp->fmt == (fmt & 3)) {
+        int used = 0;
+        for (int o = 0; o < s_fi_nops; o++) if (s_fi_ops[o].tgt == (int)(disp - s_tgts)) used = 1;
+        if (used) slot = fi_replay(disp, t);
+    }
+    if (slot < 0) s_cnt_interp_skip++;
+    /* next frame */
+    s_fi_prev_ok = s_fi_ok && s_fi[s_fi_cur]->nd > 0;
+    s_fi_cur ^= 1;
+    fi_frame_clear(s_fi[s_fi_cur]);
+    s_fi_nops = 0; s_fi_nb = 0;
+    s_fi_draw = -1;
+    if (s_nverts > MAX_VERTS / 2) {        /* restart the vertex ring between frames, not inside one */
+        gpu_idle();
+        s_nverts = 0;
+    }
+    s_fi_ok = 1;
+    if (slot < 0) return NULL;
+    Shadow *sh = &s_shadow[slot];
+    if (!cmd_begin()) return NULL;
+    to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    cmd_submit();
+    return (void *)sh->img;
+}
+
+int gegpu_interp_enabled(void) { return s_ready && s_fi_on; }
+
+/* Switch interpolation on or off at a frame boundary (settings menu). */
+void gegpu_interp_set(int on) {
+    on = on && s_fi_mem;
+    if (on && !s_fi_on) {                  /* start recording with a clean slate */
+        fi_frame_clear(s_fi[0]); fi_frame_clear(s_fi[1]);
+        s_fi_nops = 0; s_fi_nb = 0; s_fi_prev_ok = 0;
+    }
+    s_fi_on = on;
+    s_fi_ok = 0;                           /* the frame in progress started unrecorded */
+    s_fi_draw = -1;
+}
+
+/* Hand a shadow image returned by gegpu_interp_frame to the presenter. */
+int gegpu_present_interp(void *img) {
+    if (!img) return -1;
+    return sdl3vk_present_image(img);
+}
+
 /* Present: hand the GPU image straight to the swapchain. Returns 0 if this address is
  * not GPU-resident (CPU-written movie frames, pre-GPU content) — caller uses the
  * guest-VRAM path. */
@@ -1687,7 +2062,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 /* ---- init ----------------------------------------------------------------------------------- */
 
 static const GeGpuHooks k_hooks = {
-    hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer, hook_vram_read,
+    hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer, hook_vram_read, hook_draw_begin,
 };
 
 int gegpu_init(void) {
@@ -1758,16 +2133,27 @@ int gegpu_init(void) {
     dpc.maxSets = MAX_TEX; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   /* LRU eviction */
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_tex));
-    VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * MAX_TGT + 4 };
-    dpc.maxSets = 2 * MAX_TGT + 4; dpc.pPoolSizes = &dpsf;
+    VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * MAX_TGT + 4 };   /* targets, their interpolation shadows, fixed sets */
+    dpc.maxSets = 4 * MAX_TGT + 4; dpc.pPoolSizes = &dpsf;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_fix));
 
-    VkPushConstantRange pcr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) };
+    /* push constants: fragment state, then the vertex-stage reprojection (frame interpolation) */
+    {
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceProperties(s_pdev, &pp);
+        if (pp.limits.maxPushConstantsSize < sizeof(PushPC) + sizeof(PushVS))
+            fprintf(stderr, "gegpu: maxPushConstantsSize %u < %u: renderer unavailable\n",
+                    pp.limits.maxPushConstantsSize, (unsigned)(sizeof(PushPC) + sizeof(PushVS)));
+    }
+    VkPushConstantRange pcr[2] = {
+        { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) },
+        { VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushPC), sizeof(PushVS) },
+    };
     VkPipelineLayoutCreateInfo plc = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorSetLayout sets[2] = { s_dlayout, s_dlayout };   /* texture, depal palettes */
     plc.setLayoutCount = 2; plc.pSetLayouts = sets;
-    plc.pushConstantRangeCount = 1; plc.pPushConstantRanges = &pcr;
+    plc.pushConstantRangeCount = 2; plc.pPushConstantRanges = pcr;
     VKC(vkCreatePipelineLayout(s_dev, &plc, NULL, &s_playout));
 
     VkShaderModuleCreateInfo smc = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
@@ -1805,6 +2191,18 @@ int gegpu_init(void) {
                         &s_rsimg, &s_rsimg_mem)) return 0;
     }
     fprintf(stderr, "gegpu: internal resolution %ux%u (scale %d)\n", DRAW_W * s_sc, FB_H * s_sc, s_sc);
+
+    /* frame interpolation (graphics.cfg frame_interpolation=1, or SR_INTERP=1/0) */
+    {
+        const char *e = getenv("SR_INTERP");
+        s_fi[0] = (FiFrame *)calloc(1, sizeof(FiFrame));
+        s_fi[1] = (FiFrame *)calloc(1, sizeof(FiFrame));
+        s_fi_b = (Batch *)malloc(FI_MAX_BATCH * sizeof(Batch));
+        s_fi_vs = (PushVS *)malloc(FI_MAX_DRAWS * sizeof(PushVS));
+        s_fi_mem = s_fi[0] && s_fi[1] && s_fi_b && s_fi_vs;
+        gegpu_interp_set(e && e[0] ? (e[0] != '0') : sdl3vk_cfg_get("frame_interpolation", 1));
+        fprintf(stderr, "gegpu: frame interpolation %s\n", s_fi_on ? "on (60 fps output)" : "off");
+    }
 
     /* snapshot image for feedback (self-sampling) draws */
     if (!make_image(SW, SH, VK_FORMAT_R8G8B8A8_UNORM,

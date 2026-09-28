@@ -1671,10 +1671,49 @@ static void near_dump(const char *what, uint32_t a0, const VFmt *vf, const CVtx 
             ge.proj[12], ge.proj[13], ge.proj[14], ge.proj[15]);
 }
 
+/* 4x3 column-major (GE world/view/bone) -> 4x4 column-major. */
+static void m43to44(const float *a, float *o) {
+    o[0] = a[0]; o[1] = a[1]; o[2] = a[2];  o[3] = 0.0f;
+    o[4] = a[3]; o[5] = a[4]; o[6] = a[5];  o[7] = 0.0f;
+    o[8] = a[6]; o[9] = a[7]; o[10] = a[8]; o[11] = 0.0f;
+    o[12] = a[9]; o[13] = a[10]; o[14] = a[11]; o[15] = 1.0f;
+}
+/* o = a*b, 4x4 column-major (o may not alias a or b). */
+static void m44mul(const float *a, const float *b, float *o) {
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+}
+
+/* Tell the GPU backend which draw the following primitives belong to (frame interpolation). */
+static void draw_info_emit(uint32_t op, const VFmt *vf) {
+    if (!s_gpu || !s_gpu->draw_begin) return;
+    GeDrawInfo d;
+    memset(&d, 0, sizeof(d));
+    d.through = vf->through;
+    if (!vf->through) {
+        float v4[16], w4[16], b4[16], wb[16], vw[16];
+        m43to44(ge.view, v4);
+        m44mul(ge.proj, v4, d.pv);
+        m43to44(ge.world, w4);
+        if (vf->w_n) { m43to44(ge.bone, b4); m44mul(w4, b4, wb); }
+        else memcpy(wb, w4, sizeof(wb));
+        m44mul(v4, wb, vw);
+        m44mul(ge.proj, vw, d.m);
+        for (int i = 0; i < 6; i++) d.vp[i] = decode_float24(ge.viewport_raw[i]);
+        d.off[0] = (float)(ge.offsetx & 0xFFFF) / 16.0f;
+        d.off[1] = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    }
+    d.key[0] = ge.vtype; d.key[1] = (op >> 16) & 7; d.key[2] = op & 0xFFFF;
+    d.key[3] = ge.tex_enable ? ge.tex_addr : 0; d.key[4] = ge.fbp;
+    s_gpu->draw_begin(&d);
+}
+
 static void draw_prim(uint32_t op) {
     int type = (op >> 16) & 7;
     int count = op & 0xFFFF;
     VFmt vf; decode_vtype(ge.vtype, &vf);
+    draw_info_emit(op, &vf);
     /* SR_DRAWLOG=<frame>[,<frame>...]: print the target/texture/blend state of every prim drawn
      * in those frames (same fields as tools/ge_listdump.py --draws, for diffing vs PPSSPP). */
     {

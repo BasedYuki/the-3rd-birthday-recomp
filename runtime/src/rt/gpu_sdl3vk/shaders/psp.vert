@@ -15,13 +15,36 @@ layout(location = 1) noperspective out float v_rw;
 layout(location = 2) noperspective out float v_fog;
 layout(location = 3) noperspective out vec4  v_color;
 
+/* Frame interpolation (ge_gpu.c fi_replay): R moves this draw's clip-space positions from the
+ * frame being replayed to the in-between time. vs = viewport scale (x, y, z) and an enable
+ * flag, vc = viewport centre minus the screen offset. Live rendering pushes vs.w = 0. */
+layout(push_constant) uniform PCV {
+    layout(offset = 80) mat4 R;
+    vec4 vs;
+    vec4 vc;
+} pcv;
+
 void main() {
-    gl_Position = vec4(in_pos.x * (1.0 / 256.0) - 1.0,
-                       in_pos.y * (1.0 / 136.0) - 1.0,
-                       in_pos.z * (1.0 / 65535.0),
+    vec4 p = in_pos;
+    vec2 uv = in_uv;
+    if (pcv.vs.w != 0.0 && p.w > 0.0) {
+        /* screen -> clip (undo the divide and the viewport), move, project again */
+        float w = 1.0 / p.w;
+        vec3 ndc = (p.xyz - pcv.vc.xyz) / pcv.vs.xyz;
+        vec4 c = pcv.R * vec4(ndc * w, w);
+        if (c.w > 1e-3) {
+            float rw = 1.0 / c.w;
+            uv *= rw / p.w;                  /* the varying carries u*rw */
+            p.xyz = c.xyz * rw * pcv.vs.xyz + pcv.vc.xyz;
+            p.w = rw;
+        }
+    }
+    gl_Position = vec4(p.x * (1.0 / 256.0) - 1.0,
+                       p.y * (1.0 / 136.0) - 1.0,
+                       clamp(p.z, 0.0, 65535.0) * (1.0 / 65535.0),
                        1.0);
-    v_uv    = in_uv;
-    v_rw    = in_pos.w;
+    v_uv    = uv;
+    v_rw    = p.w;
     v_fog   = in_fog;
     v_color = in_color;
 }

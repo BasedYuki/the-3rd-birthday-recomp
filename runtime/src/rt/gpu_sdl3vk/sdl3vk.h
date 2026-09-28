@@ -50,6 +50,9 @@ void sdl3vk_menu_show(const char *const *lines, int n, int sel);
 /* Configured render scale in graphics.cfg (0 = auto) and writing it (takes effect on restart). */
 int  sdl3vk_render_scale_cfg(void);
 void sdl3vk_set_render_scale_cfg(int v);
+/* Any integer setting in graphics.cfg ("key=value" lines). */
+int  sdl3vk_cfg_get(const char *key, int def);
+void sdl3vk_cfg_set(const char *key, int v);
 int  sdl3vk_fullscreen(void);
 void sdl3vk_set_fullscreen(int on);
 /* F12: the next presented frame is saved as a PNG in screenshots/ (1 once saved). */

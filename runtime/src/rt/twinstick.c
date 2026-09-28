@@ -122,6 +122,7 @@ float sr_twinstick_setting(int id) {
     case SR_TS_INVERT_X:    return (float)s_inv_x;
     case SR_TS_INVERT_Y:    return (float)s_inv_y;
     case SR_TS_RECENTER:    return (float)s_recenter;
+    case SR_TS_TURNING:     return (s_yaw_vel != 0.0f || s_pitch_vel != 0.0f) ? 1.0f : 0.0f;
     default:                return 0.0f;
     }
 }

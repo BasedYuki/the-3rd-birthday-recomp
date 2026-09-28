@@ -22,6 +22,9 @@ is included in this repository.
 - Gameplay with ATRAC3/ATRAC3+ music and voices and the PSP sound chip (SAS)
 - Saving and loading (a virtual memory stick; a "Game saved" notice after each save)
 - Vulkan renderer at higher internal resolution (4x the PSP's on a 1080p screen)
+- **60 fps**: the game runs at 30 fps; an in-between frame is generated on the GPU for every
+  game frame (camera and object motion are blended; limb animation stays at 30). It can be
+  switched back to 30 in the settings menu.
 - Xbox, PlayStation and other controllers through SDL3, plus keyboard
 - **Twin-stick camera**: the right stick orbits the camera around Aya. Aiming follows
   the camera, and the game's own cameras take over for aiming, Overdive and Liberation.
@@ -47,7 +50,7 @@ is included in this repository.
 Most options are in the in-game settings menu (Esc). They are stored in plain text files
 next to the executable (created on first run):
 
-- `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8)
+- `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps)
 - `twinstick.cfg` — `sensitivity`, `invert_x`, `invert_y`, `recenter`,
   `recenter_delay`, `recenter_delay_still`
 

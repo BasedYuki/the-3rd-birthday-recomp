@@ -399,8 +399,8 @@ static void shot_save(void) {
     CreateDirectoryA("screenshots", NULL);
     SYSTEMTIME st; GetLocalTime(&st);
     WCHAR name[128];
-    _snwprintf(name, 128, L"screenshots\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u.png",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    _snwprintf(name, 128, L"screenshots\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u-%03u.png",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
     name[127] = 0;
     /* the alpha byte of the frame is not image content: force opaque */
     uint32_t *px = (uint32_t *)s_shot_map;
@@ -424,23 +424,42 @@ static void shot_save(void) {
  * From SR_SCALE, else graphics.cfg in the working directory:
  *   render_scale=0   (0 = match the display: the smallest scale that covers its height)
  * A missing graphics.cfg is written with the default so it can be edited. */
-int sdl3vk_render_scale_cfg(void) {
-    int v = 0;
+/* graphics.cfg: "key=integer" lines. */
+#define GCFG_MAX 8
+static int gcfg_load(char keys[GCFG_MAX][40], int *vals) {
+    int n = 0;
     FILE *f = fopen("graphics.cfg", "r");
-    if (f) {
-        char line[128];
-        while (fgets(line, sizeof(line), f)) { int x; if (sscanf(line, "render_scale=%d", &x) == 1) v = x; }
-        fclose(f);
+    if (!f) return 0;
+    char line[128];
+    while (n < GCFG_MAX && fgets(line, sizeof(line), f)) {
+        char k[40]; int v;
+        if (sscanf(line, "%39[^=]=%d", k, &v) == 2) { SDL_strlcpy(keys[n], k, 40); vals[n++] = v; }
     }
-    return v;
+    fclose(f);
+    return n;
 }
 
-void sdl3vk_set_render_scale_cfg(int v) {
+int sdl3vk_cfg_get(const char *key, int def) {
+    char keys[GCFG_MAX][40]; int vals[GCFG_MAX];
+    const int n = gcfg_load(keys, vals);
+    for (int i = 0; i < n; i++) if (!strcmp(keys[i], key)) return vals[i];
+    return def;
+}
+
+void sdl3vk_cfg_set(const char *key, int v) {
+    char keys[GCFG_MAX][40]; int vals[GCFG_MAX];
+    int n = gcfg_load(keys, vals), i;
+    for (i = 0; i < n; i++) if (!strcmp(keys[i], key)) break;
+    if (i == n) { if (n == GCFG_MAX) return; SDL_strlcpy(keys[n++], key, 40); }
+    vals[i] = v;
     FILE *f = fopen("graphics.cfg", "w");
     if (!f) return;
-    fprintf(f, "render_scale=%d\n", v);
+    for (int k = 0; k < n; k++) fprintf(f, "%s=%d\n", keys[k], vals[k]);
     fclose(f);
 }
+
+int sdl3vk_render_scale_cfg(void) { return sdl3vk_cfg_get("render_scale", 0); }
+void sdl3vk_set_render_scale_cfg(int v) { sdl3vk_cfg_set("render_scale", v); }
 
 int sdl3vk_render_scale(void) {
     if (s_scale > 0) return s_scale;
@@ -925,6 +944,24 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
         vkResetFences(s_dev, 1, &s_fence);
         shot_save();
+        /* SR_PACELOG=1: every 5 s, how many frames reached the screen and how evenly */
+        {
+            static int on = -1;
+            if (on < 0) on = getenv("SR_PACELOG") ? 1 : 0;
+            if (on) {
+                static Uint64 prev = 0, t0 = 0; static unsigned n = 0, slow = 0; static double maxgap = 0;
+                const Uint64 now = SDL_GetTicksNS();
+                if (prev) {
+                    const double g = (double)(now - prev) / 1e6;
+                    n++; if (g > 25.0) slow++; if (g > maxgap) maxgap = g;
+                } else t0 = now;
+                prev = now;
+                if (now - t0 >= 5000000000ull) {
+                    fprintf(stderr, "SCREEN 5s: %u frames, gaps >25ms %u, max %.0f ms\n", n, slow, maxgap);
+                    n = slow = 0; maxgap = 0; t0 = now;
+                }
+            }
+        }
 
         if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
             vkDeviceWaitIdle(s_dev);

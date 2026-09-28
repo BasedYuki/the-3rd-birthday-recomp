@@ -20,6 +20,15 @@ void gegpu_flush(const char *reason);
  * (CPU-written movie frames etc.) — the caller should convert guest VRAM instead. */
 int  gegpu_present(unsigned int fbaddr, int fmt, unsigned int stride);
 
+/* Frame interpolation. At the end of each game frame (sceDisplaySetFrameBuf) call
+ * gegpu_interp_frame: it replays the frame at time t between the previous frame (0) and this
+ * one (1) into private images and returns the image to show, or NULL (interpolation off,
+ * camera cut, movie, menu...). Show it with gegpu_present_interp, then the real frame. */
+void *gegpu_interp_frame(unsigned int fbaddr, int fmt, float t);
+int   gegpu_present_interp(void *img);
+int   gegpu_interp_enabled(void);
+void  gegpu_interp_set(int on);            /* takes effect from the next frame */
+
 void gegpu_shutdown(void);
 
 #ifdef __cplusplus

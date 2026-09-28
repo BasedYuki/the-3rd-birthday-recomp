@@ -279,13 +279,60 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 #ifdef SR_SDL3VK
+/* ---- frame interpolation presentation (see gui_present) ---------------------------------- */
+static int      s_fi_phase = 0;         /* 1: in-between frame due, 2: the held real frame due */
+static void    *s_fi_img = NULL;
+static uint32_t s_fi_fb = 0, s_fi_stride = 0;
+static int      s_fi_fmt = 0;
+
+static void fi_show_held(void) {
+    int shown = 1;
+    if (s_fi_phase == 1) shown = gegpu_present_interp(s_fi_img);
+    if (shown != 0) {
+        shown = gegpu_present(s_fi_fb, s_fi_fmt, s_fi_stride);
+        if (shown < 0) { convert_fb(s_fi_fb, s_fi_fmt, s_fi_stride); shown = sdl3vk_present_rgba(s_px); }
+    }
+    s_fi_phase = 0;
+    if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+}
+#endif
+
+/* Called by the scheduler on every vblank. */
+void gui_vblank(void) {
+#ifdef SR_SDL3VK
+    if (!s_sdl3 || !s_fi_phase) return;
+    /* SR_FI_SHOT=n: save the real frame before the n-th in-between frame, that frame and the
+     * real frame after it as screenshots (checking the interpolation) */
+    {
+        static long at = -2, n = 0;
+        if (at == -2) { const char *e = getenv("SR_FI_SHOT"); at = e ? atol(e) : -1; }
+        /* SR_FI_SHOT=turn: the first in-between frame while the camera is turning */
+        if (at == 0 && sr_twinstick_setting(SR_TS_TURNING) != 0.0f && s_fi_phase == 2) at = n + 2;
+        if (at > 0 && ((s_fi_phase == 2 && (n == at - 1 || n == at)) || (s_fi_phase == 1 && n + 1 == at)))
+            sdl3vk_request_screenshot();
+        if (s_fi_phase == 1) n++;
+    }
+    int shown;
+    if (s_fi_phase == 1) {
+        shown = gegpu_present_interp(s_fi_img);
+        s_fi_phase = 2;
+    } else {
+        shown = gegpu_present(s_fi_fb, s_fi_fmt, s_fi_stride);
+        if (shown < 0) { convert_fb(s_fi_fb, s_fi_fmt, s_fi_stride); shown = sdl3vk_present_rgba(s_px); }
+        s_fi_phase = 0;
+    }
+    if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+#endif
+}
+
+#ifdef SR_SDL3VK
 /* ---- in-game settings menu (Esc, or Back+Start on a controller) --------------------------
  * The game is paused while it is open: this loop keeps re-presenting the last frame with the
  * menu drawn over it and only returns when the menu closes. */
 static int s_input_block = 0;
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FPS, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -305,6 +352,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             snprintf(buf[M_RES], 96, "Resolution:  Auto  (now %dx)%s", active_scale, restart);
         else
             snprintf(buf[M_RES], 96, "Resolution:  %dx  (%dx%d)%s", cfg_scale, 480 * cfg_scale, 272 * cfg_scale, restart);
+        snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
         snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
         snprintf(buf[M_QUIT], 96, "Quit game");
@@ -339,6 +387,12 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 sdl3vk_set_render_scale_cfg(v);
                 break;
             }
+            case M_FPS: {
+                const int on = !gegpu_interp_enabled();
+                gegpu_interp_set(on);
+                sdl3vk_cfg_set("frame_interpolation", on);
+                break;
+            }
             case M_FULL: sdl3vk_set_fullscreen(!sdl3vk_fullscreen()); break;
             case M_SHOT: if (ev & SDL3VK_MENU_OK) sdl3vk_request_screenshot(); break;
             case M_QUIT: if (ev & SDL3VK_MENU_OK) { sdl3vk_shutdown(); _Exit(0); } break;
@@ -360,11 +414,28 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 #ifdef SR_SDL3VK
     if (s_sdl3) {
         /* GPU-resident framebuffer: blit straight from the GE's target image. Falls back
-         * to the guest-VRAM convert for CPU-written frames (movies) or pure software GE. */
-        int shown = gegpu_present(fbaddr, fmt, stride);
-        if (shown < 0) {
-            convert_fb(fbaddr, fmt, stride);
-            shown = sdl3vk_present_rgba(s_px);
+         * to the guest-VRAM convert for CPU-written frames (movies) or pure software GE.
+         * With frame interpolation, a game frame finished every second vblank (the game's
+         * 30 fps) is not shown now: the next vblank shows a frame halfway between it and the
+         * previous one, the vblank after that shows the frame itself (gui_vblank). */
+        int shown = 1;
+        void *mid = NULL;
+        if (gegpu_interp_enabled()) {
+            extern uint64_t sched_vblank_count(void);
+            static uint64_t last_flip = 0;
+            const uint64_t vb = sched_vblank_count();
+            if (s_fi_phase) fi_show_held();              /* still holding the previous frame */
+            mid = gegpu_interp_frame(fbaddr, fmt, vb - last_flip == 2 ? 0.5f : -1.0f);
+            last_flip = vb;
+        }
+        if (mid) {
+            s_fi_img = mid; s_fi_fb = fbaddr; s_fi_fmt = fmt; s_fi_stride = stride; s_fi_phase = 1;
+        } else {
+            shown = gegpu_present(fbaddr, fmt, stride);
+            if (shown < 0) {
+                convert_fb(fbaddr, fmt, stride);
+                shown = sdl3vk_present_rgba(s_px);
+            }
         }
         if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
         /* SR_PACELOG=1: every 5 s, how evenly frames were presented (stutter hunting) */
@@ -386,7 +457,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 }
             }
         }
-        if (sdl3vk_menu_events() & SDL3VK_MENU_TOGGLE) menu_run(fbaddr, fmt, stride);
+        if (sdl3vk_menu_events() & SDL3VK_MENU_TOGGLE) { s_fi_phase = 0; menu_run(fbaddr, fmt, stride); }
         s_buttons = sdl3vk_buttons();
         sdl3vk_analog(&s_lx, &s_ly);
         sdl3vk_rstick(&s_rx, &s_ry);

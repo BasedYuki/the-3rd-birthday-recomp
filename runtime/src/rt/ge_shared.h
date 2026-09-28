@@ -85,6 +85,18 @@ typedef struct {
  * pre-multiplied by rw (texel coords over w). */
 typedef struct GeVtx { float x, y, z, rw; float u, v; float fog; int r, g, b, a; } GeVtx;
 
+/* Per-draw description for frame interpolation (ge_gpu.c): emitted at the start of every GE
+ * primitive command. Matrices are 4x4 column-major. m = proj*view*world*bone0 (bone0 only for
+ * skinned vertices) maps model space to clip space; pv = proj*view. vp/off are the viewport
+ * scale (xs,ys,zs), centre (xc,yc,zc) and screen offset used to turn clip space into the
+ * screen-space vertices the backend receives. key identifies the draw across frames. */
+typedef struct GeDrawInfo {
+    int through;                /* 2D (through mode): nothing to reproject */
+    float m[16], pv[16];
+    float vp[6], off[2];
+    uint32_t key[5];            /* vtype, prim type, count, texture address, framebuffer */
+} GeDrawInfo;
+
 /* GPU rasterizer hooks. The primitive hooks return 1 when the primitive was taken by
  * the GPU backend (the software rasterizer is skipped) — in the full GPU renderer they
  * always take it. flush(reason) is called at GE sync points ("listend", "loadclut");
@@ -108,6 +120,8 @@ typedef struct GeGpuHooks {
     /* The CPU is about to READ guest memory (DMA memcpy source): write back any GPU-resident
      * framebuffer overlapping [addr, addr+bytes) into guest VRAM first. */
     void (*vram_read)(uint32_t addr, uint32_t bytes);
+    /* Start of a GE primitive command (frame interpolation bookkeeping). May be NULL. */
+    void (*draw_begin)(const GeDrawInfo *d);
 } GeGpuHooks;
 
 /* Implemented in ge.c. */

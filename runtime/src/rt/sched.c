@@ -251,9 +251,14 @@ static uint32_t run_interrupt_handler(uint32_t h, uint32_t a0) {
     return v0;
 }
 
+/* Vblanks delivered so far (frame interpolation times its presents on them). */
+uint64_t sched_vblank_count(void) { return s_vbl_count; }
+
 static void deliver_vblank(void) {
     vblank_pace();
     s_vbl_count++;
+    extern void gui_vblank(void);
+    gui_vblank();                        /* interpolated / held frames go out on vblanks */
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     if (getenv("SR_VBLOG") && (++vb % 1) == 0) fprintf(stderr, "vblank #%llu (handler=0x%x)\n", vb, h);
