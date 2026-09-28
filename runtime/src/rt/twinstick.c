@@ -229,6 +229,20 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
         *btn &= ~0x0100u;          /* L waits */
         *lx = 128; *ly = 0;        /* stick forward: face the camera's direction */
     }
+    /* Aim with the right stick: while L reaches the game (aiming, including the egg launcher),
+     * the PSP's single analog stick moves the aim. Feed it the right stick when that is pushed,
+     * so aiming works like a modern twin-stick shooter; the left stick still works otherwise. */
+    if ((*btn & 0x0100u) && gui_on()) {
+        float rx = 0.0f, ry = 0.0f;
+        gui_rstick(&rx, &ry);
+        if (s_inv_x) rx = -rx;
+        if (s_inv_y) ry = -ry;
+        if (rx * rx + ry * ry > 0.0004f) {
+            int ax = 128 + (int)lrintf(rx * 127.0f), ay = 128 + (int)lrintf(ry * 127.0f);
+            *lx = (uint8_t)(ax < 0 ? 0 : ax > 255 ? 255 : ax);
+            *ly = (uint8_t)(ay < 0 ? 0 : ay > 255 ? 255 : ay);
+        }
+    }
     /* What the game sees: L (aim, including the egg launcher) or Triangle (Overdive view)
      * switch to the game's own special cameras, which the orbit must leave alone. */
     s_btn_special = (*btn & (0x0100u | 0x1000u)) != 0;

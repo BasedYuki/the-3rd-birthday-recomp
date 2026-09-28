@@ -129,7 +129,22 @@ typedef struct {
     uint64_t lru;
     uint64_t render_gen;                   /* bumped per submit that rendered into this */
     uint64_t clean_gen;                    /* render_gen when guest VRAM last matched */
+    uint32_t used_h;                       /* rows rendered since the last VRAM seed (0 = none) */
+    int superseded;                        /* a newer target at the same address rendered since */
 } Target;
+
+/* Bytes of guest VRAM a target has actually rendered: only these rows can differ from VRAM.
+ * (Using the full 272 rows made small effect buffers overlap textures stored right after them:
+ * those draws took the readback path every frame.) */
+static uint32_t tgt_len(const void *tp) {
+    const Target *t = (const Target *)tp;
+    return t->stride * t->used_h * (t->fmt == 3 ? 4u : 2u);
+}
+/* A target whose GPU contents are the current truth for its address range. */
+static int tgt_live(const void *tp) {
+    const Target *t = (const Target *)tp;
+    return t->used && t->gpu_valid && !t->superseded;
+}
 
 /* ---- backend state -------------------------------------------------------------------- */
 static int s_ready = 0;
@@ -533,6 +548,21 @@ static int submit_pending(void) {
     t->gpu_valid = 1;
     t->render_gen++;
     s_cnt_submit++;
+    /* rows these draws can have touched: lowest vertex, clamped to the scissor */
+    for (uint32_t i = 0; i < s_nbatch; i++) {
+        const Batch *b = &s_batch[i];
+        float my = 0.0f;
+        for (uint32_t v = b->first; v < b->first + b->count; v++)
+            if (s_vmap[v].y > my) my = s_vmap[v].y;
+        uint32_t bh = my >= (float)FB_H ? FB_H : (uint32_t)ceilf(my);
+        const uint32_t lim = (uint32_t)(b->sy + b->sh);
+        if (bh > lim) bh = lim;
+        if (bh > t->used_h) t->used_h = bh;
+    }
+    /* the newest rendering at an address wins over other formats' targets there */
+    t->superseded = 0;
+    for (int i = 0; i < MAX_TGT; i++)
+        if (&s_tgts[i] != t && s_tgts[i].used && s_tgts[i].fba == t->fba) s_tgts[i].superseded = 1;
     if (s_log)
         fprintf(stderr, "GEGPU submit #%lu batches=%u verts=%u tgt=0x%08x/%u fmt=%u\n",
                 s_cnt_submit, s_nbatch, s_nverts, t->fba, t->stride, t->fmt);
@@ -625,7 +655,7 @@ static int target_readback_impl(Target *t) {
     if (!cmd_submit_wait()) return 0;
     const uint32_t *src = (const uint32_t *)s_xfer_map;
     uint32_t wb = t->stride < DRAW_W ? t->stride : DRAW_W;
-    for (uint32_t y = 0; y < FB_H; y++) {
+    for (uint32_t y = 0; y < t->used_h && y < FB_H; y++) {   /* rows below were never rendered */
         if (t->fmt == 3) {
             memcpy((uint32_t *)SR_HOST((0x04000000u | t->fba) + y * t->stride * 4),
                    src + y * FB_W, wb * 4);
@@ -671,6 +701,7 @@ static int target_upload_impl(Target *t) {
     t->gpu_valid = 1;
     t->render_gen++;                       /* image content changed (snapshot reuse check) */
     t->clean_gen = t->render_gen;          /* VRAM is the source: in sync by definition */
+    t->used_h = 0;                         /* nothing newer than VRAM yet */
     s_cnt_upload++;
     return 1;
 }
@@ -749,9 +780,22 @@ static Target *target_acquire(void) {
     uint32_t zstride = s_ge->zbw ? s_ge->zbw : stride;
     if (zstride > 512) zstride = 512;
 
+    /* One target per (address, stride, format). Effects reuse small scratch buffers in two
+     * formats alternately (the Overdive jump flips 0x154000 between 4444/64 and 5551/128 up
+     * to 20 times a second); converting through guest VRAM on every flip (readback, destroy,
+     * re-create, upload) stalled the game and broke up the audio. The other format's target
+     * is kept and marked superseded once this one renders. SR_GPU_REINTERPRET_COPY=1 restores
+     * the VRAM round trip for games that really read one format's pixels as another. */
+    static int reint_copy = -1;
+    if (reint_copy < 0) { const char *e = getenv("SR_GPU_REINTERPRET_COPY"); reint_copy = e && e[0] == '1'; }
     Target *t = NULL;
     for (int i = 0; i < MAX_TGT; i++)
-        if (s_tgts[i].used && s_tgts[i].fba == fba) { t = &s_tgts[i]; break; }
+        if (s_tgts[i].used && s_tgts[i].fba == fba && s_tgts[i].stride == stride && s_tgts[i].fmt == fmt) {
+            t = &s_tgts[i]; break;
+        }
+    if (!t && reint_copy)
+        for (int i = 0; i < MAX_TGT; i++)
+            if (s_tgts[i].used && s_tgts[i].fba == fba) { t = &s_tgts[i]; break; }
 
     if (t && (t->stride != stride || t->fmt != fmt)) {
         /* same address reinterpreted: preserve pixels through VRAM */
@@ -1161,10 +1205,8 @@ static void build_state(int persp, int sprite, Batch *b) {
             uint32_t ta = g->tex_addr & 0x001FFFFFu;
             for (int i = 0; i < MAX_TGT; i++) {
                 Target *ti = &s_tgts[i];
-                if (!ti->used || !ti->gpu_valid) continue;
-                uint32_t bpp_t = ti->fmt == 3 ? 4 : 2;
-                uint32_t flen = ti->stride * FB_H * bpp_t;
-                if (ta >= ti->fba && ta < ti->fba + flen) { src = ti; break; }
+                if (!tgt_live(ti)) continue;
+                if (ta >= ti->fba && ta < ti->fba + tgt_len(ti)) { src = ti; break; }
             }
         }
         if (src) {
@@ -1488,10 +1530,8 @@ static void hook_vram_read(uint32_t addr, uint32_t bytes) {
     int pending = 1;
     for (int i = 0; i < MAX_TGT; i++) {
         Target *t = &s_tgts[i];
-        if (!t->used || !t->gpu_valid) continue;
-        uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-        uint32_t flen = t->stride * FB_H * bpp_t;
-        if (a0 < t->fba + flen && t->fba < a0 + bytes) {
+        if (!tgt_live(t)) continue;
+        if (a0 < t->fba + tgt_len(t) && t->fba < a0 + bytes) {
             if (pending) { submit_pending(); pending = 0; }
             target_readback(t);
         }
@@ -1504,7 +1544,7 @@ static void hook_vram_read(uint32_t addr, uint32_t bytes) {
 static Target *target_containing(uint32_t a) {
     for (int i = 0; i < MAX_TGT; i++) {
         Target *t = &s_tgts[i];
-        if (!t->used) continue;
+        if (!t->used || t->superseded) continue;
         uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
         if (a >= t->fba && a < t->fba + t->stride * FB_H * bpp_t) return t;
     }
@@ -1558,6 +1598,7 @@ static int hook_xfer(uint32_t startdata) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!cmd_submit()) return 0;
     dst->render_gen++;                       /* content changed (snapshot/present tracking) */
+    if (dy + h > dst->used_h) dst->used_h = dy + h > FB_H ? FB_H : dy + h;
     dst->lru = s_lru++;
     s_cnt_xferblit++;
     return 1;
@@ -1582,10 +1623,8 @@ void gegpu_flush(const char *reason) {
         uint32_t bytes = (srcY + h) * (srcStride ? srcStride : 512u) * 4u;  /* conservative */
         for (int i = 0; i < MAX_TGT; i++) {
             Target *t = &s_tgts[i];
-            if (!t->used || !t->gpu_valid) continue;
-            uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-            uint32_t flen = t->stride * FB_H * bpp_t;
-            if (a0 < t->fba + flen && t->fba < a0 + bytes)
+            if (!tgt_live(t)) continue;
+            if (a0 < t->fba + tgt_len(t) && t->fba < a0 + bytes)
                 target_readback(t);
         }
         return;
@@ -1594,7 +1633,7 @@ void gegpu_flush(const char *reason) {
         /* debug dumps: materialize every GPU-resident target into guest VRAM */
         submit_pending();
         for (int i = 0; i < MAX_TGT; i++)
-            if (s_tgts[i].used && s_tgts[i].gpu_valid) target_readback(&s_tgts[i]);
+            if (tgt_live(&s_tgts[i])) target_readback(&s_tgts[i]);
         return;
     }
     if (reason && strcmp(reason, "loadclut") == 0) {
@@ -1602,10 +1641,8 @@ void gegpu_flush(const char *reason) {
         uint32_t ca = s_ge->clut_addr & 0x001FFFFFu;
         for (int i = 0; i < MAX_TGT; i++) {
             Target *t = &s_tgts[i];
-            if (!t->used || !t->gpu_valid) continue;
-            uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-            uint32_t flen = t->stride * FB_H * bpp_t;
-            if (ca < t->fba + flen && t->fba < ca + 2048)
+            if (!tgt_live(t)) continue;
+            if (ca < t->fba + tgt_len(t) && t->fba < ca + 2048)
                 target_readback(t);
         }
         return;
@@ -1623,7 +1660,7 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     uint32_t fba = fbaddr & 0x001FFFFFu;
     Target *t = NULL;
     for (int i = 0; i < MAX_TGT; i++)
-        if (s_tgts[i].used && s_tgts[i].fba == fba) { t = &s_tgts[i]; break; }
+        if (tgt_live(&s_tgts[i]) && s_tgts[i].fba == fba) { t = &s_tgts[i]; break; }
     if (!t || !t->gpu_valid || (int)t->fmt != (fmt & 3)) { s_cnt_present_cpu++; return -1; }
     if (t == s_cur && s_nbatch) submit_pending();
 
