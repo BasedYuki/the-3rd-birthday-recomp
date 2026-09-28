@@ -9,12 +9,13 @@
  * depth test, perspective-correct UV interpolation with TEXSCALE/TEXOFFSET, and flat/gouraud
  * shading. Points, lines, triangles (list/strip/fan) and sprites are rasterised.
  *
- * Per-fragment: texturing (5650/5551/4444/8888/CLUT4/CLUT8, swizzled or linear, bilinear),
+ * Per-fragment: texturing (5650/5551/4444/8888/CLUT4/8/16/32, swizzled or linear, bilinear),
  * programmable alpha test, alpha blending (full factor/equation set), 4x4 ordered dithering,
  * colour/alpha write masks, scissor, and a software 16-bit depth buffer.
  *
  * Not emulated: stencil ops (PSP stencil lives in destination alpha), logic ops, colour test,
- * bezier/spline patches, skinning/morphing, mipmaps (level 0 only), DXT/CLUT16/CLUT32 textures.
+ * bezier/spline patches, morphing, mipmaps (level 0 only), DXT textures. (Skinning is done in
+ * the vertex decode.) This game only sets colour test, logic op and morph weights to 0.
  *
  * Each GE command word is (cmd<<24)|data24. Command numbers follow PPSSPP GECommands.h.
  */

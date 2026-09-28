@@ -25,8 +25,9 @@ layout(push_constant) uniform PC {
     vec4  texenv;   /* rgb = GE_TEXENVCOLOR / 255 */
     vec4  fogcol;   /* rgb = GE_FOGCOLOR / 255 */
     vec4  texsize;  /* xy = tex dimensions, zw = texel offset (render-target sub-rect) */
-    ivec4 depal;    /* flag 512: x = target fmt | clut fmt<<4 | linear<<8,
-                       y = clut shift | mask<<8 | start<<16, z = palette row */
+    ivec4 depal;    /* flag 512: x = target fmt | clut fmt<<4 | linear<<8 | target stride<<12,
+                       y = clut shift | mask<<8 | start<<16, z = palette row,
+                       w = texture row width when it differs from the target's (0 = same) */
 } pc;
 
 /* Palettes for depal draws, one decoded palette per row (entry i at x = i). */
@@ -52,9 +53,31 @@ vec4 depal_texel(ivec2 p) {
     return texelFetch(u_clut, ivec2(int(idx), pc.depal.z), 0);
 }
 
+/* Row-width remap (depal.w = texture buffer width, 0 = none): texel t of the texture is the
+ * pixel at the same linear VRAM offset in a target rendered with a different row width
+ * (depal.x bits 12+). texsize.zw holds the texture's start inside the target. Fetches the
+ * centre of that pixel in the (possibly upscaled) target image. */
+vec4 depal_1x(ivec2 t) {
+    int stride = (pc.depal.x >> 12) & 1023;
+    int o = int(pc.texsize.w) * stride + int(pc.texsize.z) + t.y * pc.depal.w + t.x;
+    vec2 q = vec2(o % stride, o / stride);
+    vec2 sc = vec2(textureSize(u_tex, 0)) / pc.texsize.xy;
+    return depal_texel(ivec2((q + 0.5) * sc));
+}
+
 /* uv in 1x texel units. Linear filtering happens after the palette lookup, as on the PSP.
  * The target image may be rendered at a higher internal resolution: address its pixels. */
 vec4 depal_sample(vec2 uv) {
+    if (pc.depal.w > 0) {
+        vec2 tu = uv - pc.texsize.zw;                    /* texture-space texel coords */
+        if (((pc.depal.x >> 8) & 1) == 0) return depal_1x(ivec2(floor(tu)));
+        vec2 q = tu - 0.5;
+        ivec2 i = ivec2(floor(q));
+        vec2 f = q - floor(q);
+        vec4 a = mix(depal_1x(i), depal_1x(i + ivec2(1, 0)), f.x);
+        vec4 b = mix(depal_1x(i + ivec2(0, 1)), depal_1x(i + ivec2(1, 1)), f.x);
+        return mix(a, b, f.y);
+    }
     uv *= vec2(textureSize(u_tex, 0)) / pc.texsize.xy;
     if (((pc.depal.x >> 8) & 1) == 0) return depal_texel(ivec2(floor(uv)));
     vec2 q = uv - 0.5;

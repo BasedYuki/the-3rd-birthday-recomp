@@ -1226,15 +1226,21 @@ static void build_state(int persp, int sprite, Batch *b) {
              * an 8888 buffer, CLUT16 over a 16-bit one) also stays on the GPU: the shader
              * rebuilds the raw texel and looks it up in a palette row (clut_row_get). */
             int depal = (g->tex_fmt == 7 && src->fmt == 3) || (g->tex_fmt == 6 && src->fmt != 3);
+            /* A depal read may also use a different row width than the target was rendered
+             * with (the Overdive effect renders 128 wide and reads the same bytes 64 wide):
+             * the shader then maps each texel through its linear VRAM offset (depal[3]). */
+            const int remap = depal && g->tex_bufw && g->tex_bufw != src->stride;
             if (!nortt && (g->tex_fmt == src->fmt || depal) && !g->tex_swizzle &&
-                (g->tex_bufw == src->stride || g->tex_bufw == 0) && (toff % bpp_s) == 0) {
+                (g->tex_bufw == src->stride || g->tex_bufw == 0 || remap) && (toff % bpp_s) == 0) {
                 uint32_t pix = toff / bpp_s;
                 if (depal) {
                     flags |= F_DEPAL;
-                    b->pc.depal[0] = (int32_t)(src->fmt | ((g->clut_fmt & 3) << 4) | (linear << 8));
+                    b->pc.depal[0] = (int32_t)(src->fmt | ((g->clut_fmt & 3) << 4) | (linear << 8)
+                                               | (src->stride << 12));
                     b->pc.depal[1] = (int32_t)(((g->clut_fmt >> 2) & 0x1F) | (((g->clut_fmt >> 8) & 0xFF) << 8)
                                                | ((((g->clut_fmt >> 16) & 0x1F) << 4) << 16));
                     b->pc.depal[2] = clut_row_get();
+                    b->pc.depal[3] = remap ? (int32_t)g->tex_bufw : 0;
                     s_cnt_depal++;
                 }
                 if (src == s_cur) {
