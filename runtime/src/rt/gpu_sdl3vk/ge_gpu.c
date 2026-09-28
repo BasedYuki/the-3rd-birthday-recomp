@@ -755,6 +755,13 @@ static Target *target_acquire(void) {
 
     if (t && (t->stride != stride || t->fmt != fmt)) {
         /* same address reinterpreted: preserve pixels through VRAM */
+        static int nlog = 0;
+        if (nlog < 30) {
+            nlog++;
+            fprintf(stderr, "GEGPU reinterpret: fba=%06x stride %u->%u fmt %u->%u (dirty=%d)\n",
+                    (unsigned)fba, (unsigned)t->stride, (unsigned)stride, (unsigned)t->fmt, (unsigned)fmt,
+                    t->gpu_valid && t->clean_gen != t->render_gen);
+        }
         target_readback(t);
         if (t == s_cur) { submit_pending(); s_cur = NULL; }
         target_destroy(t);
@@ -1234,7 +1241,7 @@ static void build_state(int persp, int sprite, Batch *b) {
             } else {
                 /* incompatible stride/format reinterpretation: VRAM + decoder (rare) */
                 static int nlog = 0;
-                if (nlog < 40 && getenv("SR_GPU_RTTLOG")) {
+                if (nlog < 30) {
                     nlog++;
                     fprintf(stderr, "RTT slow: tex=%06x fmt=%u swz=%u bufw=%u %ux%u | tgt fba=%06x fmt=%u stride=%u cur=%d\n",
                             (unsigned)(g->tex_addr & 0x1FFFFFu), (unsigned)g->tex_fmt, (unsigned)g->tex_swizzle,

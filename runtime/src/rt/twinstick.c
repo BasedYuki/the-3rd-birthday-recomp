@@ -68,6 +68,8 @@ static float s_recenter_delay = 0.8f, s_recenter_delay_still = 2.0f;
 static int s_snap = 0;                               /* R3 / O reset in progress */
 static float s_idle_s = 0.0f;                        /* time since the right stick was last used */
 static int s_moving = 0;                             /* left stick pushed (last pad sample) */
+static int s_btn_special = 0;                        /* L or Triangle held (aim / Overdive view) */
+static int s_suspended = 0;                          /* a special camera is live: no orbit */
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
 static float s_yaw_vel = 0.0f, s_pitch_vel = 0.0f;   /* smoothed turn speed (rad/s) */
 static unsigned s_ticks = 0, s_hook_tick = 0;        /* pad reads, and the last one with a camera hook */
@@ -140,6 +142,7 @@ void sr_twinstick_tick(void) {
     /* Only while the gameplay camera is live (its hooks ran within the last few frames):
      * a stick push during a movie or menu must not bank an offset for later. */
     if (++s_ticks - s_hook_tick > 4) { s_yaw_vel = s_pitch_vel = 0.0f; return; }
+    if (s_suspended) { s_yaw_vel = s_pitch_vel = 0.0f; s_idle_s = 0.0f; return; }   /* special camera */
     float rx = 0.0f, ry = 0.0f;
     if (gui_on()) gui_rstick(&rx, &ry);
     if (g_script_rx != 0.0f || g_script_ry != 0.0f) { rx = g_script_rx; ry = g_script_ry; }
@@ -226,6 +229,9 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
         *btn &= ~0x0100u;          /* L waits */
         *lx = 128; *ly = 0;        /* stick forward: face the camera's direction */
     }
+    /* What the game sees: L (aim, including the egg launcher) or Triangle (Overdive view)
+     * switch to the game's own special cameras, which the orbit must leave alone. */
+    s_btn_special = (*btn & (0x0100u | 0x1000u)) != 0;
 }
 
 /* Rotate the eye of the camera object at base (eye +0x10, target +0x20) around its target by
@@ -305,19 +311,71 @@ static void check_cut(uint32_t src) {
     memcpy(s_cut_eye, e, sizeof(e));
 }
 
+/* Special cameras. The orbit only belongs on the game's normal follow camera. Aim (L, also the
+ * egg launcher), the Overdive view (Triangle), Overdive jumps and Liberation mode use the game's
+ * own cameras; rotating those put the eye inside Aya or fought the game's framing. Besides the
+ * buttons, a special camera shows as a field of view (camera object +0x50) different from the
+ * follow camera's. The follow camera's fov is learned as the value in use the longest (a small
+ * time-weighted table with slow decay), so a Liberation run of a few seconds doesn't become the
+ * reference. While a special camera is live the offset is dropped and nothing is rotated, so the
+ * normal camera comes back behind Aya. */
+#define FOV_SLOTS 6
+static struct { float fov, w; } s_fov[FOV_SLOTS];
+
+static float fov_standard(void) {
+    int best = -1;
+    for (int i = 0; i < FOV_SLOTS; i++)
+        if (s_fov[i].w > 3.0f && (best < 0 || s_fov[i].w > s_fov[best].w)) best = i;
+    return best >= 0 ? s_fov[best].fov : 0.0f;
+}
+
+static void fov_observe(float fov) {
+    for (int i = 0; i < FOV_SLOTS; i++) s_fov[i].w *= 0.9999f;   /* ~4 min memory at 30 Hz */
+    int hit = -1, low = 0;
+    for (int i = 0; i < FOV_SLOTS; i++) {
+        if (s_fov[i].w > 0.0f && fabsf(s_fov[i].fov - fov) <= 0.005f * fabsf(fov)) { hit = i; break; }
+        if (s_fov[i].w < s_fov[low].w) low = i;
+    }
+    if (hit < 0) { hit = low; s_fov[hit].fov = fov; s_fov[hit].w = 0.0f; }
+    s_fov[hit].w += 1.0f / 30.0f;
+}
+
+/* Decide, once per frame on the view camera's source, whether a special camera is live. */
+static void update_special(uint32_t src) {
+    float fov = rdf(src + 0x50);
+    const int fov_ok = fov > 0.05f && fov < 4.0f;
+    if (fov_ok && !s_btn_special) fov_observe(fov);
+    const float std = fov_standard();
+    const int by_fov = fov_ok && std > 0.0f && fabsf(fov - std) > 0.02f * std;
+    const int special = s_btn_special || by_fov;
+    if (special != s_suspended) {
+        static int n = 0;
+        if (n++ < 400)
+            fprintf(stderr, "twinstick: %s camera (fov %.3f, follow fov %.3f, %s)\n",
+                    special ? "special" : "follow", fov, std,
+                    s_btn_special ? "button held" : by_fov ? "fov differs" : "back to normal");
+        s_suspended = special;
+    }
+    if (special && (s_yaw_off != 0.0f || s_pitch_off != 0.0f)) {
+        reset_offset("special camera");
+        s_yaw_vel = s_pitch_vel = 0.0f;
+    }
+}
+
 void sr_func_hook(CpuState *s, uint32_t addr) {
     init_once();
     if (!s_on) return;
     s_hook_tick = s_ticks;
     switch (addr) {
     case HOOK_CAMERA_DERIVE:   /* a0 = camera object base (logic camera) */
-        if (s->r[4] == MEM_R32(ADDR_CAMERA_PTR) + ADDR_CAMERA_EYE_OFF - 0x10u)
+        if (!s_suspended && s->r[4] == MEM_R32(ADDR_CAMERA_PTR) + ADDR_CAMERA_EYE_OFF - 0x10u)
             rotate_camera(s->r[4], "logic camera");
         break;
     case HOOK_CAMERA_COPY:     /* copy(dst = a0, src = a1): the view camera's source */
         if (s->r[4] == MEM_R32(ADDR_VIEWCAM_PTR) && s->r[5] != s->r[4]) {
             check_cut(s->r[5]);
-            rotate_camera(s->r[5], "view camera source");
+            update_special(s->r[5]);
+            if (!s_suspended) rotate_camera(s->r[5], "view camera source");
         }
         break;
     default: break;
