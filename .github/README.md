@@ -30,19 +30,22 @@ is included in this repository.
 
 | Action | Controller | Keyboard |
 | --- | --- | --- |
-| Move | Left stick | — (a controller is needed) |
+| Move | Left stick | W A S D |
 | Camera (twin-stick orbit) | Right stick | I / J / K / L |
-| D-pad (the game's own camera turn) | D-pad | Arrow keys |
+| Aim while holding L | Right stick (or left stick) | I / J / K / L |
 | Reset camera behind Aya | Right stick click (R3) | O |
-| Camera speed | — | `-` / `=` |
-| Cross / Circle / Square / Triangle | A / B / X / Y | X / Z / A / S |
-| L / R | LB or LT / RB or RT | Q / W |
+| Cross / Circle / Square / Triangle | A / B / X / Y | X or Space / Z / C / V |
+| L / R | LB or LT / RB or RT | Q / E |
+| D-pad (the game's own camera turn) | D-pad | Arrow keys |
 | Start / Select | Menu / View | Enter / Shift |
+| Settings menu (pauses the game) | View + Menu together | Esc |
+| Screenshot (full render resolution, saved to `screenshots/`) | — | F12 |
 | Fullscreen | — | F11 or Alt+Enter |
 
 ## Settings
 
-Plain text files next to the executable (created on first run):
+Most options are in the in-game settings menu (Esc). They are stored in plain text files
+next to the executable (created on first run):
 
 - `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8)
 - `twinstick.cfg` — `sensitivity`, `invert_x`, `invert_y`, `recenter`,

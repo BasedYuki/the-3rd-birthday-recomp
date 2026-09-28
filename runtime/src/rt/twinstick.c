@@ -114,6 +114,29 @@ static void init_once(void) {
     if (s_speed > SENS_MAX) s_speed = SENS_MAX;
 }
 
+/* Settings for the in-game menu (gui.c). Changes are saved to twinstick.cfg at once. */
+float sr_twinstick_setting(int id) {
+    init_once();
+    switch (id) {
+    case SR_TS_SENSITIVITY: return s_speed;
+    case SR_TS_INVERT_X:    return (float)s_inv_x;
+    case SR_TS_INVERT_Y:    return (float)s_inv_y;
+    case SR_TS_RECENTER:    return (float)s_recenter;
+    default:                return 0.0f;
+    }
+}
+void sr_twinstick_set(int id, float v) {
+    init_once();
+    switch (id) {
+    case SR_TS_SENSITIVITY: s_speed = v < SENS_MIN ? SENS_MIN : v > SENS_MAX ? SENS_MAX : v; break;
+    case SR_TS_INVERT_X:    s_inv_x = v != 0.0f; break;
+    case SR_TS_INVERT_Y:    s_inv_y = v != 0.0f; break;
+    case SR_TS_RECENTER:    s_recenter = v != 0.0f; break;
+    default: return;
+    }
+    cfg_save();
+}
+
 static double now_s(void) {
     struct timespec ts; timespec_get(&ts, TIME_UTC);
     return (double)ts.tv_sec + ts.tv_nsec * 1e-9;

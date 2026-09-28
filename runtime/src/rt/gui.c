@@ -278,6 +278,81 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
 }
 
+#ifdef SR_SDL3VK
+/* ---- in-game settings menu (Esc, or Back+Start on a controller) --------------------------
+ * The game is paused while it is open: this loop keeps re-presenting the last frame with the
+ * menu drawn over it and only returns when the menu closes. */
+static int s_input_block = 0;
+
+static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+    enum { M_RESUME = 1, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    int sel = M_RESUME;
+    const int active_scale = sdl3vk_render_scale();
+    static int boot_cfg = -1;                      /* render_scale setting the game started with */
+    if (boot_cfg < 0) boot_cfg = sdl3vk_render_scale_cfg();
+    for (;;) {
+        char buf[M_COUNT + 1][96];
+        const char *lines[M_COUNT + 1];
+        const int cfg_scale = sdl3vk_render_scale_cfg();
+        snprintf(buf[0], 96, "Settings  (game paused)");
+        snprintf(buf[M_RESUME], 96, "Resume");
+        snprintf(buf[M_SPEED], 96, "Camera speed:  %.2f", sr_twinstick_setting(SR_TS_SENSITIVITY));
+        snprintf(buf[M_INVX], 96, "Invert camera left/right:  %s", sr_twinstick_setting(SR_TS_INVERT_X) != 0.0f ? "On" : "Off");
+        snprintf(buf[M_INVY], 96, "Invert camera up/down:  %s", sr_twinstick_setting(SR_TS_INVERT_Y) != 0.0f ? "On" : "Off");
+        snprintf(buf[M_RECENTER], 96, "Camera returns behind Aya:  %s", sr_twinstick_setting(SR_TS_RECENTER) != 0.0f ? "On" : "Off");
+        const char *restart = cfg_scale != boot_cfg ? "  (restart to apply)" : "";
+        if (cfg_scale <= 0)
+            snprintf(buf[M_RES], 96, "Resolution:  Auto  (now %dx)%s", active_scale, restart);
+        else
+            snprintf(buf[M_RES], 96, "Resolution:  %dx  (%dx%d)%s", cfg_scale, 480 * cfg_scale, 272 * cfg_scale, restart);
+        snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
+        snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
+        snprintf(buf[M_QUIT], 96, "Quit game");
+        for (int i = 0; i < M_COUNT; i++) lines[i] = buf[i];
+        snprintf(buf[M_COUNT], 96, "Esc / B: back     Enter / A: select     Left / Right: change");
+        lines[M_COUNT] = buf[M_COUNT];
+        sdl3vk_menu_show(lines, M_COUNT + 1, sel);
+
+        int shown = gegpu_present(fbaddr, fmt, stride);
+        if (shown < 0) shown = sdl3vk_present_rgba(s_px);
+        if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+
+        const int ev = sdl3vk_menu_events();
+        if (ev && getenv("SR_MENULOG")) fprintf(stderr, "menu: events 0x%x sel %d\n", ev, sel);
+        if (ev & (SDL3VK_MENU_TOGGLE | SDL3VK_MENU_BACK)) break;
+        if (ev & SDL3VK_MENU_UP)   sel = sel > M_RESUME ? sel - 1 : M_COUNT - 1;
+        if (ev & SDL3VK_MENU_DOWN) sel = sel < M_COUNT - 1 ? sel + 1 : M_RESUME;
+        const int dir = (ev & SDL3VK_MENU_RIGHT) ? 1 : (ev & SDL3VK_MENU_LEFT) ? -1 : (ev & SDL3VK_MENU_OK) ? 1 : 0;
+        if (dir) {
+            switch (sel) {
+            case M_RESUME: if (ev & SDL3VK_MENU_OK) goto done; break;
+            case M_SPEED:
+                sr_twinstick_set(SR_TS_SENSITIVITY, sr_twinstick_setting(SR_TS_SENSITIVITY) * (dir > 0 ? 1.15f : 1.0f / 1.15f));
+                break;
+            case M_INVX: sr_twinstick_set(SR_TS_INVERT_X, sr_twinstick_setting(SR_TS_INVERT_X) == 0.0f); break;
+            case M_INVY: sr_twinstick_set(SR_TS_INVERT_Y, sr_twinstick_setting(SR_TS_INVERT_Y) == 0.0f); break;
+            case M_RECENTER: sr_twinstick_set(SR_TS_RECENTER, sr_twinstick_setting(SR_TS_RECENTER) == 0.0f); break;
+            case M_RES: {
+                int v = cfg_scale + dir;
+                if (v < 0) v = 6;
+                if (v > 6) v = 0;
+                sdl3vk_set_render_scale_cfg(v);
+                break;
+            }
+            case M_FULL: sdl3vk_set_fullscreen(!sdl3vk_fullscreen()); break;
+            case M_SHOT: if (ev & SDL3VK_MENU_OK) sdl3vk_request_screenshot(); break;
+            case M_QUIT: if (ev & SDL3VK_MENU_OK) { sdl3vk_shutdown(); _Exit(0); } break;
+            default: break;
+            }
+        }
+        Sleep(15);
+    }
+done:
+    sdl3vk_menu_show(NULL, 0, 0);
+    s_input_block = 1;
+}
+#endif
+
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return;
     if (stride == 0) stride = 512;
@@ -311,10 +386,15 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 }
             }
         }
+        if (sdl3vk_menu_events() & SDL3VK_MENU_TOGGLE) menu_run(fbaddr, fmt, stride);
         s_buttons = sdl3vk_buttons();
         sdl3vk_analog(&s_lx, &s_ly);
         sdl3vk_rstick(&s_rx, &s_ry);
         s_pad_present = sdl3vk_pad_present();
+        if (s_input_block) {          /* after the menu: ignore input until everything is released */
+            if (s_buttons == 0 && s_lx > 88 && s_lx < 168 && s_ly > 88 && s_ly < 168) s_input_block = 0;
+            else { s_buttons = 0; s_lx = s_ly = 128; s_rx = s_ry = 0.0f; }
+        }
         goto pace;
     }
 #endif

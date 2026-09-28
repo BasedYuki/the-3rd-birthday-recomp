@@ -72,12 +72,12 @@ python "$ROOT/tools/toml_addrs.py" "$ROOT/versions/$GAME.toml" "$OUT/game_addrs.
 
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
          savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c twinstick.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
-gcc "${CFLAGS[@]}" -I"$OUT" -fuse-ld=lld -o "$OUT/$GAME.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
+gcc "${CFLAGS[@]}" -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \
-  -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -ldinput8 -ldxguid -lole32 -lwinmm \
+  -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 
-cp /ucrt64/bin/SDL3.dll "$OUT/"
+cp /ucrt64/bin/SDL3.dll "$OUT/" 2>/dev/null || echo "note: SDL3.dll in use (game running), kept the existing copy"
 cp -r "$RT/font" "$OUT/"
 echo "# init r28=0 r4=0 r5=0" > "$OUT/init.trace"
-echo "built $OUT/$GAME.exe"
+echo "built $OUT/${EXE_NAME:-$GAME}.exe"

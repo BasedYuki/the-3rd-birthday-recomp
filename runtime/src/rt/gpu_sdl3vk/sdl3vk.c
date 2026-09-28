@@ -63,6 +63,8 @@ static uint8_t  s_lx = 128, s_ly = 128;
 static float    s_rx = 0.0f, s_ry = 0.0f;   /* right stick, -1..1 (twin-stick camera) */
 static int      s_sens_steps = 0, s_sens_prev = 0;   /* camera sensitivity keys (- and =) */
 static int      s_camreset = 0, s_camreset_prev = 0; /* camera reset press (R3 / O) */
+static int      s_menu_ev = 0;                       /* SDL3VK_MENU_* events not yet taken */
+static int      s_shot_req = 0;                      /* F12: save the next frame */
 static int      s_pad_present;
 
 #define VK_TRY(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
@@ -235,12 +237,211 @@ static void toast_record(VkImage dst) {
     vkCmdCopyBufferToImage(s_cmd, s_toast_buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
 }
 
+/* ---- settings menu panel ----------------------------------------------------------------
+ * Same technique as the toast: GDI text into a bitmap, copied onto the swapchain image after
+ * the frame blit, centred. Line 0 is the title; the selected line gets an orange marker. */
+#define MENU_MAX_LINES 16
+#define MENU_MAX_W 1600
+#define MENU_MAX_H 1100
+static char     s_menu_lines[MENU_MAX_LINES][96];
+static int      s_menu_n = 0, s_menu_sel = 0, s_menu_dirty = 1;
+static int      s_menu_w = 0, s_menu_h = 0, s_menu_px = 0;
+static VkBuffer s_menu_buf; static VkDeviceMemory s_menu_mem; static void *s_menu_map;
+
+int sdl3vk_menu_events(void) { int e = s_menu_ev; s_menu_ev = 0; return e; }
+
+void sdl3vk_menu_show(const char *const *lines, int n, int sel) {
+    if (n > MENU_MAX_LINES) n = MENU_MAX_LINES;
+    int changed = n != s_menu_n || sel != s_menu_sel;
+    for (int i = 0; i < n; i++) {
+        if (strncmp(s_menu_lines[i], lines[i], sizeof(s_menu_lines[i]) - 1)) changed = 1;
+        SDL_strlcpy(s_menu_lines[i], lines[i], sizeof(s_menu_lines[i]));
+    }
+    s_menu_n = n; s_menu_sel = sel;
+    if (changed) s_menu_dirty = 1;
+}
+
+static int menu_render(int px) {
+    if (!s_menu_dirty && s_menu_px == px && s_menu_w) return 1;
+    if (!s_menu_buf) {
+        VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = (VkDeviceSize)MENU_MAX_W * MENU_MAX_H * 4;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (vkCreateBuffer(s_dev, &bci, NULL, &s_menu_buf) != VK_SUCCESS) return 0;
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, s_menu_buf, &mr);
+        VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        mai.allocationSize = mr.size;
+        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(s_dev, &mai, NULL, &s_menu_mem) != VK_SUCCESS) return 0;
+        vkBindBufferMemory(s_dev, s_menu_buf, s_menu_mem, 0);
+        vkMapMemory(s_dev, s_menu_mem, 0, VK_WHOLE_SIZE, 0, &s_menu_map);
+    }
+    HDC dc = CreateCompatibleDC(NULL);
+    HFONT font = CreateFontA(-px, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+    HFONT bold = CreateFontA(-px * 6 / 5, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+    HGDIOBJ oldf = SelectObject(dc, font);
+    const int pad = px, line_h = px * 8 / 5, bar = px / 4 > 3 ? px / 4 : 3;
+    int w = 0;
+    for (int i = 0; i < s_menu_n; i++) {
+        SIZE ts;
+        SelectObject(dc, i == 0 ? bold : font);
+        GetTextExtentPoint32A(dc, s_menu_lines[i], (int)strlen(s_menu_lines[i]), &ts);
+        if (ts.cx > w) w = ts.cx;
+    }
+    w += pad * 3 + bar;
+    int h = pad * 2 + line_h * s_menu_n + line_h / 2;
+    if (w > MENU_MAX_W) w = MENU_MAX_W;
+    if (h > MENU_MAX_H) h = MENU_MAX_H;
+    BITMAPINFO bi = {0};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    HBITMAP bm = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    int ok = bm && bits;
+    if (ok) {
+        HGDIOBJ oldb = SelectObject(dc, bm);
+        uint32_t *p = (uint32_t *)bits;
+        for (int i = 0; i < w * h; i++) p[i] = 0x00161616u;                        /* panel */
+        for (int y = 0; y < h; y++) for (int x = 0; x < bar; x++) p[y * w + x] = 0x00E08A2Eu;
+        SetBkMode(dc, TRANSPARENT);
+        for (int i = 0; i < s_menu_n; i++) {
+            int y = pad + i * line_h + (i > 0 ? line_h / 2 : 0);
+            if (i == s_menu_sel && i > 0)                                           /* selection */
+                for (int yy = y - px / 5; yy < y + line_h - px / 5 && yy < h; yy++)
+                    for (int x = bar; x < w; x++) p[yy * w + x] = 0x00402A18u;
+            SelectObject(dc, i == 0 ? bold : font);
+            SetTextColor(dc, i == 0 ? RGB(240, 150, 60) : i == s_menu_sel ? RGB(255, 255, 255) : RGB(190, 190, 190));
+            TextOutA(dc, bar + pad, y, s_menu_lines[i], (int)strlen(s_menu_lines[i]));
+        }
+        GdiFlush();
+        uint32_t *dst = (uint32_t *)s_menu_map;
+        for (int i = 0; i < w * h; i++) dst[i] = p[i] | 0xFF000000u;
+        SelectObject(dc, oldb);
+        DeleteObject(bm);
+    }
+    SelectObject(dc, oldf);
+    DeleteObject(font); DeleteObject(bold);
+    DeleteDC(dc);
+    if (!ok) return 0;
+    s_menu_w = w; s_menu_h = h; s_menu_px = px; s_menu_dirty = 0;
+    return 1;
+}
+
+static void menu_record(VkImage dst) {
+    if (s_menu_n <= 0) return;
+    int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
+    int px = dh / 30; if (px < 13) px = 13; if (px > 48) px = 48;
+    if (!menu_render(px)) return;
+    if (s_menu_w > dw || s_menu_h > dh) return;
+    VkBufferImageCopy c = {0};
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.bufferRowLength = (uint32_t)s_menu_w;
+    c.imageOffset.x = (dw - s_menu_w) / 2;
+    c.imageOffset.y = (dh - s_menu_h) / 2;
+    c.imageExtent.width = (uint32_t)s_menu_w; c.imageExtent.height = (uint32_t)s_menu_h; c.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, s_menu_buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+}
+
+int  sdl3vk_fullscreen(void) { return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN) != 0; }
+void sdl3vk_set_fullscreen(int on) { if (s_win) SDL_SetWindowFullscreen(s_win, on ? true : false); }
+void sdl3vk_request_screenshot(void) { s_shot_req = 1; }
+
+/* ---- screenshots (F12) -------------------------------------------------------------------
+ * The visible game image (at the internal resolution, without the menu or toasts) is copied to
+ * a host buffer during the present and saved as PNG through GDI+ into screenshots/. */
+typedef struct { UINT32 GdiplusVersion; void *DebugEventCallback; BOOL SuppressBackgroundThread; BOOL SuppressExternalCodecs; } GpStartupIn;
+int __stdcall GdiplusStartup(ULONG_PTR *token, const GpStartupIn *input, void *output);
+int __stdcall GdipCreateBitmapFromScan0(INT w, INT h, INT stride, INT format, BYTE *scan0, void **bitmap);
+int __stdcall GdipSaveImageToFile(void *image, const WCHAR *filename, const CLSID *encoder, const void *params);
+int __stdcall GdipDisposeImage(void *image);
+
+static VkBuffer s_shot_buf; static VkDeviceMemory s_shot_mem; static void *s_shot_map;
+static VkDeviceSize s_shot_cap = 0;
+static int s_shot_w = 0, s_shot_h = 0, s_shot_pending = 0;
+
+/* Record a copy of `src` (TRANSFER_SRC, w x h BGRA) into the screenshot buffer. */
+static void shot_record(VkImage src, int w, int h) {
+    VkDeviceSize need = (VkDeviceSize)w * h * 4;
+    if (need > s_shot_cap) {
+        if (s_shot_buf) { vkDestroyBuffer(s_dev, s_shot_buf, NULL); vkFreeMemory(s_dev, s_shot_mem, NULL); s_shot_buf = VK_NULL_HANDLE; }
+        VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = need; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (vkCreateBuffer(s_dev, &bci, NULL, &s_shot_buf) != VK_SUCCESS) return;
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, s_shot_buf, &mr);
+        VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        mai.allocationSize = mr.size;
+        mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(s_dev, &mai, NULL, &s_shot_mem) != VK_SUCCESS) return;
+        vkBindBufferMemory(s_dev, s_shot_buf, s_shot_mem, 0);
+        vkMapMemory(s_dev, s_shot_mem, 0, VK_WHOLE_SIZE, 0, &s_shot_map);
+        s_shot_cap = need;
+    }
+    VkBufferImageCopy c = {0};
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = (uint32_t)w; c.imageExtent.height = (uint32_t)h; c.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(s_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_shot_buf, 1, &c);
+    s_shot_w = w; s_shot_h = h; s_shot_pending = 1;
+}
+
+/* After the present's fence: write the PNG. */
+static void shot_save(void) {
+    if (!s_shot_pending) return;
+    s_shot_pending = 0;
+    static ULONG_PTR token = 0;
+    if (!token) { GpStartupIn in = { 1, NULL, FALSE, FALSE }; if (GdiplusStartup(&token, &in, NULL) != 0) { token = 0; return; } }
+    CreateDirectoryA("screenshots", NULL);
+    SYSTEMTIME st; GetLocalTime(&st);
+    WCHAR name[128];
+    _snwprintf(name, 128, L"screenshots\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u.png",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    name[127] = 0;
+    /* the alpha byte of the frame is not image content: force opaque */
+    uint32_t *px = (uint32_t *)s_shot_map;
+    for (int i = 0; i < s_shot_w * s_shot_h; i++) px[i] |= 0xFF000000u;
+    static const CLSID png = { 0x557CF406, 0x1A04, 0x11D3, { 0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E } };
+    void *bmp = NULL;
+    int ok = GdipCreateBitmapFromScan0(s_shot_w, s_shot_h, s_shot_w * 4, 0x0026200A /* 32bppARGB */,
+                                       (BYTE *)s_shot_map, &bmp) == 0 && bmp &&
+             GdipSaveImageToFile(bmp, name, &png, NULL) == 0;
+    if (bmp) GdipDisposeImage(bmp);
+    char msg[160];
+    if (ok) snprintf(msg, sizeof(msg), "Screenshot saved (%dx%d)", s_shot_w, s_shot_h);
+    else snprintf(msg, sizeof(msg), "Screenshot failed");
+    fprintf(stderr, "screenshot: %s %ls\n", msg, name);
+    sdl3vk_toast(msg, 2000);
+}
+
 /* ---- render scale ------------------------------------------------------------------ */
 
 /* Internal resolution multiplier for the GPU renderer (1 = PSP native 480x272, 4 = 1920x1088).
  * From SR_SCALE, else graphics.cfg in the working directory:
  *   render_scale=0   (0 = match the display: the smallest scale that covers its height)
  * A missing graphics.cfg is written with the default so it can be edited. */
+int sdl3vk_render_scale_cfg(void) {
+    int v = 0;
+    FILE *f = fopen("graphics.cfg", "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f)) { int x; if (sscanf(line, "render_scale=%d", &x) == 1) v = x; }
+        fclose(f);
+    }
+    return v;
+}
+
+void sdl3vk_set_render_scale_cfg(int v) {
+    FILE *f = fopen("graphics.cfg", "w");
+    if (!f) return;
+    fprintf(f, "render_scale=%d\n", v);
+    fclose(f);
+}
+
 int sdl3vk_render_scale(void) {
     if (s_scale > 0) return s_scale;
     int want = 0;
@@ -439,10 +640,43 @@ static void poll_input(int *quit) {
         switch (ev.type) {
         case SDL_EVENT_QUIT: *quit = 1; break;
         case SDL_EVENT_KEY_DOWN:
-            if (ev.key.key == SDLK_ESCAPE) *quit = 1;
             if (!ev.key.repeat && (ev.key.key == SDLK_F11 ||
-                                   (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
+                                   (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT)))) {
                 SDL_SetWindowFullscreen(s_win, !(SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN));
+                break;
+            }
+            if (!ev.key.repeat && ev.key.key == SDLK_F12) s_shot_req = 1;
+            /* settings menu: Esc opens/closes it; arrows, Enter/Space/X and Backspace drive it */
+            switch (ev.key.key) {
+            case SDLK_ESCAPE:    if (!ev.key.repeat) s_menu_ev |= SDL3VK_MENU_TOGGLE; break;
+            case SDLK_UP:    case SDLK_KP_8: case SDLK_W: s_menu_ev |= SDL3VK_MENU_UP; break;
+            case SDLK_DOWN:  case SDLK_KP_2: case SDLK_S: s_menu_ev |= SDL3VK_MENU_DOWN; break;
+            case SDLK_LEFT:  case SDLK_KP_4: case SDLK_A: s_menu_ev |= SDL3VK_MENU_LEFT; break;
+            case SDLK_RIGHT: case SDLK_KP_6: case SDLK_D: s_menu_ev |= SDL3VK_MENU_RIGHT; break;
+            case SDLK_RETURN: case SDLK_SPACE: case SDLK_X:
+                if (!ev.key.repeat && !(ev.key.mod & SDL_KMOD_ALT)) s_menu_ev |= SDL3VK_MENU_OK;
+                break;
+            case SDLK_BACKSPACE: case SDLK_Z: if (!ev.key.repeat) s_menu_ev |= SDL3VK_MENU_BACK; break;
+            default: break;
+            }
+            break;
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            switch (ev.gbutton.button) {
+            case SDL_GAMEPAD_BUTTON_DPAD_UP:    s_menu_ev |= SDL3VK_MENU_UP; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:  s_menu_ev |= SDL3VK_MENU_DOWN; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:  s_menu_ev |= SDL3VK_MENU_LEFT; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: s_menu_ev |= SDL3VK_MENU_RIGHT; break;
+            case SDL_GAMEPAD_BUTTON_SOUTH:      s_menu_ev |= SDL3VK_MENU_OK; break;
+            case SDL_GAMEPAD_BUTTON_EAST:       s_menu_ev |= SDL3VK_MENU_BACK; break;
+            case SDL_GAMEPAD_BUTTON_GUIDE:      s_menu_ev |= SDL3VK_MENU_TOGGLE; break;
+            case SDL_GAMEPAD_BUTTON_START:      /* Back (View) + Start (Menu): settings menu */
+            case SDL_GAMEPAD_BUTTON_BACK:
+                if (s_pad && SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_START) &&
+                    SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_BACK))
+                    s_menu_ev |= SDL3VK_MENU_TOGGLE;
+                break;
+            default: break;
+            }
             break;
         case SDL_EVENT_GAMEPAD_ADDED:
             if (!s_pad) s_pad = SDL_OpenGamepad(ev.gdevice.which);
@@ -458,21 +692,31 @@ static void poll_input(int *quit) {
 
     uint32_t b = 0;
     const bool *k = SDL_GetKeyboardState(NULL);
-    /* Same bindings as the GDI front-end (gui.c read_keys). */
+    /* Keyboard: WASD walk (the PSP analog stick), the Z X C V row is the face buttons,
+     * Q / E the shoulders, arrows the D-pad, I J K L the camera. */
     if (k[SDL_SCANCODE_RETURN] && !(SDL_GetModState() & SDL_KMOD_ALT)) b |= 0x0008;   /* START (Alt+Enter: fullscreen) */
     if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= 0x0001; /* SELECT */
-    if (k[SDL_SCANCODE_X]) b |= 0x4000;                            /* CROSS   */
+    if (k[SDL_SCANCODE_X] || k[SDL_SCANCODE_SPACE]) b |= 0x4000;   /* CROSS   */
     if (k[SDL_SCANCODE_Z]) b |= 0x2000;                            /* CIRCLE  */
-    if (k[SDL_SCANCODE_A]) b |= 0x8000;                            /* SQUARE  */
-    if (k[SDL_SCANCODE_S]) b |= 0x1000;                            /* TRIANGLE*/
+    if (k[SDL_SCANCODE_C]) b |= 0x8000;                            /* SQUARE  */
+    if (k[SDL_SCANCODE_V]) b |= 0x1000;                            /* TRIANGLE*/
     if (k[SDL_SCANCODE_Q]) b |= 0x0100;                            /* L       */
-    if (k[SDL_SCANCODE_W]) b |= 0x0200;                            /* R       */
+    if (k[SDL_SCANCODE_E]) b |= 0x0200;                            /* R       */
     if (k[SDL_SCANCODE_UP])    b |= 0x0010;
     if (k[SDL_SCANCODE_DOWN])  b |= 0x0040;
     if (k[SDL_SCANCODE_LEFT])  b |= 0x0080;
     if (k[SDL_SCANCODE_RIGHT]) b |= 0x0020;
 
     uint8_t lx = 128, ly = 128;
+    {
+        int kx = (k[SDL_SCANCODE_D] ? 1 : 0) - (k[SDL_SCANCODE_A] ? 1 : 0);
+        int ky = (k[SDL_SCANCODE_S] ? 1 : 0) - (k[SDL_SCANCODE_W] ? 1 : 0);
+        if (kx || ky) {
+            const int m = (kx && ky) ? 90 : 127;             /* keep diagonals at full length */
+            lx = (uint8_t)(128 + kx * m);
+            ly = (uint8_t)(128 + ky * m);
+        }
+    }
     /* Right stick for the camera: I/J/K/L on the keyboard, the gamepad's right stick below. */
     float rx = 0.0f, ry = 0.0f;
     if (k[SDL_SCANCODE_J]) rx -= 1.0f;
@@ -622,6 +866,8 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
             src = s_visimg;
         }
 
+        if (s_shot_req) { shot_record(src, srcw, srch); s_shot_req = 0; }
+
         /* fb image -> swapchain, aspect-correct letterbox blit */
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -650,6 +896,7 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        menu_record(s_swap_img[idx]);
         toast_record(s_swap_img[idx]);
         barrier(s_cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
@@ -677,6 +924,7 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
 
         vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
         vkResetFences(s_dev, 1, &s_fence);
+        shot_save();
 
         if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
             vkDeviceWaitIdle(s_dev);

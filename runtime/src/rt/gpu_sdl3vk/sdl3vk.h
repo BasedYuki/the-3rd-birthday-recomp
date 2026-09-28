@@ -38,6 +38,23 @@ int  sdl3vk_render_scale(void);
 /* Show a short status message in the window corner for ms milliseconds (0 = 2.5 s). */
 void sdl3vk_toast(const char *msg, int ms);
 
+/* Settings menu support. Navigation events since the last call (bit mask), from the keyboard
+ * (Esc toggles, arrows, Enter/Space/X, Backspace/Z) and the gamepad (Back+Start or Guide
+ * toggles, D-pad, A, B). */
+enum { SDL3VK_MENU_UP = 1, SDL3VK_MENU_DOWN = 2, SDL3VK_MENU_LEFT = 4, SDL3VK_MENU_RIGHT = 8,
+       SDL3VK_MENU_OK = 16, SDL3VK_MENU_BACK = 32, SDL3VK_MENU_TOGGLE = 64 };
+int  sdl3vk_menu_events(void);
+/* Draw a centred menu panel over the game (n lines, sel highlighted; line 0 is the title).
+ * n = 0 hides it. */
+void sdl3vk_menu_show(const char *const *lines, int n, int sel);
+/* Configured render scale in graphics.cfg (0 = auto) and writing it (takes effect on restart). */
+int  sdl3vk_render_scale_cfg(void);
+void sdl3vk_set_render_scale_cfg(int v);
+int  sdl3vk_fullscreen(void);
+void sdl3vk_set_fullscreen(int on);
+/* F12: the next presented frame is saved as a PNG in screenshots/ (1 once saved). */
+void sdl3vk_request_screenshot(void);
+
 /* Input state captured by the last present (PSP sceCtrl button mask / analog stick). */
 uint32_t sdl3vk_buttons(void);
 void     sdl3vk_analog(uint8_t *lx, uint8_t *ly);
