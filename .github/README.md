@@ -40,7 +40,7 @@ is included in this repository.
 | Cross / Circle / Square / Triangle | A / B / X / Y | X or Space / Z / C / V |
 | L / R | LB or LT / RB or RT | Q / E |
 | D-pad (the game's own camera turn) | D-pad | Arrow keys |
-| Start / Select | Menu / View | Enter / Shift |
+| Start / Select | Menu / View | Enter / Tab |
 | Settings menu (pauses the game) | View + Menu together | Esc |
 | Screenshot (full render resolution, saved to `screenshots/`) | — | F12 |
 | Fullscreen | — | F11 or Alt+Enter |

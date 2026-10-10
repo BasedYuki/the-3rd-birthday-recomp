@@ -659,6 +659,9 @@ static void poll_input(int *quit) {
         switch (ev.type) {
         case SDL_EVENT_QUIT: *quit = 1; break;
         case SDL_EVENT_KEY_DOWN:
+            if (getenv("SR_KEYLOG"))
+                fprintf(stderr, "keys: down key=0x%x scancode=%d mod=0x%x repeat=%d\n",
+                        (unsigned)ev.key.key, (int)ev.key.scancode, (unsigned)ev.key.mod, (int)ev.key.repeat);
             if (!ev.key.repeat && (ev.key.key == SDLK_F11 ||
                                    (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT)))) {
                 SDL_SetWindowFullscreen(s_win, !(SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN));
@@ -714,7 +717,7 @@ static void poll_input(int *quit) {
     /* Keyboard: WASD walk (the PSP analog stick), the Z X C V row is the face buttons,
      * Q / E the shoulders, arrows the D-pad, I J K L the camera. */
     if (k[SDL_SCANCODE_RETURN] && !(SDL_GetModState() & SDL_KMOD_ALT)) b |= 0x0008;   /* START (Alt+Enter: fullscreen) */
-    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= 0x0001; /* SELECT */
+    if (k[SDL_SCANCODE_TAB]) b |= 0x0001;                          /* SELECT (Tab: Shift is too easy to hold while walking) */
     if (k[SDL_SCANCODE_X] || k[SDL_SCANCODE_SPACE]) b |= 0x4000;   /* CROSS   */
     if (k[SDL_SCANCODE_Z]) b |= 0x2000;                            /* CIRCLE  */
     if (k[SDL_SCANCODE_C]) b |= 0x8000;                            /* SQUARE  */
@@ -784,6 +787,8 @@ static void poll_input(int *quit) {
     }
     s_rx = rx < -1.0f ? -1.0f : rx > 1.0f ? 1.0f : rx;
     s_ry = ry < -1.0f ? -1.0f : ry > 1.0f ? 1.0f : ry;
+    if (getenv("SR_KEYLOG") && (b != s_buttons || lx != s_lx || ly != s_ly))
+        fprintf(stderr, "keys: buttons 0x%04x stick %u,%u\n", (unsigned)b, (unsigned)lx, (unsigned)ly);
     s_buttons = b;
     s_lx = lx; s_ly = ly;
 }

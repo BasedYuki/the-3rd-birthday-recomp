@@ -248,6 +248,8 @@ static Batch   *s_fi_b;                    /* FI_MAX_BATCH batches logged this f
 static uint32_t s_fi_nb = 0;
 static unsigned long s_cnt_interp = 0, s_cnt_interp_skip = 0;
 static void fi_invalidate(void) { s_fi_ok = 0; }
+static int  fi_seed(int ti);               /* copy a target into its shadow before first use */
+static int  s_fi_seeded[MAX_TGT];                /* per target slot: shadow seeded this frame */
 
 static int s_log = 0;
 static unsigned long s_cnt_submit = 0, s_cnt_tri = 0, s_cnt_spr = 0, s_cnt_line = 0;
@@ -548,6 +550,10 @@ static int submit_pending(void) {
     if (!s_nbatch || !s_cur) { if (s_nbatch == 0) batches_reset(); return 1; }
     Target *t = s_cur;
     if (!cmd_begin()) { batches_reset(); return 0; }
+    /* interpolation: before this frame first draws into the target, keep its image as it was
+     * (the replay must start from the same content the real frame started from: trails and
+     * afterimages blend the previous frame) */
+    if (s_fi_on && s_fi_ok && !fi_seed((int)(t - s_tgts))) fi_invalidate();
 
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -1859,6 +1865,25 @@ static Shadow *shadow_get(int i) {
     return s;
 }
 
+/* Record (into the open command buffer) a copy of target ti as it is now into its shadow, once
+ * per frame: the starting point of the replay. Returns 0 if the shadow can't be made. */
+static int fi_seed(int ti) {
+    if (s_fi_seeded[ti]) return 1;
+    Target *rt = &s_tgts[ti];
+    Shadow *sh = shadow_get(ti);
+    if (!sh || !rt->used) return 0;
+    to_layout(s_cmd, rt->img, VK_IMAGE_ASPECT_COLOR_BIT, &rt->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy ic = {0};
+    ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
+    ic.dstSubresource = ic.srcSubresource;
+    ic.extent.width = SW; ic.extent.height = SH; ic.extent.depth = 1;
+    vkCmdCopyImage(s_cmd, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sh->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    s_fi_seeded[ti] = 1;
+    return 1;
+}
+
 /* Replay the frame just finished into shadow targets, every 3D draw moved to time t between the
  * previous frame (0) and this one (1). Returns the shadow slot holding `disp`, or -1. */
 static int fi_replay(Target *disp, float t) {
@@ -1893,39 +1918,29 @@ static int fi_replay(Target *disp, float t) {
         v->vc[0] = x->vp[3] - x->off[0]; v->vc[1] = x->vp[4] - x->off[1]; v->vc[2] = x->vp[5];
     }
 
+    /* every target the frame drew into was copied to its shadow before its first draw
+     * (fi_seed): the replay starts from exactly what the real frame started from */
+    for (int o = 0; o < s_fi_nops; o++)
+        if (s_fi_ops[o].type == FI_OP_RENDER && !s_fi_seeded[s_fi_ops[o].tgt]) return -1;
     if (!cmd_begin()) return -1;
-    /* seed every shadow the log touches with its real target's finished image */
-    int used[MAX_TGT] = { 0 };
-    for (int o = 0; o < s_fi_nops; o++) used[s_fi_ops[o].tgt] = 1;
-    for (int i = 0; i < MAX_TGT; i++) {
-        if (!used[i]) continue;
-        Target *rt = &s_tgts[i];
-        Shadow *sh = shadow_get(i);
-        if (!sh || !rt->used) { vkEndCommandBuffer(s_cmd); return -1; }
-        to_layout(s_cmd, rt->img, VK_IMAGE_ASPECT_COLOR_BIT, &rt->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        VkImageCopy ic = {0};
-        ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
-        ic.dstSubresource = ic.srcSubresource;
-        ic.extent.width = SW; ic.extent.height = SH; ic.extent.depth = 1;
-        vkCmdCopyImage(s_cmd, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sh->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
-        to_layout(s_cmd, rt->img, VK_IMAGE_ASPECT_COLOR_BIT, &rt->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    }
     VkDeviceSize zero = 0;
     for (int o = 0; o < s_fi_nops; o++) {
         const FiOp *op = &s_fi_ops[o];
         Shadow *sh = &s_shadow[op->tgt];
-        if (op->type == FI_OP_SNAP) {                     /* feedback source copy, from the shadow */
-            to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        if (op->type == FI_OP_SNAP) {      /* feedback source copy: the shadow if drawn this frame */
+            const int sd = s_fi_seeded[op->tgt];
+            Target *rt = &s_tgts[op->tgt];
+            VkImage src = sd ? sh->img : rt->img;
+            VkImageLayout *sl = sd ? &sh->layout : &rt->layout;
+            to_layout(s_cmd, src, VK_IMAGE_ASPECT_COLOR_BIT, sl, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             VkImageCopy ic = {0};
             ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
             ic.dstSubresource = ic.srcSubresource;
             ic.extent.width = SW; ic.extent.height = SH; ic.extent.depth = 1;
-            vkCmdCopyImage(s_cmd, sh->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+            vkCmdCopyImage(s_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
             to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            to_layout(s_cmd, sh->img, VK_IMAGE_ASPECT_COLOR_BIT, &sh->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            to_layout(s_cmd, src, VK_IMAGE_ASPECT_COLOR_BIT, sl, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             continue;
         }
         Target *rt = &s_tgts[op->tgt];
@@ -1960,7 +1975,7 @@ static int fi_replay(Target *disp, float t) {
             /* render-to-texture sources become their shadows */
             VkDescriptorSet ds = b->dset;
             for (int q = 0; q < MAX_TGT; q++) {
-                if (!s_tgts[q].used || !s_shadow[q].img) continue;
+                if (!s_tgts[q].used || !s_shadow[q].img || !s_fi_seeded[q]) continue;   /* undrawn: real = start of frame */
                 if (ds == s_tgts[q].set_n) { ds = s_shadow[q].set_n; break; }
                 if (ds == s_tgts[q].set_l) { ds = s_shadow[q].set_l; break; }
             }
@@ -1997,6 +2012,7 @@ void *gegpu_interp_frame(uint32_t fbaddr, int fmt, float t) {
     s_fi_cur ^= 1;
     fi_frame_clear(s_fi[s_fi_cur]);
     s_fi_nops = 0; s_fi_nb = 0;
+    memset(s_fi_seeded, 0, sizeof(s_fi_seeded));
     s_fi_draw = -1;
     if (s_nverts > MAX_VERTS / 2) {        /* restart the vertex ring between frames, not inside one */
         gpu_idle();
@@ -2018,6 +2034,7 @@ void gegpu_interp_set(int on) {
     on = on && s_fi_mem;
     if (on && !s_fi_on) {                  /* start recording with a clean slate */
         fi_frame_clear(s_fi[0]); fi_frame_clear(s_fi[1]);
+        memset(s_fi_seeded, 0, sizeof(s_fi_seeded));
         s_fi_nops = 0; s_fi_nb = 0; s_fi_prev_ok = 0;
     }
     s_fi_on = on;
