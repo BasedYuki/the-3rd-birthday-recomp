@@ -94,7 +94,7 @@ typedef struct GeDrawInfo {
     int through;                /* 2D (through mode): nothing to reproject */
     float m[16], pv[16];
     float vp[6], off[2];
-    uint32_t key[5];            /* vtype, prim type, count, texture address, framebuffer */
+    uint32_t key[5];            /* vtype, prim type, count, texture address, framebuffer format/width */
 } GeDrawInfo;
 
 /* GPU rasterizer hooks. The primitive hooks return 1 when the primitive was taken by

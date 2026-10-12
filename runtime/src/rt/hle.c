@@ -1172,7 +1172,12 @@ static uint32_t h_CtrlButtons(void) {
             extern int g_mpeg_sessions;
             static int stop_at = -2;
             if (stop_at == -2) { const char *e = getenv("SR_PADSTOP_MPEG"); stop_at = e ? atoi(e) : -1; }
-            if (stop_at > 0 && g_mpeg_sessions >= stop_at && scr_n > 0) {
+            /* SR_PADSTOP_LOAD=1: switch once a game save (not system data) has been loaded */
+            extern int g_savedata_loads;
+            static int stop_load = -1;
+            if (stop_load < 0) stop_load = getenv("SR_PADSTOP_LOAD") ? 1 : 0;
+            if (stop_load == 1 && g_savedata_loads > 0) { stop_at = 0; stop_load = 2; }
+            if (stop_at >= 0 && g_mpeg_sessions >= stop_at && scr_n > 0 && (stop_at > 0 || stop_load == 2)) {
                 /* SR_PADSCRIPT_AFTER=<file>: take over with a second script whose frame numbers
                  * count from this moment. */
                 scr_n = 0;
@@ -1251,7 +1256,7 @@ int g_script_lx = -1, g_script_ly = -1;   /* SR_PADSCRIPT analog override (-1 = 
 int g_mpeg_sessions = 0;                   /* sceMpegCreate count (mpeg.c), for SR_PADSTOP_MPEG */
 int g_mpeg_live = 0;                       /* movie sessions open right now (mpeg.c) */
 
-/* Skip the intro (graphics.cfg skip_intro, default on; SR_SKIPINTRO=0 disables). From boot until
+/* Skip the intro (graphics.cfg skip_intro, default off; SR_SKIPINTRO=1/0 forces it, also in scripted test runs). From boot until
  * the first movie starts the game runs in fast-forward, so the logos pass in a moment (the save
  * notice still waits for the player); the first movie is the opening, which the game skips on
  * START, so START is tapped until it closes. Returns the buttons to add to this sample. */
@@ -1266,8 +1271,8 @@ static uint32_t intro_skip_tick(void) {
     extern void sched_set_fast_forward(int on);
     if (state < 0) {
         const char *e = getenv("SR_SKIPINTRO");
-        int on = e && e[0] ? e[0] != '0' : gui_cfg_get("skip_intro", 1);
-        if (getenv("SR_PADSCRIPT") || getenv("SR_NOVBPACE")) on = 0;   /* scripted / turbo runs */
+        int on = e && e[0] ? e[0] != '0' : gui_cfg_get("skip_intro", 0);
+        if (!(e && e[0] == '1') && (getenv("SR_PADSCRIPT") || getenv("SR_NOVBPACE"))) on = 0;   /* scripted runs unless SR_SKIPINTRO=1 */
         state = on ? 1 : 0;
         t0 = intro_ms();
         if (on) { sched_set_fast_forward(1); fprintf(stderr, "intro: fast-forwarding to the opening movie\n"); }

@@ -247,6 +247,7 @@ static FiOp     s_fi_ops[FI_MAX_OPS];  static int s_fi_nops = 0;
 static Batch   *s_fi_b;                    /* FI_MAX_BATCH batches logged this frame */
 static uint32_t s_fi_nb = 0;
 static unsigned long s_cnt_interp = 0, s_cnt_interp_skip = 0;
+static unsigned long s_fi_stat[2][3];      /* [skinned][matched, camera only, as is] draws replayed */
 static void fi_invalidate(void) { s_fi_ok = 0; }
 static int  fi_seed(int ti);               /* copy a target into its shadow before first use */
 static int  s_fi_seeded[MAX_TGT];                /* per target slot: shadow seeded this frame */
@@ -639,6 +640,11 @@ static void stats_tick(void) {
     fprintf(stderr, "GEGPU time (5 s): gpu waits %lu = %.0f ms, tex decode %.0f ms, readback %.0f ms, upload %.0f ms\n",
             s_n_wait, s_t_wait / 1000.0, s_t_texdec / 1000.0, s_t_readback / 1000.0, s_t_upload / 1000.0);
     s_n_wait = 0; s_t_wait = s_t_texdec = s_t_readback = s_t_upload = 0;
+    if (s_fi_stat[0][0] + s_fi_stat[0][1] + s_fi_stat[0][2] + s_fi_stat[1][0] + s_fi_stat[1][1] + s_fi_stat[1][2]) {
+        fprintf(stderr, "GEGPU interp draws (5 s): rigid matched %lu camera %lu as-is %lu | skinned matched %lu camera %lu as-is %lu\n",
+                s_fi_stat[0][0], s_fi_stat[0][1], s_fi_stat[0][2], s_fi_stat[1][0], s_fi_stat[1][1], s_fi_stat[1][2]);
+        memset(s_fi_stat, 0, sizeof(s_fi_stat));
+    }
     if (s_rb_site[0].line) {
         fprintf(stderr, "GEGPU readbacks by site (5 s):");
         for (int i = 0; i < RB_SITES && s_rb_site[i].line; i++)
@@ -1906,10 +1912,25 @@ static int fi_replay(Target *disp, float t) {
         const int j = fi_find(prev, x);
         float R[16];
         int have = 0;
+        {   /* SR_FIDBG=1: why draws do (not) match the previous frame */
+            static int dbg = -1, nd = 0;
+            if (dbg < 0) dbg = getenv("SR_FIDBG") ? 1 : 0;
+            if (dbg && nd < 40 && (i % 50) == 0) {
+                nd++;
+                fprintf(stderr, "FIDBG draw %d key %06x/%u/%u/%06x/%06x occ %u -> prev %d (prev nd %d) jump %.3f\n",
+                        i, x->key[0], x->key[1], x->key[2], x->key[3], x->key[4], x->occ, j, prev->nd,
+                        j >= 0 ? fi_screen_jump(prev->d[j].m, x->m) : -1.0f);
+            }
+        }
         if (j >= 0 && fi_screen_jump(prev->d[j].m, x->m) < 0.6f) {
             float mid[16], ix[16];
             for (int k = 0; k < 16; k++) mid[k] = prev->d[j].m[k] + (x->m[k] - prev->d[j].m[k]) * t;
             if (inv44(x->m, ix)) { mul44(mid, ix, R); have = 1; }
+        }
+        {   /* matching statistics (stats line): 0 matched, 1 camera only, 2 drawn as is */
+            const int kind = have ? 0 : !memcmp(x->pv, pvc, sizeof(x->pv)) ? 1 : 2;
+            const int skin = ((x->key[0] >> 9) & 3) != 0;
+            s_fi_stat[skin][kind]++;
         }
         if (!have && !memcmp(x->pv, pvc, sizeof(x->pv))) { memcpy(R, cam, sizeof(R)); have = 1; }
         if (!have || x->vp[0] == 0.0f || x->vp[1] == 0.0f || x->vp[2] == 0.0f) continue;   /* drawn as is */

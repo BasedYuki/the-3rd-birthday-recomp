@@ -1705,7 +1705,9 @@ static void draw_info_emit(uint32_t op, const VFmt *vf) {
         d.off[1] = (float)(ge.offsety & 0xFFFF) / 16.0f;
     }
     d.key[0] = ge.vtype; d.key[1] = (op >> 16) & 7; d.key[2] = op & 0xFFFF;
-    d.key[3] = ge.tex_enable ? ge.tex_addr : 0; d.key[4] = ge.fbp;
+    /* not the framebuffer address: the game double-buffers, so consecutive frames draw the
+     * same things into alternating buffers (with it in the key nothing ever matched) */
+    d.key[3] = ge.tex_enable ? ge.tex_addr : 0; d.key[4] = ge.fbfmt | (ge.fbw << 8);
     s_gpu->draw_begin(&d);
 }
 

@@ -688,7 +688,7 @@ static void poll_input(int *quit) {
             if (!ev.key.repeat && ev.key.key == SDLK_F12) s_shot_req = 1;
             /* settings menu: Esc opens/closes it; arrows, Enter/Space/X and Backspace drive it */
             switch (ev.key.key) {
-            case SDLK_ESCAPE:    if (!ev.key.repeat) s_menu_ev |= SDL3VK_MENU_TOGGLE; break;
+            case SDLK_ESCAPE:    if (!ev.key.repeat) { s_menu_ev |= SDL3VK_MENU_TOGGLE; fprintf(stderr, "input: Esc (settings menu)\n"); } break;
             case SDLK_UP:    case SDLK_KP_8: case SDLK_W: s_menu_ev |= SDL3VK_MENU_UP; break;
             case SDLK_DOWN:  case SDLK_KP_2: case SDLK_S: s_menu_ev |= SDL3VK_MENU_DOWN; break;
             case SDLK_LEFT:  case SDLK_KP_4: case SDLK_A: s_menu_ev |= SDL3VK_MENU_LEFT; break;
@@ -708,7 +708,7 @@ static void poll_input(int *quit) {
             case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: s_menu_ev |= SDL3VK_MENU_RIGHT; break;
             case SDL_GAMEPAD_BUTTON_SOUTH:      s_menu_ev |= SDL3VK_MENU_OK; break;
             case SDL_GAMEPAD_BUTTON_EAST:       s_menu_ev |= SDL3VK_MENU_BACK; break;
-            case SDL_GAMEPAD_BUTTON_GUIDE:      s_menu_ev |= SDL3VK_MENU_TOGGLE; break;
+            case SDL_GAMEPAD_BUTTON_GUIDE:      s_menu_ev |= SDL3VK_MENU_TOGGLE; fprintf(stderr, "input: pad Guide (settings menu)\n"); break;
             case SDL_GAMEPAD_BUTTON_START:      /* Back (View) + Start (Menu): settings menu */
             case SDL_GAMEPAD_BUTTON_BACK:
                 if (s_pad && SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_START) &&
@@ -798,6 +798,9 @@ static void poll_input(int *quit) {
     }
     s_rx = rx < -1.0f ? -1.0f : rx > 1.0f ? 1.0f : rx;
     s_ry = ry < -1.0f ? -1.0f : ry > 1.0f ? 1.0f : ry;
+    /* button changes go to the log (capped): "the menu opened while walking" reports */
+    static int nlog = 0;
+    if (b != s_buttons && nlog < 4000) { nlog++; fprintf(stderr, "input: buttons 0x%04x\n", (unsigned)b); }
     if (getenv("SR_KEYLOG") && (b != s_buttons || lx != s_lx || ly != s_ly))
         fprintf(stderr, "keys: buttons 0x%04x stick %u,%u\n", (unsigned)b, (unsigned)lx, (unsigned)ly);
     s_buttons = b;

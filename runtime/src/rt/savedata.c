@@ -574,6 +574,7 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
     }
 }
 
+int g_savedata_loads = 0;                  /* game saves (not system data) loaded */
 uint32_t sr_savedata_execute(uint32_t param) {
     if (!param) return 0;
     uint32_t mode = MEM_R32(param + SDP_mode);
@@ -600,10 +601,14 @@ uint32_t sr_savedata_execute(uint32_t param) {
                 r = ERR_RW_MS_FULL;
             return r;
         }
-        case SD_AUTOLOAD: case SD_LOAD: case SD_LISTLOAD:
-            return do_load(param, game, save);
+        case SD_AUTOLOAD: case SD_LOAD: case SD_LISTLOAD: {
+            uint32_t r = do_load(param, game, save);
+            if (r == 0 && !strstr(save, "SYS")) g_savedata_loads++;   /* test scripts (SR_PADSTOP_LOAD) */
+            return r;
+        }
         case SD_READDATA: case SD_READDATASECURE: {
             uint32_t r = do_load(param, game, save);             /* PPSSPP error remap */
+            if (r == 0 && !strstr(save, "SYS")) g_savedata_loads++;
             if (r == ERR_LOAD_NO_DATA) r = ERR_RW_NO_DATA;
             if (r == ERR_LOAD_NOT_FOUND) r = ERR_RW_NOT_FOUND;
             return r;
