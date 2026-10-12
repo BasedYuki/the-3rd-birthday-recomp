@@ -1041,10 +1041,16 @@ static uint32_t h_AudioChReserve(CpuState *s) {
     int ch = (int)A0;
     if (ch < 0) { for (int i = 0; i < 8; i++) if (!s_audio_ch[i]) { ch = i; break; } }
     if (ch < 0 || ch >= 8) return 0xFFFFFFFF;
-    s_audio_ch[ch] = 1; s_audio_len[ch] = A1; s_audio_fmt[ch] = (int)A2 & 1;
+    s_audio_ch[ch] = 1; s_audio_len[ch] = A1; s_audio_fmt[ch] = (A2 & 0x10) != 0;   /* PSP_AUDIO_FORMAT_MONO = 0x10 */
     return (uint32_t)ch;
 }
 static uint32_t h_AudioChRelease(CpuState *s) { if (A0 < 8) s_audio_ch[A0] = 0; return 0; }
+/* sceAudioChangeChannelConfig(ch, format): switch a reserved channel between stereo and mono */
+static uint32_t h_AudioChangeChannelConfig(CpuState *s) {
+    if (A0 >= 8 || !s_audio_ch[A0]) return 0x80260008;     /* SCE_ERROR_AUDIO_CHANNEL_NOT_RESERVED */
+    s_audio_fmt[A0] = (A1 & 0x10) != 0;
+    return 0;
+}
 static uint32_t h_AudioSetChannelDataLen(CpuState *s) {
     if (A0 < 8 && A1 > 0 && A1 <= 65536) s_audio_len[A0] = A1;
     return 0;
@@ -1965,7 +1971,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x136caf51, "sceAudioOutputBlocking", h_AudioOutputBlocking);
     sr_hle_register(0x13f592bc, "sceAudioOutputPannedBlocking", h_AudioOutputPannedBlocking);
     sr_hle_register(0xe2d56b2d, "sceAudioOutputPanned", h_AudioOutputPannedBlocking);
-    sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_ok);
+    sr_hle_register(0x95fd0c2d, "sceAudioChangeChannelConfig", h_AudioChangeChannelConfig);
     sr_hle_register(0xb011922f, "sceAudioGetChannelRestLength", h_AudioRestLen);
     sr_hle_register(0xb7e1d8e7, "sceAudioChangeChannelVolume", h_ok);
     sr_hle_register(0xcb2e439e, "sceAudioSetChannelDataLen", h_AudioSetChannelDataLen);
