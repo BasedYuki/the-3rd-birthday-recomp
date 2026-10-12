@@ -1229,10 +1229,10 @@ static uint32_t h_CtrlButtons(void) {
             return keys;
         }
     }
-    /* The auto-START pulse below only exists to advance the intro/attract in headless or no-input
-     * runs. When a real controller is connected the player drives input themselves, so suppress the
-     * pulse (otherwise a phantom START every few seconds would keep opening the pause menu). */
-    if (getenv("SR_NOINPUT") || gui_pad_present()) return keys;
+    /* The auto-START pulse below only exists to advance the intro/attract in headless runs. With
+     * the game window open the player drives input (a keyboard player has no pad: the pulse used
+     * to open the pause menu every few seconds while they walked). */
+    if (getenv("SR_NOINPUT") || gui_on() || gui_pad_present()) return keys;
     /* Pulse START only, briefly, on a slow cadence to skip the (minutes-long) intro movie and the
      * "press start" prompt. Pressing CROSS/CIRCLE as well drove the menus into bad states (it
      * confirmed things the game was not ready for); START alone advances the intro without that.
