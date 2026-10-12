@@ -2246,12 +2246,22 @@ static void ge_note_unhandled_cmd(uint32_t cmd, uint32_t op) {
     if (on<0) { const char *e=getenv("SR_GEUNK"); on=(e&&e[0]=='0')?0:1; }
     cmd &= 0xFF;
     unsigned long bit = 1ul << (cmd & 31);
-    if (g_ge_unhandled_mask[cmd>>5] & bit) return;
+    /* Report each command once while it only switches a feature off (data 0, as this game does
+     * at boot), and once more the first time it carries a value: a later chapter turning on
+     * colour test, a logic op or morphing must not stay silent. */
+    static unsigned long nonzero_seen[8];
+    const int nz = (op & 0xFFFFFF) != 0;
+    if (nz) {
+        if (nonzero_seen[cmd>>5] & bit) return;
+        nonzero_seen[cmd>>5] |= bit;
+    } else {
+        if (g_ge_unhandled_mask[cmd>>5] & bit) return;
+    }
     g_ge_unhandled_mask[cmd>>5] |= bit;
     if (on) {
         const char *nm=ge_cmd_name(cmd);
-        fprintf(stderr,"GE: unhandled command 0x%02x (%s) data=0x%06x [reported once]\n",
-                cmd, nm?nm:"unknown", op&0xFFFFFF);
+        fprintf(stderr,"GE: unhandled command 0x%02x (%s) data=0x%06x [%s]\n",
+                cmd, nm?nm:"unknown", op&0xFFFFFF, nz ? "IN USE - may render wrong" : "reported once");
     }
 }
 
