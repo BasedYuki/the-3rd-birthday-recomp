@@ -238,6 +238,12 @@ void gui_toast(const char *msg) {
     if (s_sdl3) sdl3vk_toast(msg, 3000);
 #endif
 }
+int gui_cfg_get(const char *key, int def) {
+#ifdef SR_SDL3VK
+    if (s_sdl3) return sdl3vk_cfg_get(key, def);
+#endif
+    return def;
+}
 int gui_cam_reset(void) {
 #ifdef SR_SDL3VK
     if (s_sdl3) return sdl3vk_cam_reset();
@@ -301,6 +307,7 @@ static void fi_show_held(void) {
 void gui_vblank(void) {
 #ifdef SR_SDL3VK
     if (!s_sdl3 || !s_fi_phase) return;
+    { extern int sched_fast_forward(void); if (sched_fast_forward()) { s_fi_phase = 0; return; } }
     /* SR_FI_SHOT=n: save the real frame before the n-th in-between frame, that frame and the
      * real frame after it as screenshots (checking the interpolation) */
     {
@@ -332,7 +339,7 @@ void gui_vblank(void) {
 static int s_input_block = 0;
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FPS, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FPS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -353,6 +360,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         else
             snprintf(buf[M_RES], 96, "Resolution:  %dx  (%dx%d)%s", cfg_scale, 480 * cfg_scale, 272 * cfg_scale, restart);
         snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
+        snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 1) ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
         snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
         snprintf(buf[M_QUIT], 96, "Quit game");
@@ -387,6 +395,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 sdl3vk_set_render_scale_cfg(v);
                 break;
             }
+            case M_INTRO: sdl3vk_cfg_set("skip_intro", !sdl3vk_cfg_get("skip_intro", 1)); break;
             case M_FPS: {
                 const int on = !gegpu_interp_enabled();
                 gegpu_interp_set(on);
@@ -420,6 +429,19 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
          * previous one, the vblank after that shows the frame itself (gui_vblank). */
         int shown = 1;
         void *mid = NULL;
+        extern int sched_fast_forward(void);
+        if (sched_fast_forward()) {           /* intro skip: show every 4th frame, no waiting */
+            static unsigned ffn = 0;
+            s_fi_phase = 0;
+            if ((ffn++ & 3) != 0) return;
+            shown = gegpu_present(fbaddr, fmt, stride);
+            if (shown < 0) { convert_fb(fbaddr, fmt, stride); shown = sdl3vk_present_rgba(s_px); }
+            if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+            s_buttons = sdl3vk_buttons();
+            sdl3vk_analog(&s_lx, &s_ly);
+            sdl3vk_rstick(&s_rx, &s_ry);
+            return;
+        }
         if (gegpu_interp_enabled()) {
             extern uint64_t sched_vblank_count(void);
             static uint64_t last_flip = 0;

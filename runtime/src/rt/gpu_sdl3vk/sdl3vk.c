@@ -64,6 +64,21 @@ static float    s_rx = 0.0f, s_ry = 0.0f;   /* right stick, -1..1 (twin-stick ca
 static int      s_sens_steps = 0, s_sens_prev = 0;   /* camera sensitivity keys (- and =) */
 static int      s_camreset = 0, s_camreset_prev = 0; /* camera reset press (R3 / O) */
 static int      s_menu_ev = 0;                       /* SDL3VK_MENU_* events not yet taken */
+static uint32_t s_key_taps = 0;                      /* PSP buttons of keys pressed since the last poll */
+/* keyboard -> PSP buttons */
+static const struct { SDL_Scancode sc; uint32_t bit; } k_keymap[] = {
+    { SDL_SCANCODE_RETURN, 0x0008 },       /* START */
+    { SDL_SCANCODE_TAB,    0x0001 },       /* SELECT (not Shift: too easy to hold while walking) */
+    { SDL_SCANCODE_X,      0x4000 }, { SDL_SCANCODE_SPACE, 0x4000 },   /* CROSS */
+    { SDL_SCANCODE_Z,      0x2000 },       /* CIRCLE */
+    { SDL_SCANCODE_C,      0x8000 },       /* SQUARE */
+    { SDL_SCANCODE_V,      0x1000 },       /* TRIANGLE */
+    { SDL_SCANCODE_Q,      0x0100 },       /* L */
+    { SDL_SCANCODE_E,      0x0200 },       /* R */
+    { SDL_SCANCODE_UP,     0x0010 }, { SDL_SCANCODE_DOWN, 0x0040 },
+    { SDL_SCANCODE_LEFT,   0x0080 }, { SDL_SCANCODE_RIGHT, 0x0020 },
+    { SDL_SCANCODE_UNKNOWN, 0 },
+};
 static int      s_shot_req = 0;                      /* F12: save the next frame */
 static int      s_pad_present;
 
@@ -659,6 +674,9 @@ static void poll_input(int *quit) {
         switch (ev.type) {
         case SDL_EVENT_QUIT: *quit = 1; break;
         case SDL_EVENT_KEY_DOWN:
+            if (!ev.key.repeat)
+                for (int i = 0; k_keymap[i].bit; i++)
+                    if (k_keymap[i].sc == ev.key.scancode) s_key_taps |= k_keymap[i].bit;
             if (getenv("SR_KEYLOG"))
                 fprintf(stderr, "keys: down key=0x%x scancode=%d mod=0x%x repeat=%d\n",
                         (unsigned)ev.key.key, (int)ev.key.scancode, (unsigned)ev.key.mod, (int)ev.key.repeat);
@@ -712,22 +730,15 @@ static void poll_input(int *quit) {
         }
     }
 
-    uint32_t b = 0;
-    const bool *k = SDL_GetKeyboardState(NULL);
     /* Keyboard: WASD walk (the PSP analog stick), the Z X C V row is the face buttons,
-     * Q / E the shoulders, arrows the D-pad, I J K L the camera. */
-    if (k[SDL_SCANCODE_RETURN] && !(SDL_GetModState() & SDL_KMOD_ALT)) b |= 0x0008;   /* START (Alt+Enter: fullscreen) */
-    if (k[SDL_SCANCODE_TAB]) b |= 0x0001;                          /* SELECT (Tab: Shift is too easy to hold while walking) */
-    if (k[SDL_SCANCODE_X] || k[SDL_SCANCODE_SPACE]) b |= 0x4000;   /* CROSS   */
-    if (k[SDL_SCANCODE_Z]) b |= 0x2000;                            /* CIRCLE  */
-    if (k[SDL_SCANCODE_C]) b |= 0x8000;                            /* SQUARE  */
-    if (k[SDL_SCANCODE_V]) b |= 0x1000;                            /* TRIANGLE*/
-    if (k[SDL_SCANCODE_Q]) b |= 0x0100;                            /* L       */
-    if (k[SDL_SCANCODE_E]) b |= 0x0200;                            /* R       */
-    if (k[SDL_SCANCODE_UP])    b |= 0x0010;
-    if (k[SDL_SCANCODE_DOWN])  b |= 0x0040;
-    if (k[SDL_SCANCODE_LEFT])  b |= 0x0080;
-    if (k[SDL_SCANCODE_RIGHT]) b |= 0x0020;
+     * Q / E the shoulders, arrows the D-pad, I J K L the camera. Keys pressed and released
+     * between two polls still count once (s_key_taps), so a quick tap is never lost. */
+    uint32_t b = s_key_taps;
+    s_key_taps = 0;
+    const bool *k = SDL_GetKeyboardState(NULL);
+    for (int i = 0; k_keymap[i].bit; i++)
+        if (k[k_keymap[i].sc]) b |= k_keymap[i].bit;
+    if ((b & 0x0008u) && (SDL_GetModState() & SDL_KMOD_ALT)) b &= ~0x0008u;   /* Alt+Enter: fullscreen */
 
     uint8_t lx = 128, ly = 128;
     {

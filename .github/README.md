@@ -20,6 +20,7 @@ is included in this repository.
 
 - Boot, menus, movies (H.264 via Windows Media Foundation) with their audio
 - Gameplay with ATRAC3/ATRAC3+ music and voices and the PSP sound chip (SAS)
+- Skips the boot logos and the opening movie (setting "Skip intro at start")
 - Saving and loading (a virtual memory stick; a "Game saved" notice after each save)
 - Vulkan renderer at higher internal resolution (4x the PSP's on a 1080p screen)
 - **60 fps**: the game runs at 30 fps; an in-between frame is generated on the GPU for every
@@ -50,7 +51,7 @@ is included in this repository.
 Most options are in the in-game settings menu (Esc). They are stored in plain text files
 next to the executable (created on first run):
 
-- `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps)
+- `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps), `skip_intro` (1 = skip logos and opening movie)
 - `twinstick.cfg` — `sensitivity`, `invert_x`, `invert_y`, `recenter`,
   `recenter_delay`, `recenter_delay_still`
 

@@ -27,6 +27,7 @@
 #include <wchar.h>
 #include <setjmp.h>
 #include <direct.h>   /* _mkdir for the writable fs/ scratch dir */
+#include <time.h>     /* timespec_get: intro skip timeouts */
 
 uint32_t sr_last_nid = 0;
 
@@ -1248,10 +1249,49 @@ static uint32_t h_CtrlButtons(void) {
 /* Latch one controller sample per frame into the ring (called from sr_vblank_tick). */
 int g_script_lx = -1, g_script_ly = -1;   /* SR_PADSCRIPT analog override (-1 = none) */
 int g_mpeg_sessions = 0;                   /* sceMpegCreate count (mpeg.c), for SR_PADSTOP_MPEG */
+int g_mpeg_live = 0;                       /* movie sessions open right now (mpeg.c) */
+
+/* Skip the intro (graphics.cfg skip_intro, default on; SR_SKIPINTRO=0 disables). From boot until
+ * the first movie starts the game runs in fast-forward, so the logos pass in a moment (the save
+ * notice still waits for the player); the first movie is the opening, which the game skips on
+ * START, so START is tapped until it closes. Returns the buttons to add to this sample. */
+static uint64_t intro_ms(void) {
+    struct timespec ts; timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+static uint32_t intro_skip_tick(void) {
+    static int state = -1;                 /* 1 fast-forward, 2 skipping the opening, 0 done/off */
+    static uint64_t t0;
+    static unsigned n;
+    extern void sched_set_fast_forward(int on);
+    if (state < 0) {
+        const char *e = getenv("SR_SKIPINTRO");
+        int on = e && e[0] ? e[0] != '0' : gui_cfg_get("skip_intro", 1);
+        if (getenv("SR_PADSCRIPT") || getenv("SR_NOVBPACE")) on = 0;   /* scripted / turbo runs */
+        state = on ? 1 : 0;
+        t0 = intro_ms();
+        if (on) { sched_set_fast_forward(1); fprintf(stderr, "intro: fast-forwarding to the opening movie\n"); }
+    }
+    if (state == 1) {
+        if (g_mpeg_sessions > 0 || intro_ms() - t0 > 300000) {
+            sched_set_fast_forward(0);
+            state = g_mpeg_sessions > 0 ? 2 : 0;
+            n = 0; t0 = intro_ms();
+            fprintf(stderr, "intro: %s\n", state ? "skipping the opening movie" : "no movie, stopped");
+        }
+        return 0;
+    }
+    if (state == 2) {
+        if (g_mpeg_live == 0 || intro_ms() - t0 > 30000) { state = 0; fprintf(stderr, "intro: done\n"); return 0; }
+        return ((n++ / 4) & 1) ? 0x0008u : 0;  /* tap START */
+    }
+    return 0;
+}
+
 void sr_ctrl_sample(void) {
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
-    s_ctrl_ring[s_ctrl_w].btn = h_CtrlButtons();
+    s_ctrl_ring[s_ctrl_w].btn = h_CtrlButtons() | intro_skip_tick();
     if (g_script_lx >= 0) { lx = (uint8_t)g_script_lx; ly = (uint8_t)g_script_ly; }
     {   /* twin-stick camera: turn Aya toward the camera before an aim (twinstick.c) */
         extern void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly);

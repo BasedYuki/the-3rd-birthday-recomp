@@ -173,6 +173,7 @@ void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128
 void     gui_rstick(float *rx, float *ry);        /* live right stick (-1..1; PC-only input) */
 int      gui_sens_steps(void);                    /* camera sensitivity key presses (- / =) since last call */
 int      gui_cam_reset(void);                     /* 1 once per camera-reset press (R3 / O) */
+int      gui_cfg_get(const char *key, int def);   /* graphics.cfg integer setting */
 /* Twin-stick camera settings (twinstick.c), read and changed by the in-game menu. */
 enum { SR_TS_SENSITIVITY, SR_TS_INVERT_X, SR_TS_INVERT_Y, SR_TS_RECENTER,
        SR_TS_TURNING /* read-only: the orbit is moving */ };

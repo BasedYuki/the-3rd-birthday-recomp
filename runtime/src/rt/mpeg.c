@@ -335,13 +335,14 @@ uint32_t mpeg_create(uint32_t mpegAddr, uint32_t dataPtr, uint32_t size, uint32_
     ctx->defaultFrameWidth = (int)frameWidth; ctx->pixelMode = 3; ctx->isAnalyzed = 0;
     ctx->h264 = -1;
     ctx->startMs = GetTickCount64();
-    { extern int g_mpeg_sessions; g_mpeg_sessions++; }
+    { extern int g_mpeg_sessions, g_mpeg_live; g_mpeg_sessions++; g_mpeg_live++; }
     return 0;
 }
 
 uint32_t mpeg_delete(uint32_t mpegAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    { extern int g_mpeg_live; if (g_mpeg_live > 0) g_mpeg_live--; }
     fprintf(stderr, "MPEG session end: %.1f s, fed %u/%u packets, decodes %lld (h264 frames %d), "
             "videoPts %lld, videoEnd %d\n",
             (GetTickCount64() - ctx->startMs) / 1000.0, ctx->fedPackets, ctx->totalPackets,

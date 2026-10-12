@@ -157,6 +157,23 @@ static void pace_setup(void) {
  * vblank period (the second one then costs a whole extra frame). */
 int sched_vbl_paced(void) { pace_setup(); return s_pace_on > 0; }
 
+/* Fast-forward at runtime (skipping the boot logos): vblanks stop waiting for real time. When it
+ * ends, the real-time clock is rebased onto the virtual one so time simply continues (otherwise
+ * every timed wait would stall until real time caught up with the fast-forwarded clock). */
+static int s_ff = 0;
+void sched_set_fast_forward(int on) {
+    pace_setup();
+    if (on && !s_ff && s_pace_on > 0) { s_pace_on = 0; s_ff = 1; }
+    else if (!on && s_ff) {
+        LARGE_INTEGER c; QueryPerformanceCounter(&c);
+        s_qpc0 = c.QuadPart - (LONGLONG)((double)s_vtime_us * (double)s_qfreq.QuadPart / 1e6);
+        s_vbl_next = (double)c.QuadPart;
+        vbl_next_us_sync();
+        s_pace_on = 1; s_ff = 0;
+    }
+}
+int sched_fast_forward(void) { return s_ff; }
+
 static uint64_t qpc_us(void) {
     LARGE_INTEGER c; QueryPerformanceCounter(&c);
     return (uint64_t)((double)(c.QuadPart - s_qpc0) * 1000000.0 / (double)s_qfreq.QuadPart);
