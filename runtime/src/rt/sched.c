@@ -764,11 +764,14 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             for (int i = 0; i < s_ntcb; i++)
                 if ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
                     s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
-            if (soonest == (uint64_t)-1) break;   /* truly nothing runnable (all infinite waits) */
+            /* With the game window open, never stop: the next vblank (its interrupt handler,
+             * a controller sample) is what wakes infinite waits. Fast-forward used to end the
+             * run here when every thread was in such a wait at that instant. */
+            if (soonest == (uint64_t)-1) { if (gui_on()) continue; break; }   /* headless: nothing left */
             if (!s_pace_on) {                     /* turbo: jump the clock over the wait */
                 if (soonest > s_vtime_us) s_vtime_us = soonest;
                 idx = pick_next();
-                if (idx < 0) break;
+                if (idx < 0) { if (gui_on()) continue; break; }
             } else {
                 continue;   /* paced: keep delivering vblanks; real time reaches the deadline */
             }
