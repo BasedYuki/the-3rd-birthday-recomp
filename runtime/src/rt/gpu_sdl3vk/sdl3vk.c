@@ -82,8 +82,27 @@ static const struct { SDL_Scancode sc; uint32_t bit; } k_keymap[] = {
 static int      s_shot_req = 0;                      /* F12: save the next frame */
 static SDL_Joystick *s_vjoy = NULL;                  /* SR_VPAD test pad */
 int sdl3vk_dual_src = 0;                             /* device has dualSrcBlend enabled */
-void sdl3vk_vpad_button(int button, int down) { if (s_vjoy) SDL_SetJoystickVirtualButton(s_vjoy, button, down != 0); }
-void sdl3vk_vpad_axis(int axis, int value) { if (s_vjoy) SDL_SetJoystickVirtualAxis(s_vjoy, axis, (Sint16)value); }
+/* The SDL joystick API belongs to the main thread: ctrl_server.c queues, the event pump applies. */
+static volatile LONG s_vq_w, s_vq_r; static int s_vq[64][3];
+static void vq_push(int kind, int a, int b) {
+    LONG w = s_vq_w; if (w - s_vq_r >= 64) return;
+    s_vq[w & 63][0] = kind; s_vq[w & 63][1] = a; s_vq[w & 63][2] = b;
+    InterlockedExchange(&s_vq_w, w + 1);
+}
+void sdl3vk_vpad_button(int button, int down) { vq_push(0, button, down); }
+void sdl3vk_vpad_axis(int axis, int value) { vq_push(1, axis, value); }
+static void vq_apply(void) {
+    while (s_vq_r != s_vq_w) {
+        const int *q = s_vq[s_vq_r & 63];
+        if (s_vjoy) {
+            const bool ok = q[0] == 0 ? SDL_SetJoystickVirtualButton(s_vjoy, q[1], q[2] != 0)
+                                      : SDL_SetJoystickVirtualAxis(s_vjoy, q[1], (Sint16)q[2]);
+            if (getenv("SR_KEYLOG")) fprintf(stderr, "vpad: %s %d = %d -> %s (pad=%p)%s\n", q[0] ? "axis" : "button", q[1], q[2],
+                                             ok ? "ok" : SDL_GetError(), (void *)s_pad, s_pad ? "" : " NO GAMEPAD OPEN");
+        }
+        InterlockedIncrement(&s_vq_r);
+    }
+}
 static int      s_pad_present;
 
 #define VK_TRY(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
@@ -536,6 +555,7 @@ int sdl3vk_render_scale(void) {
 /* ---- init --------------------------------------------------------------------------- */
 
 int sdl3vk_init(const char *title) {
+    if (getenv("SR_VPAD")) SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");   /* tests drive an unfocused window */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
         return 0;
@@ -692,6 +712,8 @@ int sdl3vk_init(const char *title) {
         d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
         d.naxes = SDL_GAMEPAD_AXIS_COUNT;
         d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1u;   /* standard layout: index = SDL button */
+        d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1u;
         d.name = "SR virtual pad";
         const SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
         s_vjoy = id ? SDL_OpenJoystick(id) : NULL;
@@ -712,6 +734,8 @@ int sdl3vk_init(const char *title) {
 
 static void poll_input(int *quit) {
     SDL_Event ev;
+    vq_apply();                                   /* SR_VPAD test inputs */
+    SDL_UpdateJoysticks();
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
         case SDL_EVENT_QUIT: *quit = 1; break;

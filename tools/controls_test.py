@@ -76,6 +76,7 @@ def main():
         rep.append(f"{'PASS' if ok else 'FAIL'}  {label}  {detail}"); print(rep[-1], flush=True)
     try:
         time.sleep(8)
+        g._cmd("vaxis 4 -32768"); g._cmd("vaxis 5 -32768")   # triggers at rest
         h = hwnd_of(g.p.pid)
         user32.SetForegroundWindow(h)
         kb = Keys(h)
@@ -108,7 +109,7 @@ def main():
             g._cmd(f"vaxis {ax} 32767"); time.sleep(0.3)
             t, pos = log_since(errp, pos)
             seen = [int(m, 16) for m in re.findall(r"keys: buttons 0x([0-9a-f]+)", t)]
-            g._cmd(f"vaxis {ax} 0"); time.sleep(0.3); _, pos = log_since(errp, pos)
+            g._cmd(f"vaxis {ax} -32768"); time.sleep(0.3); _, pos = log_since(errp, pos)   # virtual axis rest = trigger 0
             check(f"pad {nm} trigger -> 0x{bit:04x}", bit in seen, f"seen {[hex(v) for v in seen]}")
         for ax, val, exp in ((0, -32768, (0, 128)), (0, 32767, (255, 128)), (1, -32768, (128, 0)), (1, 32767, (128, 255))):
             g._cmd(f"vaxis {ax} {val}"); time.sleep(0.3)
