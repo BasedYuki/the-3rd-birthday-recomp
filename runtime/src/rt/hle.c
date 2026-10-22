@@ -114,15 +114,18 @@ static uint32_t block_addr(uint32_t uid) {
 }
 /* Top-down allocation from the user partition (thread and interrupt stacks, sched.c), like the
  * PSP kernel's PSP_SMEM_High: the partition top moves down, so the heap can never reach it. */
-/* Kernel-RAM arena [0x08400000, 0x08800000): memory the game never sees (HLE runs no kernel
+/* Kernel-RAM arena [0x08000000, 0x08400000): memory the game never sees (HLE runs no kernel
  * code there). Holds the interrupt stack, and thread stacks once the user partition is full.
  * The game sizes its heap from nearly all free user memory -- any reserve taken out of the user
  * partition starves its allocator -- while on hardware its later threads still get stacks,
- * because the real layout differs slightly. Serving those from kernel RAM keeps both working. */
-static uint32_t s_karena_top = 0x08800000u;
+ * because the real layout differs slightly. Serving those from kernel RAM keeps both working.
+ * Not [0x08400000, 0x08800000): that is the volatile partition sceKernelVolatileMemLock hands
+ * the game as a 4 MB scratch buffer; big scene loads filled it and overwrote the sound
+ * thread's stack there (crash on entering some later-episode movie scenes). */
+static uint32_t s_karena_top = 0x08400000u;
 uint32_t sr_kernel_alloc(uint32_t size) {
     uint32_t addr = (s_karena_top - size) & ~0xFFu;
-    if (addr < 0x08400000u) return 0;
+    if (addr < 0x08000000u) return 0;
     s_karena_top = addr;
     return addr;
 }

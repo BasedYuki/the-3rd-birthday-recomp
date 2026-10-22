@@ -390,6 +390,9 @@ void dispatch(CpuState *s, uint32_t target) {
     fprintf(stderr, "dispatch: no recompiled function at 0x%08x (pc=0x%08x)\n", target, s->pc);
     fprintf(stderr, "dispatch: ra=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x sp=0x%08x\n",
             s->r[31], s->r[4], s->r[5], s->r[6], s->r[7], s->r[29]);
+    fprintf(stderr, "dispatch: gpr");
+    for (int i = 1; i < 32; i++) fprintf(stderr, " r%d=%08x", i, s->r[i]);
+    fprintf(stderr, " thread uid 0x%x\n", sched_current_uid());
     /* Dump user RAM so the missing code (runtime-loaded overlay / module) can be identified
      * and recompiled offline: tools/analyze.py + codegen.py accept a flat image + base. */
     {
