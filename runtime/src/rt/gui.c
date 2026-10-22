@@ -347,8 +347,60 @@ void gui_vblank(void) {
  * menu drawn over it and only returns when the menu closes. */
 static int s_input_block = 0;
 
+/* Controls page: every action with two keys and a controller button. Left/Right picks the
+ * column, Enter / A waits for the new key or button, Delete / X(pad) clears, Esc goes back. */
+static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+    enum { VIS = 10 };
+    const int n = sdl3vk_bind_count(), rows = n + 2;      /* + "Reset to defaults", "Back" */
+    int cur = 0, col = 0, top = 0;
+    for (;;) {
+        if (cur < top) top = cur;
+        if (cur >= top + VIS) top = cur - VIS + 1;
+        char buf[16][96]; const char *lines[16]; int k = 0, selline = 2;
+        const int cap = sdl3vk_bind_capturing();
+        snprintf(buf[k++], 96, "Controls");
+        snprintf(buf[k++], 96, "Action\tKey\tKey\tController");
+        for (int r = top; r < rows && r < top + VIS; r++) {
+            if (r == cur) selline = k;
+            if (r == n) { snprintf(buf[k++], 96, "Reset to defaults"); continue; }
+            if (r == n + 1) { snprintf(buf[k++], 96, "Back"); continue; }
+            char c[3][40];
+            for (int j = 0; j < 3; j++) {
+                char t[32]; sdl3vk_bind_text(r, j, t, sizeof(t));
+                if (r == cur && j == col) snprintf(c[j], 40, cap ? "[ press... ]" : "[ %s ]", t[0] ? t : "-");
+                else snprintf(c[j], 40, "%s", t[0] ? t : "-");
+            }
+            snprintf(buf[k++], 96, "%s\t%s\t%s\t%s", sdl3vk_bind_label(r), c[0], c[1], c[2]);
+        }
+        snprintf(buf[k++], 96, " ");
+        snprintf(buf[k++], 96, cap ? "Press the new key or controller button   (Esc / Guide: cancel)"
+                                   : "Enter / A: change     Delete / X: clear     Esc / B: back");
+        for (int i = 0; i < k; i++) lines[i] = buf[i];
+        sdl3vk_menu_show(lines, k, selline);
+        int shown = gegpu_present(fbaddr, fmt, stride);
+        if (shown < 0) shown = sdl3vk_present_rgba(s_px);
+        if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+        const int ev = sdl3vk_menu_events();
+        if (!cap) {
+            if (ev & (SDL3VK_MENU_TOGGLE | SDL3VK_MENU_BACK)) break;
+            if (ev & SDL3VK_MENU_UP)    cur = cur > 0 ? cur - 1 : rows - 1;
+            if (ev & SDL3VK_MENU_DOWN)  cur = cur < rows - 1 ? cur + 1 : 0;
+            if (ev & SDL3VK_MENU_LEFT)  col = col > 0 ? col - 1 : 2;
+            if (ev & SDL3VK_MENU_RIGHT) col = col < 2 ? col + 1 : 0;
+            if (ev & SDL3VK_MENU_OK) {
+                if (cur == n) sdl3vk_bind_reset();
+                else if (cur == n + 1) break;
+                else sdl3vk_bind_capture(cur, col);
+            }
+            if ((ev & SDL3VK_MENU_CLEAR) && cur < n) sdl3vk_bind_clear(cur, col);
+        }
+        Sleep(15);
+    }
+    (void)sdl3vk_menu_events();
+}
+
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FPS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FPS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -359,6 +411,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         const int cfg_scale = sdl3vk_render_scale_cfg();
         snprintf(buf[0], 96, "Settings  (game paused)");
         snprintf(buf[M_RESUME], 96, "Resume");
+        snprintf(buf[M_CONTROLS], 96, "Controls...");
         snprintf(buf[M_SPEED], 96, "Camera speed:  %.2f", sr_twinstick_setting(SR_TS_SENSITIVITY));
         snprintf(buf[M_INVX], 96, "Invert camera left/right:  %s", sr_twinstick_setting(SR_TS_INVERT_X) != 0.0f ? "On" : "Off");
         snprintf(buf[M_INVY], 96, "Invert camera up/down:  %s", sr_twinstick_setting(SR_TS_INVERT_Y) != 0.0f ? "On" : "Off");
@@ -391,6 +444,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (dir) {
             switch (sel) {
             case M_RESUME: if (ev & SDL3VK_MENU_OK) goto done; break;
+            case M_CONTROLS: if (ev & SDL3VK_MENU_OK) controls_run(fbaddr, fmt, stride); break;
             case M_SPEED:
                 sr_twinstick_set(SR_TS_SENSITIVITY, sr_twinstick_setting(SR_TS_SENSITIVITY) * (dir > 0 ? 1.15f : 1.0f / 1.15f));
                 break;

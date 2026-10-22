@@ -65,20 +65,167 @@ static int      s_sens_steps = 0, s_sens_prev = 0;   /* camera sensitivity keys 
 static int      s_camreset = 0, s_camreset_prev = 0; /* camera reset press (R3 / O) */
 static int      s_menu_ev = 0;                       /* SDL3VK_MENU_* events not yet taken */
 static uint32_t s_key_taps = 0;                      /* PSP buttons of keys pressed since the last poll */
-/* keyboard -> PSP buttons */
-static const struct { SDL_Scancode sc; uint32_t bit; } k_keymap[] = {
-    { SDL_SCANCODE_RETURN, 0x0008 },       /* START */
-    { SDL_SCANCODE_TAB,    0x0001 },       /* SELECT (not Shift: too easy to hold while walking) */
-    { SDL_SCANCODE_X,      0x4000 }, { SDL_SCANCODE_SPACE, 0x4000 },   /* CROSS */
-    { SDL_SCANCODE_Z,      0x2000 },       /* CIRCLE */
-    { SDL_SCANCODE_C,      0x8000 },       /* SQUARE */
-    { SDL_SCANCODE_V,      0x1000 },       /* TRIANGLE */
-    { SDL_SCANCODE_Q,      0x0100 },       /* L */
-    { SDL_SCANCODE_E,      0x0200 },       /* R */
-    { SDL_SCANCODE_UP,     0x0010 }, { SDL_SCANCODE_DOWN, 0x0040 },
-    { SDL_SCANCODE_LEFT,   0x0080 }, { SDL_SCANCODE_RIGHT, 0x0020 },
-    { SDL_SCANCODE_UNKNOWN, 0 },
+/* ---- controls: remappable bindings (controls.cfg, Esc menu -> Controls) ----------------
+ * Each action has two keyboard keys and one gamepad button (or trigger). The gamepad sticks
+ * stay analog: left stick = PSP stick, right stick = camera. */
+enum { BA_CROSS, BA_CIRCLE, BA_SQUARE, BA_TRIANGLE, BA_L, BA_R, BA_START, BA_SELECT,
+       BA_UP, BA_DOWN, BA_LEFT, BA_RIGHT, BA_MUP, BA_MDOWN, BA_MLEFT, BA_MRIGHT,
+       BA_CUP, BA_CDOWN, BA_CLEFT, BA_CRIGHT, BA_CRESET, BA_COUNT };
+enum { PADB_NONE = -1, PADB_LT = 100, PADB_RT = 101 };
+static const struct { const char *id, *label; uint32_t bit; } k_acts[BA_COUNT] = {
+    { "cross", "Cross", 0x4000 }, { "circle", "Circle", 0x2000 }, { "square", "Square", 0x8000 },
+    { "triangle", "Triangle", 0x1000 }, { "l", "L", 0x0100 }, { "r", "R", 0x0200 },
+    { "start", "Start", 0x0008 }, { "select", "Select", 0x0001 },
+    { "dpad_up", "D-pad up", 0x0010 }, { "dpad_down", "D-pad down", 0x0040 },
+    { "dpad_left", "D-pad left", 0x0080 }, { "dpad_right", "D-pad right", 0x0020 },
+    { "move_up", "Move forward", 0 }, { "move_down", "Move back", 0 },
+    { "move_left", "Move left", 0 }, { "move_right", "Move right", 0 },
+    { "camera_up", "Camera up", 0 }, { "camera_down", "Camera down", 0 },
+    { "camera_left", "Camera left", 0 }, { "camera_right", "Camera right", 0 },
+    { "camera_reset", "Camera behind Aya", 0 },
 };
+typedef struct { SDL_Scancode key[2]; int pad; } Bind;
+static Bind s_bind[BA_COUNT];
+static int  s_cap_act = -1, s_cap_slot = 0;          /* waiting for a key/button to bind */
+
+static void bind_defaults(void) {
+    static const struct { int a; SDL_Scancode k0, k1; int pad; } d[] = {
+        { BA_CROSS, SDL_SCANCODE_X, SDL_SCANCODE_SPACE, SDL_GAMEPAD_BUTTON_SOUTH },
+        { BA_CIRCLE, SDL_SCANCODE_Z, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_EAST },
+        { BA_SQUARE, SDL_SCANCODE_C, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_WEST },
+        { BA_TRIANGLE, SDL_SCANCODE_V, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_NORTH },
+        { BA_L, SDL_SCANCODE_Q, SDL_SCANCODE_UNKNOWN, PADB_LT },
+        { BA_R, SDL_SCANCODE_E, SDL_SCANCODE_UNKNOWN, PADB_RT },
+        { BA_START, SDL_SCANCODE_RETURN, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_START },
+        { BA_SELECT, SDL_SCANCODE_TAB, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_BACK },   /* not Shift: held while walking */
+        { BA_UP, SDL_SCANCODE_UP, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_DPAD_UP },
+        { BA_DOWN, SDL_SCANCODE_DOWN, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_DPAD_DOWN },
+        { BA_LEFT, SDL_SCANCODE_LEFT, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_DPAD_LEFT },
+        { BA_RIGHT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
+        { BA_MUP, SDL_SCANCODE_W, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_MDOWN, SDL_SCANCODE_S, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_MLEFT, SDL_SCANCODE_A, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_MRIGHT, SDL_SCANCODE_D, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_CUP, SDL_SCANCODE_I, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_CDOWN, SDL_SCANCODE_K, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_CLEFT, SDL_SCANCODE_J, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_CRIGHT, SDL_SCANCODE_L, SDL_SCANCODE_UNKNOWN, PADB_NONE },
+        { BA_CRESET, SDL_SCANCODE_O, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_RIGHT_STICK },
+    };
+    for (unsigned i = 0; i < sizeof(d) / sizeof(d[0]); i++) {
+        s_bind[d[i].a].key[0] = d[i].k0; s_bind[d[i].a].key[1] = d[i].k1; s_bind[d[i].a].pad = d[i].pad;
+    }
+}
+static int s_bump_too = 1;   /* bumpers also give L / R (as before remapping existed) */
+static const char *pad_name(int b) {
+    if (b == PADB_LT) return "lefttrigger";
+    if (b == PADB_RT) return "righttrigger";
+    if (b < 0) return "";
+    const char *n = SDL_GetGamepadStringForButton((SDL_GamepadButton)b);
+    return n ? n : "";
+}
+static int pad_from_name(const char *n) {
+    if (!*n) return PADB_NONE;
+    if (!SDL_strcasecmp(n, "lefttrigger")) return PADB_LT;
+    if (!SDL_strcasecmp(n, "righttrigger")) return PADB_RT;
+    const SDL_GamepadButton b = SDL_GetGamepadButtonFromString(n);
+    return b == SDL_GAMEPAD_BUTTON_INVALID ? PADB_NONE : (int)b;
+}
+static void trim(char *t) {
+    char *a = t; while (*a == ' ' || *a == '\t') a++;
+    memmove(t, a, strlen(a) + 1);
+    size_t n = strlen(t);
+    while (n && (t[n - 1] == ' ' || t[n - 1] == '\t' || t[n - 1] == '\r' || t[n - 1] == '\n')) t[--n] = 0;
+}
+static const char *ctl_path(void) {   /* SR_CONTROLS_CFG: test runs keep the player's file */
+    const char *e = getenv("SR_CONTROLS_CFG");
+    return e && *e ? e : "controls.cfg";
+}
+static void bind_save(void) {
+    FILE *f = fopen(ctl_path(), "w");
+    if (!f) return;
+    fprintf(f, "# action = key, key | gamepad button   (the Esc menu's Controls page edits this file)\n");
+    for (int a = 0; a < BA_COUNT; a++) {
+        const char *k0 = s_bind[a].key[0] ? SDL_GetScancodeName(s_bind[a].key[0]) : "";
+        const char *k1 = s_bind[a].key[1] ? SDL_GetScancodeName(s_bind[a].key[1]) : "";
+        fprintf(f, "%s = %s, %s | %s\n", k_acts[a].id, k0, k1, pad_name(s_bind[a].pad));
+    }
+    fprintf(f, "bumpers_are_l_r = %d\n", s_bump_too);
+    fclose(f);
+}
+static void bind_load(void) {
+    bind_defaults();
+    FILE *f = fopen(ctl_path(), "r");
+    if (!f) { bind_save(); return; }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#') continue;
+        char *eq = strchr(line, '='); if (!eq) continue;
+        *eq = 0; char *id = line; trim(id);
+        if (!SDL_strcasecmp(id, "bumpers_are_l_r")) { s_bump_too = atoi(eq + 1) != 0; continue; }
+        int a = -1; for (int i = 0; i < BA_COUNT; i++) if (!SDL_strcasecmp(id, k_acts[i].id)) a = i;
+        if (a < 0) continue;
+        char *keys = eq + 1, *bar = strchr(keys, '|'), *pad = (char *)"";
+        if (bar) { *bar = 0; pad = bar + 1; }
+        char *c = strchr(keys, ','), *k1 = (char *)"";
+        if (c) { *c = 0; k1 = c + 1; }
+        trim(keys); trim(k1); trim(pad);
+        s_bind[a].key[0] = *keys ? SDL_GetScancodeFromName(keys) : SDL_SCANCODE_UNKNOWN;
+        s_bind[a].key[1] = *k1 ? SDL_GetScancodeFromName(k1) : SDL_SCANCODE_UNKNOWN;
+        s_bind[a].pad = pad_from_name(pad);
+    }
+    fclose(f);
+}
+/* for the Controls page (gui.c) */
+int  sdl3vk_bind_count(void) { return BA_COUNT; }
+const char *sdl3vk_bind_label(int a) { return a >= 0 && a < BA_COUNT ? k_acts[a].label : ""; }
+void sdl3vk_bind_text(int a, int slot, char *out, int cap) {
+    out[0] = 0;
+    if (a < 0 || a >= BA_COUNT) return;
+    if (slot < 2) { if (s_bind[a].key[slot]) SDL_strlcpy(out, SDL_GetScancodeName(s_bind[a].key[slot]), (size_t)cap); }
+    else {   /* Xbox-style names on screen; controls.cfg keeps SDL's names */
+        static const char *const nice[][2] = {
+            { "a", "A" }, { "b", "B" }, { "x", "X" }, { "y", "Y" }, { "back", "View" }, { "guide", "Guide" },
+            { "start", "Menu" }, { "leftstick", "LS click" }, { "rightstick", "RS click" },
+            { "leftshoulder", "LB" }, { "rightshoulder", "RB" }, { "lefttrigger", "LT" }, { "righttrigger", "RT" },
+            { "dpup", "D-pad up" }, { "dpdown", "D-pad down" }, { "dpleft", "D-pad left" }, { "dpright", "D-pad right" },
+        };
+        const char *n = pad_name(s_bind[a].pad);
+        for (unsigned i = 0; i < sizeof(nice) / sizeof(nice[0]); i++) if (!strcmp(n, nice[i][0])) n = nice[i][1];
+        SDL_strlcpy(out, n, (size_t)cap);
+    }
+}
+void sdl3vk_bind_capture(int a, int slot) { s_cap_act = a; s_cap_slot = slot; }
+int  sdl3vk_bind_capturing(void) { return s_cap_act >= 0; }
+void sdl3vk_bind_clear(int a, int slot) {
+    if (a < 0 || a >= BA_COUNT) return;
+    if (slot < 2) s_bind[a].key[slot] = SDL_SCANCODE_UNKNOWN; else s_bind[a].pad = PADB_NONE;
+    bind_save();
+}
+void sdl3vk_bind_reset(void) { bind_defaults(); s_bump_too = 1; bind_save(); }
+/* a captured key / button moves away from whatever action had it */
+static void bind_assign_key(SDL_Scancode sc) {
+    for (int a = 0; a < BA_COUNT; a++)
+        for (int k = 0; k < 2; k++) if (s_bind[a].key[k] == sc) s_bind[a].key[k] = SDL_SCANCODE_UNKNOWN;
+    s_bind[s_cap_act].key[s_cap_slot] = sc;
+    s_cap_act = -1; bind_save();
+}
+static void bind_assign_pad(int b) {
+    for (int a = 0; a < BA_COUNT; a++) if (s_bind[a].pad == b) s_bind[a].pad = PADB_NONE;
+    s_bind[s_cap_act].pad = b;
+    if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) s_bump_too = 0;
+    s_cap_act = -1; bind_save();
+}
+static int bind_key_down(const bool *k, int a) {
+    return (s_bind[a].key[0] && k[s_bind[a].key[0]]) || (s_bind[a].key[1] && k[s_bind[a].key[1]]);
+}
+static int bind_pad_down(SDL_Gamepad *pad, int a) {
+    const int b = s_bind[a].pad;
+    if (!pad || b == PADB_NONE) return 0;
+    if (b == PADB_LT) return SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 8192;
+    if (b == PADB_RT) return SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8192;
+    return SDL_GetGamepadButton(pad, (SDL_GamepadButton)b);
+}
 static int      s_shot_req = 0;                      /* F12: save the next frame */
 static SDL_Joystick *s_vjoy = NULL;                  /* SR_VPAD test pad */
 int sdl3vk_dual_src = 0;                             /* device has dualSrcBlend enabled */
@@ -326,7 +473,9 @@ static int menu_render(int px) {
     for (int i = 0; i < s_menu_n; i++) {
         SIZE ts;
         SelectObject(dc, i == 0 ? bold : font);
-        GetTextExtentPoint32A(dc, s_menu_lines[i], (int)strlen(s_menu_lines[i]), &ts);
+        const int tabs[3] = { px * 11, px * 18, px * 25 };   /* tab columns (Controls page) */
+        const DWORD ext = GetTabbedTextExtentA(dc, s_menu_lines[i], (int)strlen(s_menu_lines[i]), 3, tabs);
+        ts.cx = LOWORD(ext);
         if (ts.cx > w) w = ts.cx;
     }
     w += pad * 3 + bar;
@@ -353,7 +502,8 @@ static int menu_render(int px) {
                     for (int x = bar; x < w; x++) p[yy * w + x] = 0x00402A18u;
             SelectObject(dc, i == 0 ? bold : font);
             SetTextColor(dc, i == 0 ? RGB(240, 150, 60) : i == s_menu_sel ? RGB(255, 255, 255) : RGB(190, 190, 190));
-            TextOutA(dc, bar + pad, y, s_menu_lines[i], (int)strlen(s_menu_lines[i]));
+            const int tabs[3] = { px * 11, px * 18, px * 25 };
+            TabbedTextOutA(dc, bar + pad, y, s_menu_lines[i], (int)strlen(s_menu_lines[i]), 3, tabs, bar + pad);
         }
         GdiFlush();
         uint32_t *dst = (uint32_t *)s_menu_map;
@@ -738,15 +888,25 @@ int sdl3vk_init(const char *title) {
 
 static void poll_input(int *quit) {
     SDL_Event ev;
+    static int loaded = 0;
+    if (!loaded) { bind_load(); loaded = 1; }
     vq_apply();                                   /* SR_VPAD test inputs */
     SDL_UpdateJoysticks();
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
         case SDL_EVENT_QUIT: *quit = 1; break;
         case SDL_EVENT_KEY_DOWN:
+            if (s_cap_act >= 0) {                 /* Controls page: this key becomes the binding */
+                if (!ev.key.repeat) {
+                    if (ev.key.scancode == SDL_SCANCODE_ESCAPE) s_cap_act = -1;
+                    else bind_assign_key(ev.key.scancode);
+                }
+                break;
+            }
             if (!ev.key.repeat)
-                for (int i = 0; k_keymap[i].bit; i++)
-                    if (k_keymap[i].sc == ev.key.scancode) s_key_taps |= k_keymap[i].bit;
+                for (int a = 0; a < BA_COUNT; a++)
+                    if (k_acts[a].bit && (s_bind[a].key[0] == ev.key.scancode || s_bind[a].key[1] == ev.key.scancode))
+                        s_key_taps |= k_acts[a].bit;
             if (getenv("SR_KEYLOG"))
                 fprintf(stderr, "keys: down key=0x%x scancode=%d mod=0x%x repeat=%d\n",
                         (unsigned)ev.key.key, (int)ev.key.scancode, (unsigned)ev.key.mod, (int)ev.key.repeat);
@@ -767,11 +927,18 @@ static void poll_input(int *quit) {
                 if (!ev.key.repeat && !(ev.key.mod & SDL_KMOD_ALT)) s_menu_ev |= SDL3VK_MENU_OK;
                 break;
             case SDLK_BACKSPACE: case SDLK_Z: if (!ev.key.repeat) s_menu_ev |= SDL3VK_MENU_BACK; break;
+            case SDLK_DELETE: if (!ev.key.repeat) s_menu_ev |= SDL3VK_MENU_CLEAR; break;
             default: break;
             }
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            if (s_cap_act >= 0) {
+                if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) s_cap_act = -1;
+                else bind_assign_pad(ev.gbutton.button);
+                break;
+            }
             switch (ev.gbutton.button) {
+            case SDL_GAMEPAD_BUTTON_WEST:       s_menu_ev |= SDL3VK_MENU_CLEAR; break;
             case SDL_GAMEPAD_BUTTON_DPAD_UP:    s_menu_ev |= SDL3VK_MENU_UP; break;
             case SDL_GAMEPAD_BUTTON_DPAD_DOWN:  s_menu_ev |= SDL3VK_MENU_DOWN; break;
             case SDL_GAMEPAD_BUTTON_DPAD_LEFT:  s_menu_ev |= SDL3VK_MENU_LEFT; break;
@@ -786,6 +953,12 @@ static void poll_input(int *quit) {
                     s_menu_ev |= SDL3VK_MENU_TOGGLE;
                 break;
             default: break;
+            }
+            break;
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            if (s_cap_act >= 0 && ev.gaxis.value > 16000) {
+                if (ev.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER) bind_assign_pad(PADB_LT);
+                else if (ev.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) bind_assign_pad(PADB_RT);
             }
             break;
         case SDL_EVENT_GAMEPAD_ADDED:
@@ -806,14 +979,16 @@ static void poll_input(int *quit) {
     uint32_t b = s_key_taps;
     s_key_taps = 0;
     const bool *k = SDL_GetKeyboardState(NULL);
-    for (int i = 0; k_keymap[i].bit; i++)
-        if (k[k_keymap[i].sc]) b |= k_keymap[i].bit;
+    for (int a = 0; a < BA_COUNT; a++)
+        if (k_acts[a].bit && (bind_key_down(k, a) || bind_pad_down(s_pad, a))) b |= k_acts[a].bit;
+    if (s_cap_act >= 0) b = 0;                    /* binding a key: nothing reaches the game */
     if ((b & 0x0008u) && (SDL_GetModState() & SDL_KMOD_ALT)) b &= ~0x0008u;   /* Alt+Enter: fullscreen */
 
     uint8_t lx = 128, ly = 128;
     {
-        int kx = (k[SDL_SCANCODE_D] ? 1 : 0) - (k[SDL_SCANCODE_A] ? 1 : 0);
-        int ky = (k[SDL_SCANCODE_S] ? 1 : 0) - (k[SDL_SCANCODE_W] ? 1 : 0);
+        #define BD(a) (bind_key_down(k, a) || bind_pad_down(s_pad, a))
+        int kx = (BD(BA_MRIGHT) ? 1 : 0) - (BD(BA_MLEFT) ? 1 : 0);
+        int ky = (BD(BA_MDOWN) ? 1 : 0) - (BD(BA_MUP) ? 1 : 0);
         if (kx || ky) {
             const int m = (kx && ky) ? 90 : 127;             /* keep diagonals at full length */
             lx = (uint8_t)(128 + kx * m);
@@ -822,36 +997,25 @@ static void poll_input(int *quit) {
     }
     /* Right stick for the camera: I/J/K/L on the keyboard, the gamepad's right stick below. */
     float rx = 0.0f, ry = 0.0f;
-    if (k[SDL_SCANCODE_J]) rx -= 1.0f;
-    if (k[SDL_SCANCODE_L]) rx += 1.0f;
-    if (k[SDL_SCANCODE_I]) ry -= 1.0f;
-    if (k[SDL_SCANCODE_K]) ry += 1.0f;
+    if (BD(BA_CLEFT))  rx -= 1.0f;
+    if (BD(BA_CRIGHT)) rx += 1.0f;
+    if (BD(BA_CUP))    ry -= 1.0f;
+    if (BD(BA_CDOWN))  ry += 1.0f;
     { int sk = k[SDL_SCANCODE_EQUALS] ? 1 : k[SDL_SCANCODE_MINUS] ? -1 : 0;
       if (sk && sk != s_sens_prev) s_sens_steps += sk;
       s_sens_prev = sk; }
     {   /* camera reset: right stick click (R3) or O */
-        int cr = k[SDL_SCANCODE_O] || (s_pad && SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK));
+        int cr = BD(BA_CRESET);
+        #undef BD
         if (cr && !s_camreset_prev) s_camreset = 1;
         s_camreset_prev = cr;
     }
     s_pad_present = s_pad != NULL;
     if (s_pad) {
-        #define PB(sdlb, bit) do { if (SDL_GetGamepadButton(s_pad, sdlb)) b |= (bit); } while (0)
-        PB(SDL_GAMEPAD_BUTTON_SOUTH, 0x4000);          /* CROSS    */
-        PB(SDL_GAMEPAD_BUTTON_EAST,  0x2000);          /* CIRCLE   */
-        PB(SDL_GAMEPAD_BUTTON_WEST,  0x8000);          /* SQUARE   */
-        PB(SDL_GAMEPAD_BUTTON_NORTH, 0x1000);          /* TRIANGLE */
-        PB(SDL_GAMEPAD_BUTTON_START, 0x0008);
-        PB(SDL_GAMEPAD_BUTTON_BACK,  0x0001);
-        PB(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  0x0100);
-        PB(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, 0x0200);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_UP,    0x0010);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_DOWN,  0x0040);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_LEFT,  0x0080);
-        PB(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, 0x0020);
-        #undef PB
-        if (SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  > 8192) b |= 0x0100;
-        if (SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8192) b |= 0x0200;
+        if (s_bump_too && s_cap_act < 0) {        /* bumpers give L / R too, unless bound to something */
+            if (SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))  b |= 0x0100;
+            if (SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) b |= 0x0200;
+        }
         int ax = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTX);
         int ay = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTY);
         if (ax < -7849 || ax > 7849) lx = (uint8_t)((ax + 32768) * 255 / 65535);

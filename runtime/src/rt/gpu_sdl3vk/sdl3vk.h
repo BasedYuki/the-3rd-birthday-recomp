@@ -42,11 +42,19 @@ void sdl3vk_toast(const char *msg, int ms);
  * (Esc toggles, arrows, Enter/Space/X, Backspace/Z) and the gamepad (Back+Start or Guide
  * toggles, D-pad, A, B). */
 enum { SDL3VK_MENU_UP = 1, SDL3VK_MENU_DOWN = 2, SDL3VK_MENU_LEFT = 4, SDL3VK_MENU_RIGHT = 8,
-       SDL3VK_MENU_OK = 16, SDL3VK_MENU_BACK = 32, SDL3VK_MENU_TOGGLE = 64 };
+       SDL3VK_MENU_OK = 16, SDL3VK_MENU_BACK = 32, SDL3VK_MENU_TOGGLE = 64, SDL3VK_MENU_CLEAR = 128 };
 int  sdl3vk_menu_events(void);
 /* Draw a centred menu panel over the game (n lines, sel highlighted; line 0 is the title).
  * n = 0 hides it. */
 void sdl3vk_menu_show(const char *const *lines, int n, int sel);
+/* Remappable controls (controls.cfg): actions with two keys (slot 0, 1) and a pad button (slot 2). */
+int  sdl3vk_bind_count(void);
+const char *sdl3vk_bind_label(int action);
+void sdl3vk_bind_text(int action, int slot, char *out, int cap);
+void sdl3vk_bind_capture(int action, int slot);   /* the next key / pad button press is bound */
+int  sdl3vk_bind_capturing(void);
+void sdl3vk_bind_clear(int action, int slot);
+void sdl3vk_bind_reset(void);
 /* Configured render scale in graphics.cfg (0 = auto) and writing it (takes effect on restart). */
 int  sdl3vk_render_scale_cfg(void);
 void sdl3vk_set_render_scale_cfg(int v);

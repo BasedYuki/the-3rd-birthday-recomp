@@ -24,7 +24,7 @@ KEYS = {"enter": (0x0D, 0x1C, 0), "tab": (0x09, 0x0F, 0), "x": (0x58, 0x2D, 0), 
         "e": (0x45, 0x12, 0), "up": (0x26, 0x48, 1), "down": (0x28, 0x50, 1), "left": (0x25, 0x4B, 1),
         "right": (0x27, 0x4D, 1), "w": (0x57, 0x11, 0), "a": (0x41, 0x1E, 0), "s": (0x53, 0x1F, 0),
         "d": (0x44, 0x20, 0), "i": (0x49, 0x17, 0), "j": (0x4A, 0x24, 0), "k": (0x4B, 0x25, 0),
-        "l": (0x4C, 0x26, 0), "o": (0x4F, 0x18, 0), "esc": (0x1B, 0x01, 0), "f12": (0x7B, 0x58, 0)}
+        "l": (0x4C, 0x26, 0), "o": (0x4F, 0x18, 0), "esc": (0x1B, 0x01, 0), "f12": (0x7B, 0x58, 0), "b": (0x42, 0x30, 0)}
 KEY_BITS = {"enter": 0x8, "tab": 0x1, "x": 0x4000, "space": 0x4000, "z": 0x2000, "c": 0x8000, "v": 0x1000,
             "q": 0x100, "e": 0x200, "up": 0x10, "down": 0x40, "left": 0x80, "right": 0x20}
 KEY_STICK = {"w": (128, 1), "s": (128, 255), "a": (1, 128), "d": (255, 128)}
@@ -69,6 +69,7 @@ def main():
     save = "user"
     if "--save" in sys.argv: save = sys.argv[sys.argv.index("--save") + 1]
     os.makedirs(OUT, exist_ok=True)
+    if os.path.exists(os.path.join(OUT, "controls.cfg")): os.remove(os.path.join(OUT, "controls.cfg"))   # defaults
     g = drive.Port(OUT, drive.SAVES[save][0], extra_env={"SR_KEYLOG": "1", "SR_VPAD": "1", "SR_TWINSTICK": "1"})
     errp = os.path.join(OUT, "port.err")
     rep = []
@@ -130,6 +131,36 @@ def main():
         kb.tap("f12"); time.sleep(1.5)
         t, pos = log_since(errp, pos)
         check("F12 saves a screenshot", "screenshot: Screenshot saved" in t)
+        # -- remapping (Esc menu -> Controls), into the test's own controls.cfg
+        cfg = os.path.join(OUT, "controls.cfg")   # Square is remapped: Cross would start things at the title
+        def held_bits(press, release):
+            nonlocal pos
+            _, pos = log_since(errp, pos)
+            press(); time.sleep(0.3)
+            t, pos = log_since(errp, pos)
+            release(); time.sleep(0.3); _, pos = log_since(errp, pos)
+            return [int(m, 16) for m in re.findall(r"keys: buttons 0x([0-9a-f]+)", t)]
+        def open_controls():
+            kb.tap("esc"); time.sleep(0.5); kb.tap("down"); kb.tap("enter"); time.sleep(0.5)
+        def close_menus():
+            kb.tap("esc"); kb.tap("esc"); time.sleep(0.8)
+        open_controls(); kb.tap("down"); kb.tap("down"); g.shot("controls_page")
+        kb.tap("enter"); kb.tap("b"); time.sleep(0.3); g.shot("controls_rebound"); close_menus()
+        check("remap: Square key 1 -> B saved", "square = B, " in open(cfg).read())
+        seen = held_bits(lambda: kb.down("b"), lambda: kb.up("b"))
+        check("remap: B now gives Square", 0x8000 in seen, f"seen {[hex(v) for v in seen]}")
+        seen = held_bits(lambda: kb.down("c"), lambda: kb.up("c"))
+        check("remap: C no longer gives Square", 0x8000 not in seen, f"seen {[hex(v) for v in seen]}")
+        open_controls(); kb.tap("down"); kb.tap("down"); kb.tap("right"); kb.tap("right"); kb.tap("enter")
+        g._cmd("vbtn 3 1"); time.sleep(0.2); g._cmd("vbtn 3 0"); time.sleep(0.3); close_menus()
+        txt = open(cfg).read()
+        check("remap: pad Y bound to Square, taken from Triangle", "square = B,  | y" in txt and "triangle = V,  | \n" in txt)
+        seen = held_bits(lambda: g._cmd("vbtn 3 1"), lambda: g._cmd("vbtn 3 0"))
+        check("remap: pad Y now gives Square", 0x8000 in seen and 0x1000 not in seen, f"seen {[hex(v) for v in seen]}")
+        open_controls(); kb.tap("up"); kb.tap("up"); kb.tap("enter"); time.sleep(0.3); close_menus()
+        seen = held_bits(lambda: kb.down("c"), lambda: kb.up("c"))
+        check("remap: Reset to defaults restores C", 0x8000 in seen and "square = C,  | x" in open(cfg).read(),
+              f"seen {[hex(v) for v in seen]}")
     finally:
         g.close()
     open(os.path.join(OUT, "report.txt"), "w").write("\n".join(rep) + "\n")
