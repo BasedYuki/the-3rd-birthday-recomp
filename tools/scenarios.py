@@ -65,3 +65,40 @@ def new_game(g):
     g.press("up"); g.wait(1); g.shot("a_newgame_sel")
     for i in range(8):
         g.press("cross"); g.wait(3); g.shot(f"b{i}")
+
+
+def load_scene(g):
+    """Title -> Load Game -> pick the save (PPSSPP: system list + "Load completed"), then watch
+    the scene the save (patched with --scene N) starts in, no further input."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(4)          # Load Game -> save list
+    g.press("cross"); g.wait(3)          # pick slot 1
+    if g.name == "ppsspp":
+        g.press("cross"); g.wait(2)      # "Load completed"
+    for t in (5, 10, 15, 20, 25, 30, 40, 50):
+        g.wait(5 if t <= 30 else 10)
+        g.shot(f"t{t:02d}")
+
+
+def scene_quick(g):
+    """load_scene with fewer shots (batch comparisons of many scenes)."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(4)
+    g.press("cross"); g.wait(3)
+    if g.name == "ppsspp":
+        g.press("cross"); g.wait(2)
+    for t in (6, 12, 20, 30):
+        g.wait(6 if t <= 12 else 8 if t == 20 else 10)
+        g.shot(f"t{t:02d}")
+
+
+def scene_long(g):
+    """A scene for 90 s after the load (fades, slow camera intros)."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(4)
+    g.press("cross"); g.wait(3)
+    if g.name == "ppsspp":
+        g.press("cross"); g.wait(2)
+    for t in (10, 30, 50, 70, 90):
+        g.wait(10 if t == 10 else 20)
+        g.shot(f"t{t:02d}")

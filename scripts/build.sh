@@ -60,6 +60,10 @@ g++ -O2 -Wall -I"$AT3" -I"$RT/src/rt" -c "$RT/src/rt/at3_bridge.cpp" -o "$OUT/at
 # Vulkan shaders: GLSL -> embedded SPIR-V (psp_*.inc) when the source is newer. Needs glslc
 # (pacman -S mingw-w64-ucrt-x86_64-shaderc); without it the committed .inc files are used.
 SH="$RT/src/rt/gpu_sdl3vk"
+if [ "$SH/shaders/psp.frag" -nt "$SH/psp_frag_dual.inc" ]; then   # the dual-source blend variant
+  if command -v glslc >/dev/null; then glslc -O -DDUAL_SRC -mfmt=c -o "$SH/psp_frag_dual.inc" "$SH/shaders/psp.frag"
+  else echo "warning: shaders/psp.frag changed but glslc is missing; using the old psp_frag_dual.inc"; fi
+fi
 for st in vert frag; do
   if [ "$SH/shaders/psp.$st" -nt "$SH/psp_$st.inc" ]; then
     if command -v glslc >/dev/null; then glslc -O -mfmt=c -o "$SH/psp_$st.inc" "$SH/shaders/psp.$st"

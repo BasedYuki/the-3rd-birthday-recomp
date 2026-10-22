@@ -80,6 +80,10 @@ static const struct { SDL_Scancode sc; uint32_t bit; } k_keymap[] = {
     { SDL_SCANCODE_UNKNOWN, 0 },
 };
 static int      s_shot_req = 0;                      /* F12: save the next frame */
+static SDL_Joystick *s_vjoy = NULL;                  /* SR_VPAD test pad */
+int sdl3vk_dual_src = 0;                             /* device has dualSrcBlend enabled */
+void sdl3vk_vpad_button(int button, int down) { if (s_vjoy) SDL_SetJoystickVirtualButton(s_vjoy, button, down != 0); }
+void sdl3vk_vpad_axis(int axis, int value) { if (s_vjoy) SDL_SetJoystickVirtualAxis(s_vjoy, axis, (Sint16)value); }
 static int      s_pad_present;
 
 #define VK_TRY(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
@@ -608,7 +612,12 @@ int sdl3vk_init(const char *title) {
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
     const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    /* dual-source blending: the PSP's (1 - 2*src alpha) destination factor (ge_gpu.c) */
+    VkPhysicalDeviceFeatures have, want = {0};
+    vkGetPhysicalDeviceFeatures(s_pdev, &have);
+    if (have.dualSrcBlend && !getenv("SR_NODUALSRC")) { want.dualSrcBlend = VK_TRUE; sdl3vk_dual_src = 1; }
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+    dci.pEnabledFeatures = &want;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = 1;
@@ -677,6 +686,17 @@ int sdl3vk_init(const char *title) {
 
     if (!create_swapchain()) return 0;
 
+    if (getenv("SR_VPAD")) {   /* tests: a virtual Xbox-style pad driven by ctrl_server.c */
+        SDL_VirtualJoystickDesc d;
+        SDL_INIT_INTERFACE(&d);
+        d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        d.name = "SR virtual pad";
+        const SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
+        s_vjoy = id ? SDL_OpenJoystick(id) : NULL;
+        fprintf(stderr, "sdl3vk: virtual pad %s\n", s_vjoy ? "attached" : SDL_GetError());
+    }
     if (SDL_HasGamepad()) {
         int npads = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&npads);

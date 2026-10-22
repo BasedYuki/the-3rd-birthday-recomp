@@ -12,6 +12,11 @@ layout(location = 2) noperspective in float v_fog;
 layout(location = 3) noperspective in vec4  v_color;
 
 layout(location = 0) out vec4 o_color;
+#ifdef DUAL_SRC
+/* Dual-source blending (built as psp_frag_dual.inc): alpha = min(1, 2 * source alpha), the PSP's
+ * doubled source-alpha factor, read by the destination factor (SRC1_ALPHA / ONE_MINUS_...). */
+layout(location = 0, index = 1) out vec4 o_blend;
+#endif
 
 layout(set = 0, binding = 0) uniform sampler2D u_tex;
 
@@ -163,4 +168,7 @@ void main() {
     }
 
     o_color = col * (1.0 / 255.0);
+#ifdef DUAL_SRC
+    o_blend = vec4(0.0, 0.0, 0.0, clamp(col.a * (2.0 / 255.0), 0.0, 1.0));
+#endif
 }

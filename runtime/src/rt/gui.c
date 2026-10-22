@@ -495,6 +495,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return;
     if (stride == 0) stride = 512;
     s_last_fb = fbaddr; s_last_fmt = fmt; s_last_stride = stride; s_last_ok = 1;
+    { extern volatile int g_drawlog_on; if (g_drawlog_on) g_drawlog_on--; }   /* 2: start at this frame, 1: log, 0: done */
 
 #ifdef SR_SDL3VK
     if (s_sdl3) {

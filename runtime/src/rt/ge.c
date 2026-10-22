@@ -939,11 +939,12 @@ static int shade(float u, float fv, int fog, int vr, int vg, int vb, int va, int
  * persp=0 (through-mode): affine UV; depth test only if the list enabled it. */
 /* SR_PIXWHO=x,y probe pixel (shared by the triangle, sprite and clear paths). */
 static int s_who_x = -2, s_who_y = -2;
+static uint32_t s_who_from = 0;   /* SR_PIXWHO=x,y,<first frame> */
 static void who_init(void) {
     if (s_who_x != -2) return;
     const char *wp = getenv("SR_PIXWHO");
     s_who_x = s_who_y = -1;
-    if (wp) sscanf(wp, "%d,%d", &s_who_x, &s_who_y);
+    if (wp) { unsigned fr = 0; if (sscanf(wp, "%d,%d,%u", &s_who_x, &s_who_y, &fr) == 3) s_who_from = fr; }
 }
 
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
@@ -1043,7 +1044,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
                     if (zi < 272u*512u) s_zbuf[zi] = clamp_z(iz);
                 }
                 who_init();
-                if (x == s_who_x && y == s_who_y && s_pixwho_n < 400) {
+                if (x == s_who_x && y == s_who_y && s_pixwho_n < 400 && s_ge_frame >= s_who_from) {
                     s_pixwho_n++;
                     fprintf(stderr, "PIXWHO f=%u CLEARTRI mode=0x%03x z=%.0f persp=%d rgba=(%d,%d,%d,%d)\n",
                             s_ge_frame, ge.clear_mode, iz, persp, C->r, C->g, C->b, C->a);
@@ -1076,7 +1077,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
              * which draw owns a misrendered region without guessing from geometry. */
             {
                 who_init();
-                if (x == s_who_x && y == s_who_y && s_pixwho_n < 400) {
+                if (x == s_who_x && y == s_who_y && s_pixwho_n < 400 && s_ge_frame >= s_who_from) {
                     s_pixwho_n++;
                     uint32_t zidx = (uint32_t)(y * (int)zbuf_stride() + x);
                     unsigned curz = zidx < 272u*512u ? s_zbuf[zidx] : 99999u;
@@ -1609,7 +1610,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         if (ge.clear_mode & 0x400)
             zbuf_fill_rect(xa, ya, xb - 1, yb - 1, (uint16_t)p1->z);
         who_init();
-        if (s_who_x >= xa && s_who_x < xb && s_who_y >= ya && s_who_y < yb && s_pixwho_n < 400) {
+        if (s_who_x >= xa && s_who_x < xb && s_who_y >= ya && s_who_y < yb && s_pixwho_n < 400 && s_ge_frame >= s_who_from) {
             s_pixwho_n++;
             fprintf(stderr, "PIXWHO f=%u CLEARSPR mode=0x%03x z=%.0f rect=(%d,%d)-(%d,%d) rgba=(%d,%d,%d,%d)\n",
                     s_ge_frame, ge.clear_mode, p1->z, xa, ya, xb, yb, p1->r, p1->g, p1->b, p1->a);
@@ -1724,7 +1725,8 @@ static void draw_prim(uint32_t op) {
             nf = 0; const char *e = getenv("SR_DRAWLOG");
             while (e && *e && nf < 16) { fr[nf++] = (uint32_t)strtoul(e, (char **)&e, 10); if (*e == ',') e++; else break; }
         }
-        for (int k = 0; k < nf; k++) if (s_ge_frame == fr[k]) {
+        extern volatile int g_drawlog_on;   /* ctrl_server.c "drawlog": the draws of one whole frame */
+        for (int k = 0; k < nf + (g_drawlog_on == 1); k++) if (k == nf || s_ge_frame == fr[k]) {
             fprintf(stderr, "DRAW f=%u type=%d n=%d vt=%06x fb=%08x/%u/%u tex=%d %08x fmt=%u bw=%u %dx%d func=%05x"
                     " clut=%08x/%06x blend=%d %06x mat=%06x/%02x\n", s_ge_frame, type, count, ge.vtype,
                     ge.fbp, ge.fbw, ge.fbfmt, ge.tex_enable, ge.tex_addr, ge.tex_fmt, ge.tex_bufw, ge.tex_w,

@@ -72,6 +72,9 @@ static const uint32_t k_vert_spv[] =
 static const uint32_t k_frag_spv[] =
 #include "psp_frag.inc"
 ;
+static const uint32_t k_frag_dual_spv[] =   /* + the dual-source blend output (sdl3vk_dual_src) */
+#include "psp_frag_dual.inc"
+;
 
 /* ---- captured vertex (must match psp.vert input layout) ------------------------------ */
 typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; } GpuVert;
@@ -1147,12 +1150,18 @@ static int map_factor(uint32_t f, int src_side, uint32_t fixed, int *need_const,
         case 3: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         case 4: return VK_BLEND_FACTOR_DST_ALPHA;
         case 5: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-        case 6:   /* 2*src alpha: exact on the src side (shader premultiplies rgb) */
+        case 6: { /* 2*src alpha: exact on the src side (shader premultiplies rgb) */
             if (src_side) { *premul = F_SA2X; return VK_BLEND_FACTOR_ONE; }
-            return VK_BLEND_FACTOR_SRC_ALPHA;                  /* dst side: halved approx */
-        case 7:
+            /* dst side: the shader's second output carries min(1, 2*alpha) (dual-source
+             * blending); without the feature, halved (the vortex in the finale washed out) */
+            extern int sdl3vk_dual_src;
+            return sdl3vk_dual_src ? VK_BLEND_FACTOR_SRC1_ALPHA : VK_BLEND_FACTOR_SRC_ALPHA;
+        }
+        case 7: {
             if (src_side) { *premul = F_SA2XI; return VK_BLEND_FACTOR_ONE; }
-            return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            extern int sdl3vk_dual_src;
+            return sdl3vk_dual_src ? VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        }
         case 8: return VK_BLEND_FACTOR_DST_ALPHA;              /* 2*dst alpha approx */
         case 9: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
         default:
@@ -1204,6 +1213,22 @@ static void build_state(int persp, int sprite, Batch *b) {
             uint32_t lum = (fb_ & 0xFF) + ((fb_ >> 8) & 0xFF) + ((fb_ >> 16) & 0xFF);
             df = lum >= 384 ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
             nc_b = 0;
+        }
+        {   /* SR_BLENDLOG: report each approximated blend setup once */
+            static int bl = -1; static uint32_t seen[64]; static int nseen = 0;
+            if (bl < 0) bl = getenv("SR_BLENDLOG") ? 1 : 0;
+            const uint32_t fa = g->blend_mode & 0xF, fb = (g->blend_mode >> 4) & 0xF;
+            const char *why = eq >= 3 ? "min/max/absdiff equation" : (fb == 6 || fb == 7 || fa == 8 || fa == 9 || fb == 8 || fb == 9)
+                              ? "doubled alpha factor" : (fa >= 10 && fb >= 10 && (g->blend_fixa & 0xFFFFFF) != (g->blend_fixb & 0xFFFFFF)
+                                 && (g->blend_fixb & 0xFFFFFF) != 0 && (g->blend_fixb & 0xFFFFFF) != 0xFFFFFF) ? "two FIX constants" : NULL;
+            const uint32_t key = g->blend_mode ^ (g->blend_fixa * 31) ^ (g->blend_fixb * 131);
+            int known = 0;
+            for (int i = 0; i < nseen; i++) if (seen[i] == key) known = 1;
+            if (bl && why && !known && nseen < 64) {
+                seen[nseen++] = key;
+                fprintf(stderr, "BLEND approx (%s): mode=%06x fixa=%06x fixb=%06x tex=%d fb=%06x\n", why, g->blend_mode,
+                        g->blend_fixa & 0xFFFFFF, g->blend_fixb & 0xFFFFFF, g->tex_enable, g->fbp);
+            }
         }
         uint32_t fixed = nc_a ? g->blend_fixa : g->blend_fixb;
         b->bconst[0] = (float)(fixed & 0xFF) / 255.0f;
@@ -2202,7 +2227,9 @@ int gegpu_init(void) {
     VkShaderModuleCreateInfo smc = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
     smc.codeSize = sizeof(k_vert_spv); smc.pCode = k_vert_spv;
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs));
-    smc.codeSize = sizeof(k_frag_spv); smc.pCode = k_frag_spv;
+    extern int sdl3vk_dual_src;
+    if (sdl3vk_dual_src) { smc.codeSize = sizeof(k_frag_dual_spv); smc.pCode = k_frag_dual_spv; }
+    else { smc.codeSize = sizeof(k_frag_spv); smc.pCode = k_frag_spv; }
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_fs));
 
     /* shared clamp samplers (render-target sampling + snapshot) */

@@ -20,6 +20,7 @@
 static volatile LONG s_btn_mask, s_btn_left;          /* frames left */
 static volatile LONG s_stick_xy = -1, s_stick_left;
 static volatile LONG64 s_vbl;                         /* vblank counter (sampled frames) */
+volatile int g_drawlog_on = 0;                       /* "drawlog" (ge.c / gui.c) */
 static volatile LONG s_presses;                       /* btn masks not yet seen by a modal dialog */
 
 /* Modal dialogs (gui_dialog) read button presses here instead of from the game's pad. */
@@ -59,6 +60,12 @@ static void handle(SOCKET c, char *line) {
         for (unsigned long i = 0; i < b; i++) n += snprintf(out + n, sizeof out - n, "%02x", MEM_R8((uint32_t)a + (uint32_t)i));
         snprintf(out + n, sizeof out - n, "\n");
         reply(c, out);
+    } else if (!strcmp(cmd, "vbtn") && sscanf(line, "%*s %lu %lu", &a, &b) == 2) {   /* SR_VPAD: SDL gamepad button */
+        extern void sdl3vk_vpad_button(int, int); sdl3vk_vpad_button((int)a, (int)b); reply(c, "ok\n");
+    } else if (!strcmp(cmd, "vaxis") && sscanf(line, "%*s %lu %ld", &a, (long *)&b) == 2) {  /* SDL gamepad axis, -32768..32767 */
+        extern void sdl3vk_vpad_axis(int, int); sdl3vk_vpad_axis((int)a, (int)(long)b); reply(c, "ok\n");
+    } else if (!strcmp(cmd, "drawlog")) {   /* log every draw of the next whole frame (ge.c DRAW lines) */
+        extern volatile int g_drawlog_on; g_drawlog_on = 2; reply(c, "ok\n");
     } else if (!strcmp(cmd, "vcount")) {
         snprintf(out, sizeof out, "ok %lld\n", (long long)s_vbl);
         reply(c, out);

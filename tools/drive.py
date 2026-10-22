@@ -54,7 +54,12 @@ class Port:
             for d in os.listdir(save):
                 if d.startswith("ULUS10567"):
                     shutil.copytree(os.path.join(save, d), os.path.join(ms, "PSP", "SAVEDATA", d))
-        shutil.copy(os.path.join(BUILD, exe + ".exe"), os.path.join(BUILD, "ULUS10567_drive.exe"))
+        for attempt in range(30):          # a previous run's process may still hold the file
+            try:
+                shutil.copy(os.path.join(BUILD, exe + ".exe"), os.path.join(BUILD, "ULUS10567_drive.exe")); break
+            except PermissionError:
+                subprocess.run(["taskkill", "/F", "/IM", "ULUS10567_drive.exe"], capture_output=True)
+                time.sleep(1)
         env = dict(os.environ)
         for k in list(env):
             if k.startswith("SR_"): del env[k]
@@ -142,6 +147,41 @@ class Ppsspp:
             except OSError:
                 time.sleep(0.2)
         self.held = None
+        self.patcher = None
+
+    def patch_save(self, patches):
+        """Patch u32s into the decrypted 128 KB game save whenever the game's stream reader
+        (0x08b1072c) reads it -- the title screen's peek and the real load alike."""
+        import threading, struct as st
+        from ppsspp_ws import Dbg
+        BP = 0x08B1072C
+        stop = threading.Event()
+
+        def run():
+            d2 = Dbg(45679)
+            while not stop.is_set():           # "CPU not started" until the game boots
+                try:
+                    d2.request("cpu.breakpoint.add", address=BP, enabled=True); break
+                except RuntimeError:
+                    time.sleep(0.2)
+            while not stop.is_set():
+                try:
+                    s_ = d2.request("cpu.status")
+                    if s_.get("stepping") and s_.get("pc") == BP:
+                        c = d2.request("cpu.getAllRegs")["categories"][0]
+                        s1 = dict(zip(c["registerNames"], c["uintValues"]))["s1"]
+                        rd = lambda a, n: base64.b64decode(d2.request("memory.read", address=a, size=n)["base64"])
+                        base, size = st.unpack("<II", rd(s1 + 8, 8))
+                        if size == 0x20000 and st.unpack("<I", rd(base, 4))[0] == 0x14:
+                            for off, val in patches:
+                                d2.request("memory.write", address=base + off,
+                                           base64=base64.b64encode(st.pack("<I", val)).decode())
+                        d2.request("cpu.resume", expect="cpu.resume")
+                    time.sleep(0.03)
+                except Exception:
+                    time.sleep(0.1)
+        self.patcher = (threading.Thread(target=run, daemon=True), stop)
+        self.patcher[0].start()
 
     def _send(self, event, **kw):
         self.d.ticket += 1
@@ -170,6 +210,7 @@ class Ppsspp:
         return base64.b64decode(self.d.request("memory.read", address=addr, size=n)["base64"])
 
     def close(self):
+        if self.patcher: self.patcher[1].set()
         try: self.p.kill()
         except Exception: pass
         self.p.wait()
@@ -215,13 +256,25 @@ def main():
     which = sys.argv[2] if len(sys.argv) > 2 else "both"
     save = "clear"
     if "--save" in sys.argv: save = sys.argv[sys.argv.index("--save") + 1]
+    scene = None
+    if "--scene" in sys.argv: scene = int(sys.argv[sys.argv.index("--scene") + 1], 0)
     fn = getattr(scenarios, scen)
-    base = os.path.join(SCRATCH, "drive", scen)
+    base = os.path.join(SCRATCH, "drive", scen + (f"_{scene}" if scene is not None else ""))
     for kind in (("port", "ppsspp") if which == "both" else (which,)):
         out = os.path.join(base, kind)
         shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
         port_save, pp_save = SAVES[save]
+        patches = [(0xB9D8, 0xFFFF0000 | scene)] if scene is not None else []
+        if patches and kind == "port":           # the port reads plaintext: patch a copy
+            import struct
+            tmp = os.path.join(BUILD, "save_scene")
+            shutil.rmtree(tmp, ignore_errors=True); shutil.copytree(port_save, tmp)
+            f_ = os.path.join(tmp, "ULUS10567DATA00", "3RDDATA.BIN")
+            d_ = bytearray(open(f_, "rb").read())
+            for off, val in patches: struct.pack_into("<I", d_, off, val)
+            open(f_, "wb").write(d_); port_save = tmp
         g = Port(out, port_save) if kind == "port" else Ppsspp(out, pp_save or port_save)
+        if patches and kind == "ppsspp": g.patch_save(patches)
         t0 = time.time()
         try:
             fn(g)
