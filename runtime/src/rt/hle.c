@@ -1137,6 +1137,12 @@ static void sr_dump_calls(void) {
         fprintf(stderr, "  %-32s 0x%08x  %lu calls  %.0f ms  (main %.0f ms)\n", g_cc[a].nm, g_cc[a].nid,
                 g_cc[a].n, g_cc[a].us / 1000.0, g_cc[a].us111 / 1000.0);
 }
+/* SR_SCHEDSTAT + SR_CALLCOUNT: the top calls of each 5 s window, then reset. */
+void sr_callcount_window(void) {
+    if (!g_callcount || !g_ncc) return;
+    sr_dump_calls();
+    for (int i = 0; i < g_ncc; i++) { g_cc[i].n = 0; g_cc[i].us = g_cc[i].us111 = 0; }
+}
 /* PSP controller ring buffer, modelled on PPSSPP (Core/HLE/sceCtrl.cpp): one sample is latched
  * per VBLANK into a 64-entry ring; sceCtrlReadBufferPositive returns the samples accumulated
  * since the last read (real per-frame history), not a flat copy of the current state. Games do
@@ -2077,16 +2083,20 @@ void sr_hle_init(void) {
 
 /* ---- dispatch ---- */
 
+const char *sr_nid_name_ext(uint32_t nid) { return sr_nid_name(nid); }   /* for recomp.c */
+
 void sr_syscall(CpuState *s, uint32_t nid) {
     sr_hle_init();
     sr_last_nid = nid;
-    if (getenv("SR_NIDLOG")) {
+    static int nidlog = -1, syslog_on = -1;   /* cached: this runs for every syscall */
+    if (nidlog < 0) { nidlog = getenv("SR_NIDLOG") ? 1 : 0; syslog_on = getenv("SR_SYSLOG") ? 1 : 0; }
+    if (nidlog) {
         static FILE *nf = NULL; static unsigned long nc = 0;
         if (!nf) nf = fopen("nidseq_mine.txt", "w");
         if (nf) { fprintf(nf, "0x%08x\n", nid); if ((++nc & 0x3f) == 0) fflush(nf); }
     }
     HleEntry *e = hle_find(nid);
-    { extern void sr_readwatch_syscall(const CpuState *, uint32_t, const char *); sr_readwatch_syscall(s, nid, sr_nid_name(nid)); }
+    { extern void sr_readwatch_syscall(const CpuState *, uint32_t, const char *); sr_readwatch_syscall(s, nid, NULL); }
     if (!e) {
         /* Permissive mode (SR_PERMISSIVE): unimplemented NIDs log once and return 0 instead of
          * trapping the thread. This is for bring-up exploration -- it lets audio/video (sceMpeg,
@@ -2117,7 +2127,7 @@ void sr_syscall(CpuState *s, uint32_t nid) {
         if (sr_sched_on) { sr_trace_close(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
-    if (getenv("SR_SYSLOG")) {
+    if (syslog_on) {
         /* Log the first time each (thread, nid) pair occurs, to see what each thread does. */
         static struct { uint32_t uid, nid; } seen[4096]; static int nseen = 0;
         uint32_t cur = sched_current_uid(); int known = 0;

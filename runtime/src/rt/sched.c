@@ -725,6 +725,8 @@ static void sched_stat_tick(void) {
     }
     fputc('\n', stderr);
     last = now; idle0 = s_idle_us; vbl0 = s_vbl_count;
+    extern void sr_callcount_window(void);
+    sr_callcount_window();
 }
 
 /* The scheduler loop. Runs on the main (converted) fiber. Creates the entry thread, then keeps

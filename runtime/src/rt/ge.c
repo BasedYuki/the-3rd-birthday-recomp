@@ -2583,7 +2583,9 @@ static int ge_run_list_inner(GeListCtx *c) {
             case GE_SIGNAL:
                 /* SIGNAL is paired with an END; the list continues afterwards. The HLE layer
                  * does not register signal handlers, so the payload is dropped. */
-                if (getenv("SR_SIGLOG")) {
+                static int siglog = -1;
+                if (siglog < 0) siglog = getenv("SR_SIGLOG") ? 1 : 0;
+                if (siglog) {
                     static unsigned long cnt[256]; static uint32_t last_frame = 0;
                     cnt[(data >> 16) & 0xFF]++;
                     if (s_ge_frame / 300 != last_frame) {

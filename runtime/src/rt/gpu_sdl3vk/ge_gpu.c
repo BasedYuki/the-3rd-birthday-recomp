@@ -167,6 +167,10 @@ static VkRenderPass s_rp;
 static VkBuffer s_vbuf, s_xfer;            /* vertices; pixel transfer staging (1MB) */
 static VkDeviceMemory s_vbuf_m, s_xfer_m;
 static GpuVert *s_vmap;
+/* Host copy of each vertex's y (same ring index as s_vmap): submit_pending scans it for the rows a
+ * batch touched. Reading s_vmap itself is a read of write-combined GPU-mapped memory -- very slow,
+ * and it was most of the GE time in sprite-heavy scenes. */
+static float s_vy[MAX_VERTS];
 static void    *s_xfer_map;
 
 static VkDescriptorSetLayout s_dlayout;
@@ -610,7 +614,7 @@ static int submit_pending(void) {
         const Batch *b = &s_batch[i];
         float my = 0.0f;
         for (uint32_t v = b->first; v < b->first + b->count; v++)
-            if (s_vmap[v].y > my) my = s_vmap[v].y;
+            if (s_vy[v] > my) my = s_vy[v];
         uint32_t bh = my >= (float)FB_H ? FB_H : (uint32_t)ceilf(my);
         const uint32_t lim = (uint32_t)(b->sy + b->sh);
         if (bh > lim) bh = lim;
@@ -1122,8 +1126,9 @@ static float snap16(float v) { return floorf(v * 16.0f + 0.375f) * (1.0f / 16.0f
 
 static void put_vert(float x, float y, float z, float rw, float u, float v, float fog,
                      int r, int g, int b, int a) {
+    s_vy[s_nverts] = snap16(y);
     GpuVert *o = &s_vmap[s_nverts++];
-    o->x = snap16(x); o->y = snap16(y); o->z = z; o->rw = rw;
+    o->x = snap16(x); o->y = s_vy[s_nverts - 1]; o->z = z; o->rw = rw;
     o->u = u; o->v = v; o->fog = fog;
     uint32_t cr = (uint32_t)(r < 0 ? 0 : r > 255 ? 255 : r);
     uint32_t cg = (uint32_t)(g < 0 ? 0 : g > 255 ? 255 : g);

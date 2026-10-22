@@ -349,7 +349,9 @@ RecompFn sr_lookup(uint32_t addr) {
 }
 
 void dispatch(CpuState *s, uint32_t target) {
-    if (getenv("SR_DISPLOG")) {
+    static int displog = -1;   /* getenv per computed call was a measurable cost */
+    if (displog < 0) displog = getenv("SR_DISPLOG") ? 1 : 0;
+    if (displog) {
         /* Log first invocation of boot/state-machine handlers, to see which actually run. */
         static uint32_t seen[256]; static int n = 0; int known = 0;
         if (target == 0x0880b398 || target == 0x0880b84c || target == 0x0880c584 ||
@@ -473,11 +475,12 @@ static void rw_cov_dump(const char *why) {
 }
 void sr_readwatch_syscall(const CpuState *s, uint32_t nid, const char *name) {
     if (!s_rw_len) return;
-    if (name && !strcmp(name, "sceIoRead") && s->r[5] - s_rw_lo < s_rw_len) {   /* buffer reused: stop */
+    if (nid == 0x6a638d83u /* sceIoRead */ && s->r[5] - s_rw_lo < s_rw_len) {   /* buffer reused: stop */
         rw_cov_dump("buffer reused by sceIoRead"); s_rw_len = 0; return;
     }
     for (int r = 4; r <= 11; r++)
         if (s->r[r] - s_rw_lo < s_rw_len) {
+            if (!name) { extern const char *sr_nid_name_ext(uint32_t); name = sr_nid_name_ext(nid); }
             fprintf(stderr, "READWATCH syscall %s (0x%08x) ra=0x%08x a0..a3=%08x %08x %08x %08x t0..t3=%08x %08x %08x %08x\n",
                     name ? name : "?", nid, s->r[31], s->r[4], s->r[5], s->r[6], s->r[7], s->r[8], s->r[9], s->r[10], s->r[11]);
             return;

@@ -45,7 +45,7 @@ ls "$GEN"/recomp_*.c | xargs -P "$JOBS" -I{} bash -c '
 
 # 3. Runtime + link.
 { [ "$OUT/ge.o" -nt "$RT/src/rt/ge.c" ] && [ "$OUT/ge.o" -nt "$RT/src/rt/recomp.h" ]; } 2>/dev/null || \
-  gcc -O2 -fno-math-errno -w -I"$RT/src/rt" -c "$RT/src/rt/ge.c" -o "$OUT/ge.o"
+  gcc -O2 -g -fno-math-errno -w -I"$RT/src/rt" -c "$RT/src/rt/ge.c" -o "$OUT/ge.o"
 
 # ATRAC3/3+ decoder (FFmpeg via PPSSPP's at3_standalone, C++): compiled once, libstdc++ linked
 # statically so the exe needs no extra DLL.
@@ -72,7 +72,9 @@ python "$ROOT/tools/toml_addrs.py" "$ROOT/versions/$GAME.toml" "$OUT/game_addrs.
 
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
          savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c twinstick.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
-gcc "${CFLAGS[@]}" -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
+# The runtime (GE backend, HLE, scheduler) at -O2; the later flag overrides CFLAGS' -O1, which
+# is only there for the huge generated chunks.
+gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \
   -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
