@@ -358,17 +358,30 @@ static void guest_str(uint32_t a, char *out, int max) {
     out[i] = 0;
 }
 
-typedef struct { int used; HANDLE h; WIN32_FIND_DATAA fd; int first, dot; char prefix[512]; } DirH;
+typedef struct { int used; HANDLE h; WIN32_FIND_DATAA fd; int first, dot, real; char prefix[512]; } DirH;
+int sr_ms_path(const char *guest, char *out, int max);   /* hle.c: ms0: -> real memory stick folder */
 static DirH s_dirs[8];
 
 static uint32_t h_IoDopen(CpuState *s) {
     char g[256], hp[512];
     guest_str(A0, g, sizeof(g));
-    sr_host_path(g, hp, sizeof(hp));
+    const int real = sr_ms_path(g, hp, sizeof(hp));
+    if (!real) sr_host_path(g, hp, sizeof(hp));
+    else {   /* a real folder: it must exist */
+        const DWORD at = GetFileAttributesA(hp);
+        if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) return 0x80010002;
+    }
     for (int i = 0; i < 8; i++) {
         if (s_dirs[i].used) continue;
         DirH *d = &s_dirs[i];
         memset(d, 0, sizeof(*d));
+        if (real) {
+            char pat[600]; snprintf(pat, sizeof(pat), "%s%c*", hp, 92);
+            d->h = FindFirstFileA(pat, &d->fd);
+            d->used = 1; d->first = 1; d->dot = 0; d->real = 1;
+            if (getenv("SR_IOLOG")) fprintf(stderr, "Dopen(%s) -> %d (folder)%c", g, i, 10);
+            return 0x100u + (uint32_t)i;
+        }
         snprintf(d->prefix, sizeof(d->prefix), "%s_", strrchr(hp, '/') ? strrchr(hp, '/') + 1 : hp);
         char pat[600]; snprintf(pat, sizeof(pat), "%s_*", hp);
         d->h = FindFirstFileA(pat, &d->fd);
@@ -398,6 +411,13 @@ static uint32_t h_IoDread(CpuState *s) {
     while (d->h != INVALID_HANDLE_VALUE) {
         if (!d->first && !FindNextFileA(d->h, &d->fd)) { FindClose(d->h); d->h = INVALID_HANDLE_VALUE; break; }
         d->first = 0;
+        if (d->real) {
+            if (!strcmp(d->fd.cFileName, ".") || !strcmp(d->fd.cFileName, "..")) continue;
+            const int is_dir = (d->fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            write_dirent(A1, d->fd.cFileName, is_dir,
+                         is_dir ? 0 : (((uint64_t)d->fd.nFileSizeHigh << 32) | d->fd.nFileSizeLow));
+            return 1;
+        }
         const char *rest = d->fd.cFileName + strlen(d->prefix);
         char name[256]; int n = 0;
         while (rest[n] && rest[n] != '_' && n < 255) { name[n] = rest[n]; n++; }
@@ -421,6 +441,7 @@ static uint32_t h_IoRemove(CpuState *s) {
     char g[256], hp[512];
     guest_str(A0, g, sizeof(g));
     sr_host_path(g, hp, sizeof(hp));
+    if (getenv("SR_IOLOG")) fprintf(stderr, "Remove(%s)\n", g);
     return remove(hp) == 0 ? 0 : 0x80010002;
 }
 /* Directories are implicit in the flattened store, so mkdir/rmdir/chdir/chstat just succeed. */
@@ -450,6 +471,7 @@ static void kcb_notify(uint32_t uid, uint32_t arg) {
     s_kcb_pending = 1;
 }
 int sr_callbacks_pending(void) { return s_kcb_pending; }
+void sr_notify_callback(uint32_t uid, uint32_t arg) { kcb_notify(uid, arg); }   /* hle.c (memstick) */
 void sr_run_callbacks(CpuState *s) {
     uint32_t me = sched_current_uid();
     int left = 0;
@@ -526,8 +548,9 @@ void sr_hle_init_ext(void) {
     sr_hle_register(0xe3eb004c, "sceIoDread", h_IoDread);
     sr_hle_register(0xeb092469, "sceIoDclose", h_IoDclose);
     sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
-    sr_hle_register(0x06a70004, "sceIoMkdir", h_zero);
-    sr_hle_register(0x1117c65f, "sceIoRmdir", h_zero);
+    { extern uint32_t sr_h_IoMkdir(CpuState *), sr_h_IoRmdir(CpuState *);
+      sr_hle_register(0x06a70004, "sceIoMkdir", sr_h_IoMkdir);
+      sr_hle_register(0x1117c65f, "sceIoRmdir", sr_h_IoRmdir); }
     sr_hle_register(0x55f4717d, "sceIoChdir", h_zero);
     sr_hle_register(0xb8a740f4, "sceIoChstat", h_zero);
     sr_hle_register(0x63632449, "sceIoIoctl", h_IoIoctl);

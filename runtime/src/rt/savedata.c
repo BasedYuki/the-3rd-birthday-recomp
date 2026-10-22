@@ -512,30 +512,51 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
     return sizes_no_data ? ERR_SIZES_NO_DATA : 0;
 }
 
-/* GETSIZE (22): free/needed space for the sizeInfo block. */
-static uint32_t do_getsize(uint32_t param) {
-    uint32_t si = MEM_R32(param + SDP_sizeInfo);
-    if (!si) return 0;
-    uint32_t nSec = MEM_R32(si + 0), nNorm = MEM_R32(si + 4);
-    uint32_t pSec = MEM_R32(si + 8), pNorm = MEM_R32(si + 12);
-    uint64_t needed = CLUSTER + CLUSTER;                    /* dir record + SFO */
-    for (uint32_t i = 0; i < nSec && pSec; i++) {
-        uint64_t sz = MEM_R32(pSec + i * 24u) | ((uint64_t)MEM_R32(pSec + i * 24u + 4) << 32);
-        needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
+/* GETSIZE (22): free space, and the space still missing for the listed files (PPSSPP
+ * SavedataParam::GetSize). neededKB/overwriteKB are the SHORTFALL: 0 when the files fit. The old
+ * code put the files' whole size there, so the Data Install screen (214 MB of files) always
+ * reported "Not enough free space". Returns RW_NO_DATA when the save directory does not exist. */
+static uint64_t file_size_in(const char *dir, const char *name) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\%s", dir, name);
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!name[0] || !GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) return 0;
+    return ((uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+}
+static uint32_t do_getsize(uint32_t param, const char *game, const char *save) {
+    char dir[MAX_PATH];
+    save_dir(dir, sizeof(dir), game, save);
+    const int exists = dir_exists(dir);
+    const uint32_t si = MEM_R32(param + SDP_sizeInfo);
+    if (si) {
+        const uint32_t nSec = MEM_R32(si + 0), nNorm = MEM_R32(si + 4);
+        const uint32_t pSec = MEM_R32(si + 8), pNorm = MEM_R32(si + 12);
+        const uint64_t free_bytes = (uint64_t)FREE_CLUSTERS * CLUSTER;
+        int64_t write = 0, overwrite = 0;
+        for (int sec = 0; sec < 2; sec++) {
+            const uint32_t n = sec ? nSec : nNorm, base = sec ? pSec : pNorm;
+            for (uint32_t i = 0; base && i < n && i < 256; i++) {
+                const uint32_t e = base + i * 24u;
+                char name[17];
+                rd_cstr(e + 8, name, sizeof(name));
+                write += (int64_t)(MEM_R32(e) | ((uint64_t)MEM_R32(e + 4) << 32)) + (sec ? 0x10 : 0);
+                if (exists) overwrite += (int64_t)file_size_in(dir, name);
+            }
+        }
+        MEM_W32(si + 16, CLUSTER);                              /* sectorSize */
+        MEM_W32(si + 20, (uint32_t)(free_bytes / CLUSTER));     /* freeSectors */
+        MEM_W32(si + 24, (uint32_t)(free_bytes / 0x400));       /* freeKB */
+        wr_fixed(si + 28, "512 MB", 8);
+        if (write - overwrite < (int64_t)free_bytes) {
+            MEM_W32(si + 36, 0);                                /* neededKB */
+            MEM_W32(si + 48, 0);                                /* overwriteKB */
+        } else {
+            const int64_t need = write - (int64_t)free_bytes, need_ow = need - overwrite;
+            MEM_W32(si + 36, (uint32_t)((need + 1023) / 1024));
+            MEM_W32(si + 48, (uint32_t)(need_ow > 0 ? (need_ow + 1023) / 1024 : 0));
+        }
     }
-    for (uint32_t i = 0; i < nNorm && pNorm; i++) {
-        uint64_t sz = MEM_R32(pNorm + i * 24u) | ((uint64_t)MEM_R32(pNorm + i * 24u + 4) << 32);
-        needed += (sz + CLUSTER - 1) / CLUSTER * CLUSTER;
-    }
-    MEM_W32(si + 16, CLUSTER);                              /* sectorSize */
-    MEM_W32(si + 20, FREE_CLUSTERS);                        /* freeSectors */
-    MEM_W32(si + 24, FREE_CLUSTERS * (CLUSTER / 0x400));    /* freeKB */
-    wr_fixed(si + 28, "512 MB", 8);
-    MEM_W32(si + 36, (uint32_t)(needed / 0x400));           /* neededKB */
-    wr_fixed(si + 40, "", 8);
-    MEM_W32(si + 48, (uint32_t)(needed / 0x400));           /* overwriteKB */
-    wr_fixed(si + 52, "", 8);
-    return 0;
+    return exists ? 0 : ERR_RW_NO_DATA;
 }
 
 /* Resolve the effective saveName (PPSSPP GetSaveDirName): "<>" is a wildcard meaning "any
@@ -569,6 +590,10 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
         if (h != INVALID_HANDLE_VALUE) {
             do {
                 if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    /* only real saves: the Data Install folder (ULUS10567DATA) has no PARAM.SFO */
+                    char sfo[MAX_PATH];
+                    snprintf(sfo, sizeof(sfo), "%s\\PSP\\SAVEDATA\\%s\\PARAM.SFO", ms_root(), fd.cFileName);
+                    if (GetFileAttributesA(sfo) == INVALID_FILE_ATTRIBUTES) continue;
                     snprintf(save, (size_t)cap, "%s", fd.cFileName + strlen(game));
                     break;
                 }
@@ -737,7 +762,7 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_SIZES:
             return do_sizes(param, game);
         case SD_GETSIZE:
-            return do_getsize(param);
+            return do_getsize(param, game, save);
         default:
             if (sdlog()) fprintf(stderr, "savedata: UNHANDLED mode=%u\n", mode);
             return 0;

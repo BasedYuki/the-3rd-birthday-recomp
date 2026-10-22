@@ -574,6 +574,10 @@ int sdl3vk_init(const char *title) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 0;
     }
+    if (getenv("SR_OFFSCREEN")) {   /* test runs: keep the window off the desktop, never take focus */
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+        SDL_SetWindowPosition(s_win, -4000, 200);
+    }
 
     Uint32 next = 0;
     const char * const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&next);

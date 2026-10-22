@@ -102,3 +102,59 @@ def scene_long(g):
     for t in (10, 30, 50, 70, 90):
         g.wait(10 if t == 10 else 20)
         g.shot(f"t{t:02d}")
+
+
+def data_install(g):
+    """Title -> Extra -> Data Install -> Begin installation."""
+    to_title_menu(g)
+    g.press("down"); g.wait(1)
+    g.press("cross"); g.wait(2.5)        # Extra
+    g.press("cross"); g.wait(3); g.shot("a_prompt")
+    g.press("cross"); g.wait(4); g.shot("b_begin")
+    for t in (10, 30, 60):
+        g.wait(10 if t == 10 else 20 if t == 30 else 30); g.shot(f"c{t:02d}")
+
+
+def install_prompt_dump(g):
+    """Stop at the Data Install prompt and dump the install objects (diff port vs PPSSPP)."""
+    import os
+    to_title_menu(g)
+    g.press("down"); g.wait(1)
+    g.press("cross"); g.wait(2.5)
+    g.press("cross"); g.wait(3); g.shot("a_prompt")
+    for base, n in ((0x08c50000, 0x1000), (0x08caf000, 0x1000), (0x08c2d000, 0x1000)):
+        open(os.path.join(g.out, f"mem_{base:08x}.bin"), "wb").write(b"".join(g.read(base + o, 0x800) for o in range(0, n, 0x800)))
+
+
+def install_begin_dump(g):
+    import os
+    to_title_menu(g)
+    g.press("down"); g.wait(1)
+    g.press("cross"); g.wait(2.5)
+    g.press("cross"); g.wait(3)
+    g.press("cross"); g.wait(1.0); g.shot("b_begin")
+    for base, n in ((0x08c50000, 0x1000), (0x08caf000, 0x1000), (0x08c2d000, 0x1000)):
+        open(os.path.join(g.out, f"mem_{base:08x}.bin"), "wb").write(b"".join(g.read(base + o, 0x800) for o in range(0, n, 0x800)))
+
+
+def quick_title(g):
+    to_title_menu(g); g.shot("menu")
+
+
+def load_play(g):
+    """Load Game -> first slot -> play on for a while (used with --save installed: reads 3RDINS.BIN)."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(3); g.shot("a_list")
+    g.press("cross"); g.wait(6); g.shot("b_loaded")
+    for i in range(5):
+        g.press("cross"); g.wait(5); g.shot(f"c{i}")
+
+
+def data_install_size(g):
+    """data_install, then report the size of 3RDINS.BIN each emulator wrote."""
+    import os
+    data_install(g)
+    g.wait(30)
+    for root in (r"K:\The 3rd Birthday project\memstick", r"K:\The 3rd Birthday project\build\ULUS10567\memstick_drive"):
+        p = os.path.join(root, "PSP", "SAVEDATA", "ULUS10567DATA", "3RDINS.BIN")
+        if os.path.exists(p): print(g.name, p, os.path.getsize(p), flush=True)

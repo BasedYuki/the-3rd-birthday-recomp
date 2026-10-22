@@ -78,7 +78,6 @@ def main():
         time.sleep(8)
         g._cmd("vaxis 4 -32768"); g._cmd("vaxis 5 -32768")   # triggers at rest
         h = hwnd_of(g.p.pid)
-        user32.SetForegroundWindow(h)
         kb = Keys(h)
         pos = 0
         _, pos = log_since(errp, 0)

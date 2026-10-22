@@ -28,6 +28,8 @@
 #include <setjmp.h>
 #include <direct.h>   /* _mkdir for the writable fs/ scratch dir */
 #include <time.h>     /* timespec_get: intro skip timeouts */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>  /* memory stick folders: CreateDirectoryA, GetFileAttributesExA, ... */
 
 uint32_t sr_last_nid = 0;
 
@@ -700,6 +702,56 @@ static uint32_t h_WlanGetEtherAddr(CpuState *s) {
 }
 static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
 
+/* sceIoDevctl(name, cmd, arg, arglen, out, outlen): the memory stick commands, after PPSSPP
+ * (Core/HLE/sceIo.cpp). The stub returned 0 without writing the answers, so the Data Install
+ * screen read a zero-sized card and reported "The storage media is not inserted correctly".
+ * The stick is always inserted, writable and has 1.5 GB free (PPSSPP's FAKE_FREE_SPACE). */
+static uint32_t h_IoDevctl(CpuState *s) {
+    char name[32];
+    guest_cstr(A0, name, sizeof(name));
+    const uint32_t cmd = A1, arg = A2, arglen = A3, out = s->r[8], outlen = s->r[9];
+    const int ms = !strcmp(name, "mscmhc0:") || !strcmp(name, "ms0:") || !strcmp(name, "memstick:");
+    const int fat = !strcmp(name, "fatms0:");
+    if (getenv("SR_SYSLOG")) fprintf(stderr, "sceIoDevctl(\"%s\", %08x, %08x, %u, %08x, %u)\n", name, cmd, arg, arglen, out, outlen);
+    extern void sr_notify_callback(uint32_t uid, uint32_t arg);
+    if (ms || fat) switch (cmd) {
+        case 0x02025801:                                   /* driver status: device inserted */
+            if (out && outlen >= 4) { MEM_W32(out, 4); return 0; }
+            return 0x80220081u;
+        case 0x02015804: case 0x02415821:                  /* register insert/eject callback */
+            if (arg && arglen >= 4) { sr_notify_callback(MEM_R32(arg), 1); return 0; }
+            return 0x80220081u;
+        case 0x02015805: case 0x02415822: return 0;        /* unregister */
+        case 0x02025806:                                   /* inserted? 1 = yes */
+            if (out && outlen >= 4) { MEM_W32(out, 1); return 0; }
+            return 0x80220081u;
+        case 0x02425818:                                   /* capacity: *arg -> DeviceSize */
+            if (arg && arglen >= 4) {
+                const uint32_t p = MEM_R32(arg);
+                const uint64_t free_bytes = (uint64_t)(1024 + 512) * 1024 * 1024;
+                const uint32_t sector = 0x200, per = 32 * 1024 / 0x200;
+                const uint32_t clusters = (uint32_t)((free_bytes * 95 / 100) / (sector * per));
+                if (p) { MEM_W32(p, clusters); MEM_W32(p + 4, clusters); MEM_W32(p + 8, clusters);
+                         MEM_W32(p + 12, sector); MEM_W32(p + 16, per); }
+                return 0;
+            }
+            return 0x80220081u;
+        case 0x02425824:                                   /* write protected? no */
+            if (out && outlen >= 4) { MEM_W32(out, 0); return 0; }
+            return 0xFFFFFFFFu;
+        case 0x02425823:                                   /* FAT enabled? 1 = assigned */
+            if (out) { MEM_W32(out, 1); return 0; }
+            return 0x80010016u;
+        case 0x02415823: case 0x0240d81e: return 0;        /* set FAT state / flush cache */
+        default: break;
+    }
+    {
+        static int n = 0;
+        if (n++ < 20) fprintf(stderr, "sceIoDevctl: unhandled \"%s\" cmd %08x (returns 0)\n", name, cmd);
+    }
+    return 0;
+}
+
 static uint32_t h_VolatileMemLock(CpuState *s) {
     /* sceKernelVolatileMemLock(type, void **paddr, int *psize): hand the app the 4MB volatile
      * partition. PPSSPP returns base 0x08400000, size 0x00400000; the game uses it as the
@@ -814,7 +866,27 @@ static Fd s_fds[64];
  * read-only ISO cannot provide -- ms0: saves, the game's registry file, etc.). The directory
  * is "fs" by default, overridable with SR_FSDIR, and created on first use. The path is
  * flattened so subdirectories collapse into one filename. */
+/* ms0:/fatms0: paths live in the memory stick directory with their real folder structure --
+ * the same tree sceUtilitySavedata (savedata.c) and PPSSPP use, so Data Install writes
+ * <memstick>/PSP/SAVEDATA/ULUS10567DATA/3RDINS.BIN like the PSP. Returns 0 for other devices. */
+int sr_ms_path(const char *guest, char *out, int max) {
+    const char *rest;
+    if (!_strnicmp(guest, "ms0:", 4)) rest = guest + 4;
+    else if (!_strnicmp(guest, "fatms0:", 7)) rest = guest + 7;
+    else return 0;
+    const char *root = getenv("SR_MEMSTICK");
+    if (!root || !*root) root = "memstick";
+    while (*rest == '/' || *rest == '\\') rest++;
+    int n = snprintf(out, (size_t)max, "%s", root);
+    if (*rest && n < max - 1) out[n++] = '\\';
+    for (; *rest && n < max - 1; rest++) out[n++] = (*rest == '/') ? '\\' : *rest;
+    while (n > 0 && out[n - 1] == '\\') n--;
+    out[n] = 0;
+    return 1;
+}
+
 static void host_path(const char *guest, char *out, int max) {
+    if (sr_ms_path(guest, out, max)) return;
     const char *dir = getenv("SR_FSDIR");
     if (!dir) dir = "fs";
     static int made = 0;
@@ -887,6 +959,34 @@ from_iso:
     s_fds[slot].lba = lba; s_fds[slot].size = size; s_fds[slot].off = 0;
     return (uint32_t)slot;
 }
+/* sceIoMkdir / sceIoRmdir / sceIoRename on the memory stick (other devices: implicit dirs). */
+static uint32_t h_IoMkdir(CpuState *s) {
+    char g[256], hp[512]; guest_cstr(A0, g, sizeof(g));
+    if (!sr_ms_path(g, hp, sizeof(hp))) return 0;
+    if (getenv("SR_IOLOG")) fprintf(stderr, "Mkdir(%s)\n", g);
+    if (CreateDirectoryA(hp, NULL)) return 0;
+    return GetLastError() == ERROR_ALREADY_EXISTS ? 0x80010011u : 0x80010002u;   /* EEXIST / ENOENT */
+}
+static uint32_t h_IoRmdir(CpuState *s) {
+    char g[256], hp[512]; guest_cstr(A0, g, sizeof(g));
+    if (!sr_ms_path(g, hp, sizeof(hp))) return 0;
+    if (getenv("SR_IOLOG")) fprintf(stderr, "Rmdir(%s)\n", g);
+    if (RemoveDirectoryA(hp)) return 0;
+    return GetLastError() == ERROR_DIR_NOT_EMPTY ? 0x8001005Au : 0x80010002u;     /* ENOTEMPTY / ENOENT */
+}
+static uint32_t h_IoRename(CpuState *s) {
+    char a[256], b[256], ha[512], hb[512];
+    guest_cstr(A0, a, sizeof(a)); guest_cstr(A1, b, sizeof(b));
+    if (!strchr(b, ':')) {   /* a bare new name: same directory as the old one */
+        char t[256]; const char *sl = strrchr(a, '/');
+        snprintf(t, sizeof(t), "%.*s%s", sl ? (int)(sl - a + 1) : 0, a, b);
+        snprintf(b, sizeof(b), "%s", t);
+    }
+    host_path(a, ha, sizeof(ha)); host_path(b, hb, sizeof(hb));
+    return MoveFileExA(ha, hb, MOVEFILE_REPLACE_EXISTING) ? 0 : 0x80010002u;
+}
+uint32_t sr_h_IoMkdir(CpuState *s) { return h_IoMkdir(s); }
+uint32_t sr_h_IoRmdir(CpuState *s) { return h_IoRmdir(s); }
 static uint32_t h_IoWrite(CpuState *s) {
     /* a0=fd, a1=src, a2=count. Returns bytes written. */
     uint32_t fd = A0, src = A1, count = A2;
@@ -899,11 +999,13 @@ static uint32_t h_IoWrite(CpuState *s) {
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
         for (uint32_t k = 0; k < n; k++) tmp[k] = (uint8_t)MEM_R8(src + done + k);
-        done += (uint32_t)fwrite(tmp, 1, n, f->host);
-        if (done < count) break;
+        const uint32_t w = (uint32_t)fwrite(tmp, 1, n, f->host);
+        done += w;
+        if (w < n) break;   /* disk full / error */
     }
     fflush(f->host);
     f->off += done; if (f->off > f->size) f->size = f->off;
+    if (getenv("SR_IOLOG")) fprintf(stderr, "Write fd=%u size=%u -> %u (now at %u)\n", fd, count, done, f->off);
     return done;
 }
 static uint32_t h_IoRead(CpuState *s) {
@@ -1015,6 +1117,25 @@ static uint32_t h_IoGetstat(CpuState *s) {
      * sector (e.g. REGFILE.CDI at LBN 0x5f20 was read as 0x80). */
     char path[256]; guest_cstr(A0, path, sizeof(path));
     uint32_t lba, size, st = A1;
+    {   /* memory stick / writable host files and folders */
+        char hp[512];
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        const int ms = sr_ms_path(path, hp, sizeof(hp));
+        if (!ms) host_path(path, hp, sizeof(hp));
+        if (GetFileAttributesExA(hp, GetFileExInfoStandard, &fa)) {
+            const int dir = (fa.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+            MEM_W32(st + 0, (dir ? 0x1000u : 0x2000u) | 0x1FFu);
+            MEM_W32(st + 4, dir ? 0x10u : 0x20u);
+            if (!dir) { MEM_W32(st + 8, fa.nFileSizeLow); MEM_W32(st + 12, fa.nFileSizeHigh); }
+            if (getenv("SR_STATLOG")) fprintf(stderr, "Getstat(%s) -> host %s\n", path, dir ? "dir" : "file");
+            return 0;
+        }
+        if (ms) {
+            if (getenv("SR_STATLOG")) fprintf(stderr, "Getstat(%s) -> NOT FOUND\n", path);
+            return 0x80010002;
+        }
+    }
     if (iso_lookup(path, &lba, &size) != 0) {
         if (getenv("SR_STATLOG")) fprintf(stderr, "Getstat(%s) -> NOT FOUND\n", path);
         return 0x80010002;
@@ -1971,7 +2092,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
-    sr_hle_register(0x779103a0, "sceIoRename", h_ok);
+    sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
     sr_hle_register(0x68963324, "sceIoLseek32", h_IoLseek32);
     sr_hle_register(0x27eb27b8, "sceIoLseek", h_IoLseek);
     sr_hle_register(0x810c4bc3, "sceIoClose", h_IoClose);
@@ -1983,7 +2104,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x35dbd746, "sceIoWaitAsyncCB", h_IoWaitAsync);
     sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoWaitAsync);
     sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
-    sr_hle_register(0x54f5fb11, "sceIoDevctl", h_ok);
+    sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
     /* sceAudio */
     sr_hle_register(0x5ec81c55, "sceAudioChReserve", h_AudioChReserve);
     sr_hle_register(0x6fc46853, "sceAudioChRelease", h_AudioChRelease);
@@ -2161,7 +2282,12 @@ void sr_syscall(CpuState *s, uint32_t nid) {
     int cb_point = (nlen > 2 && !strcmp(e->name + nlen - 2, "CB")) || nid == 0x349d6d6cu;
     if (cb_point && sr_callbacks_pending()) sr_run_callbacks(s);
     const int my_slot = cc_slot; const uint64_t my_t0 = cc_t0;   /* nested calls (callbacks) reuse the globals */
+    static int iotrace = -1;
+    if (iotrace < 0) iotrace = getenv("SR_IOTRACE") ? 1 : 0;
+    const uint32_t a0 = s->r[4], a1 = s->r[5], a2 = s->r[6], a3 = s->r[7], ra = s->r[31];
     uint32_t ret = e->fn(s);
+    if (iotrace && !strncmp(e->name, "sceIo", 5))   /* every file call with its result */
+        fprintf(stderr, "IOTRACE %s(%08x, %08x, %08x, %08x) -> %08x ra=%08x\n", e->name, a0, a1, a2, a3, ret, ra);
     if (cb_point && sr_callbacks_pending()) sr_run_callbacks(s);
     if (g_callcount && my_slot >= 0) {
         extern uint64_t sched_cur_cpu_us(void);

@@ -34,6 +34,7 @@ SAVES = {
     "user": (os.path.join(BUILD, r"memstick\PSP\SAVEDATA"), None),
     "none": (None, None),
     "two": (os.path.join(ROOT, "build", "ext_saves", "two_slots"), None),   # clear save in slot 1, the user's in slot 2
+    "installed": (os.path.join(ROOT, "build", "ext_saves", "user_installed"), None),   # the user's saves + Data Install output
 }
 BTN = {"select": 0x1, "start": 0x8, "up": 0x10, "right": 0x20, "down": 0x40, "left": 0x80,
        "l": 0x100, "r": 0x200, "triangle": 0x1000, "circle": 0x2000, "cross": 0x4000, "square": 0x8000}
@@ -46,6 +47,9 @@ class Port:
     name = "port"
 
     def __init__(self, out, save, exe="ULUS10567_new", extra_env=None):
+        extra_env = dict(extra_env or {})
+        for kv in os.environ.get("PORT_ENV", "").split():   # PORT_ENV="SR_DLGLOG=1 ...": extra debug env
+            k, _, v = kv.partition("="); extra_env.setdefault(k, v)
         self.out = out
         ms = os.path.join(BUILD, "memstick_drive")
         shutil.rmtree(ms, ignore_errors=True)
@@ -65,7 +69,7 @@ class Port:
             if k.startswith("SR_"): del env[k]
         env.update(PSP_ISO=next(os.path.join(ROOT, f) for f in os.listdir(ROOT) if f.endswith(".iso")),
                    SR_MEMSTICK=ms, PSP_VFPU_TABLES=os.path.join(ROOT, "assets", "vfpu").replace("\\", "/"),
-                   SR_CTRL="45680", SR_TWINSTICK="0", SR_INTERP="0", SR_SKIPINTRO="0", SR_NOINPUT="1",
+                   SR_CTRL="45680", SR_OFFSCREEN="1", SR_TWINSTICK="0", SR_INTERP="0", SR_SKIPINTRO="0", SR_NOINPUT="1",
                    PATH=r"K:\msys64\ucrt64\bin;" + env.get("PATH", ""))
         if os.path.isdir(os.path.join(ROOT, "ppsspp", "assets", "vfpu")):
             env["PSP_VFPU_TABLES"] = os.path.join(ROOT, "ppsspp", "assets", "vfpu").replace("\\", "/")
@@ -140,7 +144,13 @@ class Ppsspp:
             for d in os.listdir(save):
                 if d.startswith("ULUS10567"): shutil.copytree(os.path.join(save, d), os.path.join(sd, d))
         iso = next(os.path.join(ROOT, f) for f in os.listdir(ROOT) if f.endswith(".iso"))
-        self.p = subprocess.Popen([os.path.join(ROOT, "PPSSPPWindows64.exe"), iso], cwd=ROOT)
+        ini = os.path.join(ROOT, "memstick", "PSP", "SYSTEM", "ppsspp.ini")
+        self.ini_text = open(ini, encoding="utf-8", newline="").read()
+        import re
+        t = re.sub(r"(?m)^WindowX = .*$", "WindowX = -4000", self.ini_text)   # off the desktop while driven
+        open(ini, "w", encoding="utf-8", newline="").write(t)
+        si = subprocess.STARTUPINFO(); si.dwFlags = subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
+        self.p = subprocess.Popen([os.path.join(ROOT, "PPSSPPWindows64.exe"), iso], cwd=ROOT, startupinfo=si)
         for _ in range(100):
             try:
                 self.d = Dbg(45679); break
@@ -216,6 +226,7 @@ class Ppsspp:
         self.p.wait()
         sd = os.path.join(ROOT, "memstick", "PSP", "SAVEDATA")
         time.sleep(1)
+        open(os.path.join(ROOT, "memstick", "PSP", "SYSTEM", "ppsspp.ini"), "w", encoding="utf-8", newline="").write(self.ini_text)
         shutil.rmtree(sd, ignore_errors=True)
         shutil.copytree(self.backup, sd)
 
