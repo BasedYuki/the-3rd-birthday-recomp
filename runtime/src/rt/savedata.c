@@ -102,6 +102,8 @@ static void save_dir(char *out, int cap, const char *game, const char *save) {
     snprintf(out, cap, "%s\\PSP\\SAVEDATA\\%s%s", ms_root(), game, save);
 }
 
+int gui_dialog(const char *title, const char *const *items, int n, const char *const *details,
+               int *sel, const char *help);
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
 
 static int write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
@@ -576,13 +578,118 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
     }
 }
 
+/* A string value from a save's PARAM.SFO (SAVEDATA_TITLE, SAVEDATA_DETAIL, ...). */
+static int sfo_get(const char *dir, const char *key, char *out, int cap) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\PARAM.SFO", dir);
+    out[0] = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint8_t b[8192]; size_t n = fread(b, 1, sizeof(b), f); fclose(f);
+    if (n < 20 || memcmp(b, "\0PSF", 4)) return 0;
+    const uint32_t kt = b[8] | b[9] << 8 | b[10] << 16 | (uint32_t)b[11] << 24;
+    const uint32_t dt = b[12] | b[13] << 8 | b[14] << 16 | (uint32_t)b[15] << 24;
+    const uint32_t cnt = b[16] | b[17] << 8 | b[18] << 16 | (uint32_t)b[19] << 24;
+    for (uint32_t i = 0; i < cnt && 20 + i * 16 + 16 <= n; i++) {
+        const uint8_t *e = b + 20 + i * 16;
+        const uint32_t ko = kt + (e[0] | e[1] << 8), len = e[4] | e[5] << 8 | e[6] << 16 | (uint32_t)e[7] << 24;
+        const uint32_t dof = dt + (e[12] | e[13] << 8 | e[14] << 16 | (uint32_t)e[15] << 24);
+        if (ko >= n || dof >= n || strcmp((const char *)b + ko, key)) continue;
+        int m = (int)len < cap - 1 ? (int)len : cap - 1;
+        if (dof + (uint32_t)m > n) m = (int)(n - dof);
+        memcpy(out, b + dof, (size_t)m); out[m] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* The PSP system save/load screen for the LIST modes: the player picks a slot from the game's
+ * saveNameList (load/delete: slots with data; save: all, empty ones as "New Data") and confirms
+ * an overwrite or delete. Returns 0 = picked (save[] set), 1 = cancelled, -1 = not shown
+ * (headless, SR_SAVEDLG=0, or no list): the caller keeps the automatic choice. */
+static int pick_save(uint32_t param, uint32_t mode, const char *game, char *save, int cap) {
+    const char *sd = getenv("SR_SAVEDLG");
+    if (sd && sd[0] == '0') return -1;
+    const uint32_t list = MEM_R32(param + SDP_saveNameList);
+    if (!list) return -1;
+    enum { MAXE = 48 };
+    static char name[MAXE][24], item[MAXE][96], det[MAXE][600];
+    const char *items[MAXE], *dets[MAXE];
+    FILETIME ft[MAXE];
+    int n = 0, best = -1;
+    char cur[24]; rd_cstr(param + SDP_saveName, cur, sizeof(cur));
+    for (int i = 0; i < 99 && n < MAXE; i++) {
+        char ent[24], dir[MAX_PATH];
+        rd_cstr(list + (uint32_t)i * 20, ent, 21);
+        if (!ent[0]) break;
+        if (!strcmp(ent, "<>")) continue;
+        save_dir(dir, sizeof(dir), game, ent);
+        const int has = dir_exists(dir);
+        if (!has && mode != SD_LISTSAVE) continue;
+        char slot[32];
+        if (!strncmp(ent, "DATA", 4) && ent[4] >= '0' && ent[4] <= '9') snprintf(slot, sizeof(slot), "Slot %d", atoi(ent + 4) + 1);
+        else snprintf(slot, sizeof(slot), "%s", ent);
+        snprintf(name[n], sizeof(name[n]), "%s", ent);
+        det[n][0] = 0;
+        memset(&ft[n], 0, sizeof(ft[n]));
+        if (has) {
+            char t[128] = "", when[32] = "", path[MAX_PATH];
+            sfo_get(dir, "SAVEDATA_TITLE", t, sizeof(t));
+            sfo_get(dir, "SAVEDATA_DETAIL", det[n], sizeof(det[n]));
+            snprintf(path, sizeof(path), "%s\\PARAM.SFO", dir);
+            WIN32_FILE_ATTRIBUTE_DATA fa;
+            if (GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) {
+                FILETIME lt; SYSTEMTIME st;
+                ft[n] = fa.ftLastWriteTime;
+                FileTimeToLocalFileTime(&fa.ftLastWriteTime, &lt); FileTimeToSystemTime(&lt, &st);
+                snprintf(when, sizeof(when), "%04u/%02u/%02u  %02u:%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+            }
+            snprintf(item[n], sizeof(item[n]), "%s     %s     %s", slot, t[0] ? t : "Saved data", when);
+            if (mode == SD_LISTSAVE ? !strcmp(ent, cur)
+                                    : (best < 0 || CompareFileTime(&ft[n], &ft[best]) > 0)) best = n;
+        } else {
+            snprintf(item[n], sizeof(item[n]), "%s     New Data", slot);
+        }
+        items[n] = item[n]; dets[n] = det[n];
+        n++;
+    }
+    if (n == 0) return -1;
+    int sel = best >= 0 ? best : 0;
+    const char *title = mode == SD_LISTSAVE ? "Save" : mode == SD_LISTDELETE ? "Delete" : "Load";
+    for (;;) {
+        const int r = gui_dialog(title, items, n, dets, &sel, "X / Enter: select     Z / Backspace: back");
+        if (r < 0) return -1;
+        if (r == 0) return 1;
+        char sdir[MAX_PATH];
+        save_dir(sdir, sizeof(sdir), game, name[sel]);
+        if ((mode == SD_LISTSAVE && dir_exists(sdir)) || mode == SD_LISTDELETE) {
+            const char *yn[2] = { "No", "Yes" };
+            int c = 0;
+            const int q = gui_dialog(mode == SD_LISTDELETE ? "Delete this saved data?" : "Overwrite this saved data?",
+                                     yn, 2, NULL, &c, NULL);
+            if (q < 0) return -1;
+            if (q == 0 || c != 1) continue;          /* back to the list */
+        }
+        snprintf(save, (size_t)cap, "%s", name[sel]);
+        return 0;
+    }
+}
+
 int g_savedata_loads = 0;                  /* game saves (not system data) loaded */
 uint32_t sr_savedata_execute(uint32_t param) {
     if (!param) return 0;
     uint32_t mode = MEM_R32(param + SDP_mode);
     char game[16], save[24];
     rd_cstr(param + SDP_gameName, game, 14);
-    resolve_save(param, mode, game, save, 21);
+    if (mode == SD_LISTLOAD || mode == SD_LISTSAVE || mode == SD_LISTDELETE) {
+        const int r = pick_save(param, mode, game, save, 21);
+        if (r == 1) {
+            if (sdlog()) fprintf(stderr, "savedata: mode=%u cancelled in the dialog\n", mode);
+            return 1;                      /* SCE_UTILITY_DIALOG_RESULT_CANCEL */
+        }
+        if (r < 0) resolve_save(param, mode, game, save, 21);
+        else wr_fixed(param + SDP_saveName, save, 20);
+    } else resolve_save(param, mode, game, save, 21);
     if (sdlog()) fprintf(stderr, "savedata: mode=%u game='%s' save='%s'\n", mode, game, save);
     switch (mode) {
         case SD_AUTOSAVE: case SD_SAVE: case SD_LISTSAVE:

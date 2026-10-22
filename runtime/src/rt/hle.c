@@ -1217,7 +1217,16 @@ static uint32_t h_CtrlButtons(void) {
             int rs_set = 0;
             for (int i = 0; i < scr_n; i++)
                 if (s_vcount_fwd >= scr[i].f && s_vcount_fwd < scr[i].f + scr[i].w) {
-                    if (scr[i].mask & 0x40000000u) {
+                    if ((scr[i].mask & 0xF0000000u) == 0x10000000u) {
+                        /* bit 28 alone: save the next frame (SR_SHOTDIR/f<frame>.png), once */
+                        static uint32_t shot_done[256];
+                        if (shot_done[i] != scr[i].f + 1) {
+                            shot_done[i] = scr[i].f + 1;
+                            extern void sdl3vk_request_screenshot_named(const char *);
+                            char nm[32]; snprintf(nm, sizeof nm, "f%06u", (unsigned)scr[i].f);
+                            sdl3vk_request_screenshot_named(nm);
+                        }
+                    } else if (scr[i].mask & 0x40000000u) {
                         /* bit 30: dump user RAM to ram_<frame>.bin (for diffing game state
                          * across scripted input), once per line */
                         static uint32_t dumped[256];
@@ -1313,6 +1322,7 @@ void sr_ctrl_sample(void) {
     if (gui_on()) gui_analog(&lx, &ly);
     s_ctrl_ring[s_ctrl_w].btn = h_CtrlButtons() | intro_skip_tick();
     if (g_script_lx >= 0) { lx = (uint8_t)g_script_lx; ly = (uint8_t)g_script_ly; }
+    { extern void ctrlsrv_apply(uint32_t *, uint8_t *, uint8_t *); ctrlsrv_apply(&s_ctrl_ring[s_ctrl_w].btn, &lx, &ly); }
     {   /* twin-stick camera: turn Aya toward the camera before an aim (twinstick.c) */
         extern void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly);
         sr_twinstick_filter(&s_ctrl_ring[s_ctrl_w].btn, &lx, &ly);

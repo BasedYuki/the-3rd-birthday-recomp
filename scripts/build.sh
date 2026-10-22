@@ -71,12 +71,12 @@ done
 python "$ROOT/tools/toml_addrs.py" "$ROOT/versions/$GAME.toml" "$OUT/game_addrs.h"
 
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
-         savedata.c osk_win.c driver.c atrac_hle.c sas_hle.c twinstick.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
+         savedata.c osk_win.c driver.c ctrl_server.c atrac_hle.c sas_hle.c twinstick.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
 # The runtime (GE backend, HLE, scheduler) at -O2; the later flag overrides CFLAGS' -O1, which
 # is only there for the huge generated chunks.
 gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \
-  -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -ldinput8 -ldxguid -lole32 -lwinmm \
+  -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -lws2_32 -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 
 cp /ucrt64/bin/SDL3.dll "$OUT/" 2>/dev/null || echo "note: SDL3.dll in use (game running), kept the existing copy"

@@ -425,9 +425,76 @@ done:
 }
 #endif
 
+static uint32_t s_last_fb, s_last_stride = 512; static int s_last_fmt = 3, s_last_ok = 0;
+
+#ifdef SR_SDL3VK
+/* Modal list dialog over the last game frame (the PSP system save/load screens). Items are
+ * single lines; details[i] (may hold '
+') is shown under the list for the selected item.
+ * Returns 1 = chosen (*sel), 0 = backed out, -1 = no window (headless: caller decides). */
+int gui_dialog(const char *title, const char *const *items, int n, const char *const *details,
+               int *sel, const char *help) {
+    if (!s_on || !s_sdl3 || !s_last_ok || n <= 0) return -1;
+    enum { VIS = 7 };
+    int cur = *sel < 0 || *sel >= n ? 0 : *sel, top = 0;
+    (void)sdl3vk_menu_events();                    /* drop presses made before the dialog */
+    { extern uint32_t ctrlsrv_take_presses(void); (void)ctrlsrv_take_presses(); }
+    int result = 0;
+    for (;;) {
+        if (cur < top) top = cur;
+        if (cur >= top + VIS) top = cur - VIS + 1;
+        char buf[16][96]; const char *lines[16]; int k = 0, selline = 1;
+        snprintf(buf[k], 96, "%s", title); k++;
+        for (int i = top; i < n && i < top + VIS; i++) {
+            if (i == cur) selline = k;
+            snprintf(buf[k], 96, "%s%s", items[i], (i == top + VIS - 1 && i < n - 1) ? "   ..." : ""); k++;
+        }
+        snprintf(buf[k], 96, " "); k++;
+        if (details && details[cur]) {
+            const char *d = details[cur];
+            while (*d && k < 15) {
+                const char *e = strchr(d, '\n'); int len = e ? (int)(e - d) : (int)strlen(d);
+                if (len > 90) len = 90;
+                snprintf(buf[k], 96, "   %.*s", len, d); k++;
+                if (!e) break;
+                d = e + 1;
+            }
+        }
+        if (k < 16) { snprintf(buf[k], 96, "%s", help ? help : "X / Enter: select     Z / Backspace: back"); k++; }
+        for (int i = 0; i < k; i++) lines[i] = buf[i];
+        sdl3vk_menu_show(lines, k, selline);
+        int shown = gegpu_present(s_last_fb, s_last_fmt, s_last_stride);
+        if (shown < 0) shown = sdl3vk_present_rgba(s_px);
+        if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+        int ev = sdl3vk_menu_events();
+        {   /* the test control channel (ctrl_server.c) presses PSP buttons */
+            extern uint32_t ctrlsrv_take_presses(void);
+            const uint32_t b = ctrlsrv_take_presses();
+            if (b & 0x0010u) ev |= SDL3VK_MENU_UP;
+            if (b & 0x0040u) ev |= SDL3VK_MENU_DOWN;
+            if (b & 0x4000u) ev |= SDL3VK_MENU_OK;
+            if (b & 0x2000u) ev |= SDL3VK_MENU_BACK;
+        }
+        if (ev & SDL3VK_MENU_UP)   cur = cur > 0 ? cur - 1 : n - 1;
+        if (ev & SDL3VK_MENU_DOWN) cur = cur < n - 1 ? cur + 1 : 0;
+        if (ev & SDL3VK_MENU_OK)   { result = 1; break; }
+        if (ev & (SDL3VK_MENU_BACK | SDL3VK_MENU_TOGGLE)) { result = 0; break; }
+        Sleep(15);
+    }
+    sdl3vk_menu_show(NULL, 0, 0);
+    s_input_block = 1;                             /* the confirming press must not reach the game */
+    *sel = cur;
+    return result;
+}
+#else
+int gui_dialog(const char *title, const char *const *items, int n, const char *const *details,
+               int *sel, const char *help) { (void)title; (void)items; (void)n; (void)details; (void)sel; (void)help; return -1; }
+#endif
+
 void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return;
     if (stride == 0) stride = 512;
+    s_last_fb = fbaddr; s_last_fmt = fmt; s_last_stride = stride; s_last_ok = 1;
 
 #ifdef SR_SDL3VK
     if (s_sdl3) {

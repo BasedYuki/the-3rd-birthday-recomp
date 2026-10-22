@@ -104,6 +104,7 @@ int main(int argc, char **argv) {
     const char *ref_trace, *out;
 
     SetUnhandledExceptionFilter(sr_crash_filter);
+    { extern void ctrlsrv_start(void); ctrlsrv_start(); }   /* SR_CTRL test channel */
 
     /* Image mode: a pre-relocated flat image (e.g. a rebased PRX from tools/prxload.py) is
      * loaded at <base> and run from <entry>. Required for relocatable PRXs, which must be

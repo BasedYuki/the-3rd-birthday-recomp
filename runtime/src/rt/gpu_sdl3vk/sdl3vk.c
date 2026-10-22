@@ -365,6 +365,17 @@ static void menu_record(VkImage dst) {
 int  sdl3vk_fullscreen(void) { return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN) != 0; }
 void sdl3vk_set_fullscreen(int on) { if (s_win) SDL_SetWindowFullscreen(s_win, on ? true : false); }
 void sdl3vk_request_screenshot(void) { s_shot_req = 1; }
+/* Test runs: save the next frame as <SR_SHOTDIR>/<name>.png (no toast). */
+static char s_shot_name[64], s_shot_path[300];
+/* ctrl_server.c: save the next frame at a full path */
+void sdl3vk_request_screenshot_path(const char *path) {
+    snprintf(s_shot_path, sizeof(s_shot_path), "%s", path);
+    s_shot_req = 1;
+}
+void sdl3vk_request_screenshot_named(const char *name) {
+    snprintf(s_shot_name, sizeof(s_shot_name), "%s", name);
+    s_shot_req = 1;
+}
 
 /* ---- screenshots (F12) -------------------------------------------------------------------
  * The visible game image (at the internal resolution, without the menu or toasts) is copied to
@@ -411,12 +422,23 @@ static void shot_save(void) {
     s_shot_pending = 0;
     static ULONG_PTR token = 0;
     if (!token) { GpStartupIn in = { 1, NULL, FALSE, FALSE }; if (GdiplusStartup(&token, &in, NULL) != 0) { token = 0; return; } }
-    CreateDirectoryA("screenshots", NULL);
-    SYSTEMTIME st; GetLocalTime(&st);
-    WCHAR name[128];
-    _snwprintf(name, 128, L"screenshots\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u-%03u.png",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    name[127] = 0;
+    WCHAR name[400];
+    const char *sd = getenv("SR_SHOTDIR");
+    const int named = (sd && s_shot_name[0]) || s_shot_path[0];
+    if (s_shot_path[0]) {
+        _snwprintf(name, 400, L"%hs", s_shot_path);
+        s_shot_path[0] = 0;
+    } else if (named) {
+        CreateDirectoryA(sd, NULL);
+        _snwprintf(name, 400, L"%hs\\%hs.png", sd, s_shot_name);
+        s_shot_name[0] = 0;
+    } else {
+        CreateDirectoryA("screenshots", NULL);
+        SYSTEMTIME st; GetLocalTime(&st);
+        _snwprintf(name, 400, L"screenshots\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u-%03u.png",
+                   st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    }
+    name[399] = 0;
     /* the alpha byte of the frame is not image content: force opaque */
     uint32_t *px = (uint32_t *)s_shot_map;
     for (int i = 0; i < s_shot_w * s_shot_h; i++) px[i] |= 0xFF000000u;
@@ -430,7 +452,7 @@ static void shot_save(void) {
     if (ok) snprintf(msg, sizeof(msg), "Screenshot saved (%dx%d)", s_shot_w, s_shot_h);
     else snprintf(msg, sizeof(msg), "Screenshot failed");
     fprintf(stderr, "screenshot: %s %ls\n", msg, name);
-    sdl3vk_toast(msg, 2000);
+    if (!named) sdl3vk_toast(msg, 2000);
 }
 
 /* ---- render scale ------------------------------------------------------------------ */
