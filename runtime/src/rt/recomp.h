@@ -126,8 +126,18 @@ void     dispatch(CpuState *s, uint32_t target);
  * reports before its delay slot. */
 int  sr_trace_open(const char *path, const char *target, uint32_t start_pc);
 void sr_trace_close(void);
-void sr_begin(const CpuState *s, uint32_t pc, uint32_t op);
-void sr_end(const CpuState *s, uint32_t mem_addr, int mem_size);
+/* The generated code calls these around every instruction; they only do work when a trace or a
+ * debug switch (SR_WATCH, SR_PCPROBE, SR_READWATCH, ...) is on, so the release path is one
+ * predictable flag test instead of two calls per guest instruction. */
+extern int g_sr_dbg;
+void sr_begin_dbg(const CpuState *s, uint32_t pc, uint32_t op);
+void sr_end_dbg(const CpuState *s, uint32_t mem_addr, int mem_size);
+static inline void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
+    if (__builtin_expect(g_sr_dbg, 0)) sr_begin_dbg(s, pc, op);
+}
+static inline void sr_end(const CpuState *s, uint32_t mem_addr, int mem_size) {
+    if (__builtin_expect(g_sr_dbg, 0)) sr_end_dbg(s, mem_addr, mem_size);
+}
 void sr_readwatch_set(uint32_t lo, uint32_t len);   /* SR_READWATCH debug: log loads from a range */
 
 /* HLE boundary marker used by the bring-up driver: a call to an unresolved import stop the

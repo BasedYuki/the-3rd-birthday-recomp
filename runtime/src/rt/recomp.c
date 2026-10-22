@@ -423,11 +423,20 @@ void sr_unimplemented(uint32_t pc, const char *reason) {
 /* ---- tracing (TRACE_FORMAT.md), mirroring the PPSSPP instrumentation ---- */
 
 static FILE *s_fp = NULL;
+/* Debug hooks on (see recomp.h): any per-instruction debug switch in the environment, an open
+ * trace, or a watch set at runtime. */
+int g_sr_dbg = 0;
+__attribute__((constructor)) static void sr_dbg_init(void) {
+    static const char *const sw[] = { "SR_PCCOUNT", "SR_PCPROBE", "SR_REGWATCH", "SR_WATCH",
+                                      "SR_READWATCH", "SR_READWATCH_ABS" };
+    for (unsigned i = 0; i < sizeof(sw) / sizeof(sw[0]); i++) if (getenv(sw[i])) g_sr_dbg = 1;
+}
 static uint32_t s_r[32], s_fi[32], s_vi[128], s_hi, s_lo, s_fcr31, s_pc, s_op;
 static unsigned long long s_step = 0;
 
 int sr_trace_open(const char *path, const char *target, uint32_t start_pc) {
     s_fp = fopen(path, "wb");
+    g_sr_dbg = 1;
     if (!s_fp) return -1;
     fprintf(s_fp, "# psp-recomp trace v1 oracle=recomp target=%s start_pc=0x%08x\n",
             target ? target : "unknown", start_pc);
@@ -504,8 +513,8 @@ static uint32_t s_watch_addr = 0;
 static int s_watch_on = -1;
 /* Point the SR_WATCH machinery at an address found at runtime (e.g. a heap object a hook just
  * saw). Starts watching even without SR_WATCH set. */
-void sr_watch_set(uint32_t addr) { s_watch_addr = addr; s_watch_on = addr ? 1 : 0; }
-void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
+void sr_watch_set(uint32_t addr) { s_watch_addr = addr; s_watch_on = addr ? 1 : 0; if (addr) g_sr_dbg = 1; }
+void sr_begin_dbg(const CpuState *s, uint32_t pc, uint32_t op) {
     /* SR_PCCOUNT=<hex>,<hex>,...: count executions of up to 16 pcs (e.g. function entries);
      * log at 1, 10, 100, 1000, ... hits so a missing link in a call chain shows up. */
     {
@@ -620,7 +629,7 @@ void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
     s_pc = pc; s_op = op;
 }
 
-void sr_end(const CpuState *s, uint32_t mem_addr, int mem_size) {
+void sr_end_dbg(const CpuState *s, uint32_t mem_addr, int mem_size) {
     if (!s_fp) return;
     char line[4096];
     int n = snprintf(line, sizeof(line), "%llu pc=0x%08x op=0x%08x", s_step, s_pc, s_op);
