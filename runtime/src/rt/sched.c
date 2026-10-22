@@ -449,6 +449,17 @@ void sr_yield(CpuState *s) {
      * s_cur = -1, so it is interrupt-safe here. */
     if (s_pace_on > 0 && s_vtime_us >= s_vbl_next_us)
         deliver_vblank();
+    /* Turbo / fast-forward has no real clock: time only moves when a vblank is delivered, which
+     * otherwise happens only when every thread is idle. A thread busy-waiting on the system time
+     * (the sound thread does) would then freeze the game, so a long run with no vblank gets one,
+     * as the hardware interrupt would. */
+    if (s_pace_on == 0) {
+        static uint64_t ff_vbl = (uint64_t)-1; static int ff_slices = 0;
+        if (s_vbl_count != ff_vbl) { ff_vbl = s_vbl_count; ff_slices = 0; }
+        else if (++ff_slices >= 50) { ff_slices = 0; deliver_vblank(); }
+    }
+    /* Alarms are interrupts too: deliver due ones here, not only from the idle loop. */
+    deliver_alarms();
     TCB *t = &s_tcb[s_cur];
     /* Only switch if someone else could run; otherwise keep going (avoids pointless churn). */
     int other = 0;
