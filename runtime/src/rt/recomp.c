@@ -440,6 +440,63 @@ void sr_trace_close(void) {
  * instruction after which it changed (plus ra for caller context). Polling here instead of in
  * the MEM_W* path means no rebuild of the big recompiled object and catches every writer that
  * executes as guest code (HLE-side writes attribute to the syscall site). */
+static uint32_t s_rw_lo, s_rw_len;
+void sr_readwatch_set(uint32_t lo, uint32_t len) {
+    if (!getenv("SR_READWATCH")) return;
+    s_rw_lo = lo; s_rw_len = len;
+    fprintf(stderr, "READWATCH on 0x%08x +0x%x\n", lo, len);
+}
+uint8_t g_rw_cov[0x8000];
+uint32_t g_rw_pc[0x40000], g_rw_ra[0x40000];
+static void rw_cov_dump(const char *why) {
+    fprintf(stderr, "READWATCH coverage (%s):", why);
+    int n = 0;
+    for (uint32_t o = 0; o < s_rw_len && o < 0x40000u;) {
+        if (!(g_rw_cov[o >> 3] & (1u << (o & 7)))) { o++; continue; }
+        uint32_t e = o; while (e < s_rw_len && (g_rw_cov[e >> 3] & (1u << (e & 7))) && g_rw_pc[e] == g_rw_pc[o]) e++;
+        if (n++ < 400) fprintf(stderr, " %x-%x@%08x/%08x", o, e, g_rw_pc[o], g_rw_ra[o]);
+        o = e;
+    }
+    fprintf(stderr, "\n");
+}
+void sr_readwatch_syscall(const CpuState *s, uint32_t nid, const char *name) {
+    if (!s_rw_len) return;
+    if (name && !strcmp(name, "sceIoRead") && s->r[5] - s_rw_lo < s_rw_len) {   /* buffer reused: stop */
+        rw_cov_dump("buffer reused by sceIoRead"); s_rw_len = 0; return;
+    }
+    for (int r = 4; r <= 11; r++)
+        if (s->r[r] - s_rw_lo < s_rw_len) {
+            fprintf(stderr, "READWATCH syscall %s (0x%08x) ra=0x%08x a0..a3=%08x %08x %08x %08x t0..t3=%08x %08x %08x %08x\n",
+                    name ? name : "?", nid, s->r[31], s->r[4], s->r[5], s->r[6], s->r[7], s->r[8], s->r[9], s->r[10], s->r[11]);
+            return;
+        }
+}
+static void sr_readwatch_hit(const CpuState *s, uint32_t pc, uint32_t op, uint32_t off) {
+    { extern uint8_t g_rw_cov[]; extern uint32_t g_rw_pc[], g_rw_ra[]; if (off < 0x40000u) { if (!(g_rw_cov[off >> 3] & (1u << (off & 7)))) { g_rw_pc[off] = pc; g_rw_ra[off] = s->r[31];
+        static const char *at = (const char *)1; if (at == (const char *)1) at = getenv("SR_READWATCH_AT");   /* hex offsets: dump regs at first read */
+        for (const char *q = at; q && *q;) { char *e2; uint32_t v = (uint32_t)strtoul(q, &e2, 16); if (e2 == q) break;
+            if (v == off) { fprintf(stderr, "READWATCH at +0x%x pc=0x%08x:", off, pc); for (int r = 1; r < 32; r++) fprintf(stderr, " r%d=%08x", r, s->r[r]); fprintf(stderr, "\n"); }
+            q = *e2 == ',' ? e2 + 1 : e2; } } g_rw_cov[off >> 3] |= (uint8_t)(1u << (off & 7)); } }
+    enum { NPC = 512 };
+    static uint32_t pcs[NPC], cnt[NPC]; static int npc, lines;
+    int i = 0;
+    while (i < npc && pcs[i] != pc) i++;
+    if (i == npc) { if (npc == NPC) return; pcs[npc] = pc; cnt[npc++] = 0; }
+    {   /* a copy loop: report where each contiguous run starts (dest registers included) */
+        static uint32_t last[NPC]; static int runs;
+        if (cnt[i] >= 24 && off != last[i] + 1 && off != last[i] + 2 && off != last[i] + 4 && off != last[i] + 16 && runs < 400) {
+            runs++;
+            fprintf(stderr, "READWATCH run pc=0x%08x from +0x%05x ra=0x%08x a0=%08x a1=%08x a2=%08x v0=%08x v1=%08x t0..t3=%08x %08x %08x %08x\n",
+                    pc, off, s->r[31], s->r[4], s->r[5], s->r[6], s->r[2], s->r[3], s->r[8], s->r[9], s->r[10], s->r[11]);
+        }
+        last[i] = off;
+    }
+    if (++cnt[i] > 24 || lines > 6000) { if (cnt[i] == 25) fprintf(stderr, "READWATCH pc=0x%08x reads many offsets (copy?)\n", pc); return; }
+    lines++;
+    const uint32_t a = s_rw_lo + off;
+    if (cnt[i] == 1) { fprintf(stderr, "READWATCH regs pc=0x%08x:", pc); for (int r = 1; r < 32; r++) fprintf(stderr, " r%d=%08x", r, s->r[r]); fprintf(stderr, "\n"); }
+    fprintf(stderr, "READWATCH +0x%05x op=%02x pc=0x%08x ra=0x%08x w=%08x\n", off, op >> 26, pc, s->r[31], sr_r32(a & ~3u));
+}
 static uint32_t s_watch_addr = 0;
 static int s_watch_on = -1;
 /* Point the SR_WATCH machinery at an address found at runtime (e.g. a heap object a hook just
@@ -515,6 +572,23 @@ void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
                     rw_reg, rw_val, pc, op, prev_pc, prev_op, s->r[31], s->r[29]);
         }
         prev_pc = pc; prev_op = op;
+    }
+    /* SR_READWATCH (debug): report guest loads from a range set by sr_readwatch_set (the save
+     * loader points it at the data buffer), first read per (pc, offset), so the code that parses
+     * a structure can be found. A pc that reads many offsets (a copy loop) is reported once. */
+    {   /* SR_READWATCH_ABS=<hexaddr>:<hexlen>: watch a fixed guest range from the start */
+        static int init = 0;
+        if (!init) { init = 1; const char *e = getenv("SR_READWATCH_ABS");
+            if (e) { char *c; s_rw_lo = (uint32_t)strtoul(e, &c, 16); s_rw_len = *c == ':' ? (uint32_t)strtoul(c + 1, NULL, 16) : 4; } }
+    }
+    if (s_rw_len) {
+        const uint32_t opc = op >> 26;
+        if ((opc >= 0x20 && opc <= 0x26) || opc == 0x31 || opc == 0x32 || opc == 0x35 || opc == 0x36) {   /* + lv.s/lv.q */
+            const uint32_t imm = (opc == 0x32 || opc == 0x35 || opc == 0x36) ? (op & 0xfffcu) : (op & 0xffffu);
+            const uint32_t a = s->r[(op >> 21) & 31] + (uint32_t)(int32_t)(int16_t)imm;
+            const uint32_t off = a - s_rw_lo;
+            if (off < s_rw_len) sr_readwatch_hit(s, pc, op, off);
+        }
     }
     if (s_watch_on < 0) {
         const char *w = getenv("SR_WATCH");

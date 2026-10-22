@@ -128,6 +128,7 @@ int  sr_trace_open(const char *path, const char *target, uint32_t start_pc);
 void sr_trace_close(void);
 void sr_begin(const CpuState *s, uint32_t pc, uint32_t op);
 void sr_end(const CpuState *s, uint32_t mem_addr, int mem_size);
+void sr_readwatch_set(uint32_t lo, uint32_t len);   /* SR_READWATCH debug: log loads from a range */
 
 /* HLE boundary marker used by the bring-up driver: a call to an unresolved import stop the
  * traced run so the comparison ends exactly where the reference trace reaches its first syscall. */

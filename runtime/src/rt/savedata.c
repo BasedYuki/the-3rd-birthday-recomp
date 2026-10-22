@@ -310,6 +310,8 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
         size_t rd = dataBuf ? fread(SR_HOST(dataBuf), 1, (size_t)n, f) : 0;
         fclose(f);
         MEM_W32(param + SDP_dataSize, (uint32_t)rd);
+        { const char *rw = getenv("SR_READWATCH");   /* debug: SR_READWATCH=<part of the file path> */
+          if (rw && dataBuf && rd && strstr(path, rw)) sr_readwatch_set(dataBuf, (uint32_t)rd); }
         if (sdlog()) {
             const uint8_t *p = (const uint8_t *)SR_HOST(dataBuf);
             fprintf(stderr, "savedata: LOAD %s (%u bytes) -> buf=0x%08x cap=%u first=%02x%02x%02x%02x\n",

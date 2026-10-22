@@ -2083,6 +2083,7 @@ void sr_syscall(CpuState *s, uint32_t nid) {
         if (nf) { fprintf(nf, "0x%08x\n", nid); if ((++nc & 0x3f) == 0) fflush(nf); }
     }
     HleEntry *e = hle_find(nid);
+    { extern void sr_readwatch_syscall(const CpuState *, uint32_t, const char *); sr_readwatch_syscall(s, nid, sr_nid_name(nid)); }
     if (!e) {
         /* Permissive mode (SR_PERMISSIVE): unimplemented NIDs log once and return 0 instead of
          * trapping the thread. This is for bring-up exploration -- it lets audio/video (sceMpeg,
