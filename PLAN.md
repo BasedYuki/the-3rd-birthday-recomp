@@ -1,4 +1,4 @@
-﻿# The 3rd Birthday â€” native PC port (static recompilation)
+# The 3rd Birthday â€” native PC port (static recompilation)
 
 ## Goals
 - Playable improvements: widescreen, high framerate, modern controls (twin-stick camera is the first real milestone)
