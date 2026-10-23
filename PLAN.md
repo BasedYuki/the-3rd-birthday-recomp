@@ -152,6 +152,8 @@ Kill rule: the framework that gets closest to showing anything wins. If none get
 
 - **Widescreen tunnel strip fixed (2026-10-23):** the dark side strips in Overdive scenes (30) were the game's colour tint, a 4-vertex perspective quad drawn with a camera still at 480:272 and sized to the PSP's view (ndc x -1.07..1.07); it was squeezed like 3D. A small (<=16 vertices) draw on an unwidened camera spanning the PSP screen's width now stretches like 2D full-screen effects. Also: squeezed flat (HUD) draws are clipped to the PSP screen's area (GeState.ws_clip -> scissor), so panels the game parks partly off-screen stay hidden (the faint top-left rectangle in the alley).
 
+- **Widescreen pass over the Overdive scenes (2026-10-23):** 20 gameplay scenes (25-108) and the Triangle Overdive view at 21:9. Two more screen effects drawn in 3D with the game's still-480:272 camera were squeezed: the finale's black backdrop (103: four quarter-screen quads; the world showed at the sides) and the Game Over smoke/blood (pieces squeezed or stretched inconsistently). Rule now: every small draw (<= 16 vertices) on a camera still at 480:272 stretches like a 2D full-screen effect (every draw seen on that camera is such an effect). Everything else in the 20 scenes looked right (wider world, HUD centred); scene 36's corridor ceiling matches the 16:9 picture.
+
 ## Open, not blocking
 - Controller remapping and config UI
 - Mod/patch format for other people's function replacements

@@ -813,24 +813,12 @@ static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt
         const float a = ge.proj[0] != 0.0f ? fabsf(ge.proj[5] / ge.proj[0]) : 480.0f / 272.0f;
         const float k = a / (480.0f / 272.0f * g_ge_ws);
         s_draw_ws = k > 1.0f ? 1.0f : k < 0.2f ? 0.2f : k;
-        /* A small draw on a still-480:272 camera that spans the whole PSP screen width is a
-         * screen-sized effect in 3D (the Overdive colour tint: a 4-vertex quad, sized to the
-         * PSP's view): stretch it like 2D full-screen effects, or the window's sides miss it
-         * (the dark strips in the tunnels). */
-        if (s_draw_ws < 0.999f && count <= 16) {
-            float lx = 1e9f, hx = -1e9f, ly = 1e9f, hy = -1e9f;
-            for (int i = 0; i < count; i++) {
-                float x, y;
-                ws_clip_x(prim_vtx_addr(vbase, ibase, idxfmt, i, vf->stride), vf, &x, &y);
-                if (x < lx) lx = x;
-                if (x > hx) hx = x;
-                if (y < ly) ly = y;
-                if (y > hy) hy = y;
-            }
-            if (lx <= -0.98f && hx >= 0.98f) s_draw_ws = 1.0f;   /* spans the PSP screen's width */
-            extern volatile int g_drawlog_on;
-            if (g_drawlog_on == 1) fprintf(stderr, "WS persp overlay? ndc x %.2f..%.2f y %.2f..%.2f -> %.3f\n", lx, hx, ly, hy, s_draw_ws);
-        }
+        /* Small draws (quads) on a camera still at 480:272 are the game's screen effects in
+         * 3D, sized to the PSP's view: the Overdive colour tint, the finale's black backdrop
+         * (four quarter-screen quads), the Game Over smoke and blood. Stretch them like 2D
+         * full-screen effects; squeezing leaves the window's sides uncovered, and an effect's
+         * pieces must all be treated alike or they no longer line up. */
+        if (s_draw_ws < 0.999f && count <= 16) s_draw_ws = 1.0f;
         return;
     }
     /* a texture inside the display buffers is a screen copy: its UVs must keep lining up */
