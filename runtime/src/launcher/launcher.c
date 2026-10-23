@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <commctrl.h>
+#include <math.h>
 
 #ifndef SR_VERSION
 #define SR_VERSION "0.0.0"
@@ -240,11 +241,26 @@ static int  s_preparing;
 static void play_button_text(void);
 static float s_dpi = 1.0f;                 /* layout scale: the layout is in 96-DPI pixels */
 #define S(v) ((int)((v) * s_dpi + 0.5f))
+#define WIN_W 1210                         /* client size (96-DPI pixels); the settings start at OX */
+#define WIN_H 708
+#define OX    430
+#include "theme.h"
+static Panel s_panels[8]; static int s_npanels = 0;
+static void theme_refresh(void) {
+    RECT rc; GetClientRect(s_win, &rc);
+    theme_compose(rc.right, rc.bottom, s_iso, s_panels, s_npanels, s_dpi, S(OX));
+    HICON ic = theme_icon(s_iso);
+    if (ic) { SendMessageA(s_win, WM_SETICON, ICON_BIG, (LPARAM)ic); SendMessageA(s_win, WM_SETICON, ICON_SMALL, (LPARAM)ic); }
+    InvalidateRect(s_win, NULL, TRUE);
+}
 
 static HWND mk(const char *cls, const char *text, DWORD style, int x, int y, int w, int h, int id) {
-    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), s_win,
+    const int push = !strcmp(cls, "BUTTON") && ((style & 0xF) == BS_PUSHBUTTON || (style & 0xF) == BS_DEFPUSHBUTTON);
+    if (push) style = (style & ~0xFu) | BS_OWNERDRAW;          /* drawn by theme_draw_button */
+    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style, S(x + OX), S(y), S(w), S(h), s_win,
                              (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
     SendMessageA(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    if (!push) SetWindowTheme(c, L"", L"");                    /* classic controls take the theme's colours */
     return c;
 }
 static HWND check(const char *text, int x, int y, int w, int id, int on) {
@@ -252,9 +268,8 @@ static HWND check(const char *text, int x, int y, int w, int id, int on) {
     SendMessageA(c, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
     return c;
 }
-static void group(const char *text, int x, int y, int w, int h) {
-    HWND g = mk("BUTTON", text, BS_GROUPBOX, x, y, w, h, 0);
-    SendMessageA(g, WM_SETFONT, (WPARAM)s_bold, TRUE);
+static void group(const char *text, int x, int y, int w, int h) {   /* a panel in the background */
+    if (s_npanels < 8) s_panels[s_npanels++] = (Panel){ x + OX, y, w, h, text };
 }
 
 static void iso_show(void) {
@@ -326,13 +341,15 @@ static void build_ui(void) {
     const int L = 16, W = 760;
     char t[128];
     snprintf(t, sizeof(t), "The 3rd Birthday  -  PC port v%s", SR_VERSION);
-    HWND h = mk("STATIC", t, 0, L, 12, 500, 30, 0); SendMessageA(h, WM_SETFONT, (WPARAM)s_bold, TRUE);
-    s_status = mk("STATIC", "Checking for updates...", 0, L, 42, 520, 20, 0);
-    HWND pb = mk(PROGRESS_CLASSA, "", 0, L, 64, 520, 8, ID_PROGRESS);
+    group(NULL, L - 6, 4, W + 12, 64);
+    HWND h = mk("STATIC", t, 0, L, 12, 440, 30, 0); SendMessageA(h, WM_SETFONT, (WPARAM)s_bold, TRUE);
+    s_status = mk("STATIC", "Checking for updates...", 0, L, 42, 440, 20, 0);
+    HWND pb = mk(PROGRESS_CLASSA, "", 0, L, 62, 440, 6, ID_PROGRESS);
     SendMessageA(pb, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+    SendMessageA(pb, PBM_SETBARCOLOR, 0, RGB(200, 20, 30)); SendMessageA(pb, PBM_SETBKCOLOR, 0, RGB(30, 10, 12));
     ShowWindow(pb, SW_HIDE);
-    mk("BUTTON", "Releases page", BS_PUSHBUTTON, W - 280, 14, 120, 28, ID_RELEASES);
-    HWND play = mk("BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, W - 150, 10, 150, 46, ID_PLAY);
+    mk("BUTTON", "Releases page", BS_PUSHBUTTON, W - 280, 16, 120, 30, ID_RELEASES);
+    HWND play = mk("BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, W - 150, 10, 150, 48, ID_PLAY);
     SendMessageA(play, WM_SETFONT, (WPARAM)s_bold, TRUE);
 
     group("Disc image", L - 6, 72, W + 12, 56);
@@ -380,6 +397,7 @@ static void build_ui(void) {
 
     iso_show();
     play_button_text();
+    theme_refresh();
     saves_fill();
     patches_fill();
 }
@@ -621,6 +639,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                 snprintf(s_iso, sizeof(s_iso), "%s", file);
                 cfg_write("launch.cfg", "iso", file, 0);
                 iso_show();
+                theme_refresh();
             }
             return 0;
         }
@@ -662,10 +681,35 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             SetWindowTextA(s_status, t);
         } else SetWindowTextA(s_status, (int)wp == -1 ? "You have the latest version." : "Could not check for updates (offline?).");
         return 0;
-    case WM_CTLCOLORSTATIC:
-        if ((HWND)lp == s_status && s_latest[0]) { SetTextColor((HDC)wp, RGB(200, 90, 20)); SetBkMode((HDC)wp, TRANSPARENT);
-                                                    return (LRESULT)GetSysColorBrush(COLOR_BTNFACE); }
+    case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: {
+        HDC dc = (HDC)wp; HWND c = (HWND)lp;
+        if (GetDlgCtrlID(c) == ID_MOUSESENS || GetDlgCtrlID(c) == ID_RES) {   /* read-only edit / combo look */
+            SetTextColor(dc, TH_TEXT); SetBkColor(dc, TH_FIELD); return (LRESULT)s_fieldbrush;
+        }
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, c == s_status && s_latest[0] ? RGB(255, 140, 60) : IsWindowEnabled(c) ? TH_TEXT : TH_DIM);
+        if (!s_bgbrush) return (LRESULT)GetStockObject(BLACK_BRUSH);
+        RECT r; GetWindowRect(c, &r); MapWindowPoints(NULL, w, (POINT *)&r, 2);
+        SetBrushOrgEx(dc, -r.left, -r.top, NULL);            /* the background shows through */
+        return (LRESULT)s_bgbrush;
+    }
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+        SetTextColor((HDC)wp, TH_TEXT); SetBkColor((HDC)wp, TH_FIELD);
+        return (LRESULT)(s_fieldbrush ? s_fieldbrush : GetStockObject(BLACK_BRUSH));
+    case WM_ERASEBKGND:
+        if (s_bg) {
+            HDC dc = (HDC)wp, mdc = CreateCompatibleDC(dc);
+            HGDIOBJ o = SelectObject(mdc, s_bg);
+            BitBlt(dc, 0, 0, s_bgw, s_bgh, mdc, 0, 0, SRCCOPY);
+            SelectObject(mdc, o); DeleteDC(mdc);
+            return 1;
+        }
         break;
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT *d = (const DRAWITEMSTRUCT *)lp;
+        if (d->CtlType == ODT_BUTTON) { theme_draw_button(d, d->CtlID == ID_PLAY ? s_bold : s_font, d->CtlID == ID_PLAY); return TRUE; }
+        break;
+    }
     case WM_CLOSE:
         if (s_preparing && MessageBoxA(w, "The game is still being prepared. Stop and close?", "The 3rd Birthday",
                                        MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
@@ -694,7 +738,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show) {
     RegisterClassA(&wc);
     { HDC dc = GetDC(NULL); s_dpi = GetDeviceCaps(dc, LOGPIXELSX) / 96.0f; ReleaseDC(NULL, dc); }
     if (s_dpi < 1.0f) s_dpi = 1.0f;
-    RECT r = { 0, 0, S(792), S(702) };
+    RECT r = { 0, 0, S(WIN_W), S(WIN_H) };
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     s_win = CreateWindowA("ThirdBirthdayLauncher", "The 3rd Birthday - Launcher", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                           CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);

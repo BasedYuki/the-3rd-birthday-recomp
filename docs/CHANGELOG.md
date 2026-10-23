@@ -17,7 +17,9 @@ First numbered version: everything up to now, plus a round of PC features.
 
 **PC features**
 - Launcher (`The 3rd Birthday.exe`): finds or asks for your disc image and checks it, settings,
-  save list with backup and restore, texture packs and patches on/off, update status, Play
+  save list with backup and restore, texture packs and patches on/off, update status, Play.
+  Its background is the game's PSP cover art (Aya), read from your own disc image, with blood
+  effects drawn over it; the window icon is the disc's icon
 - Update notice: the game and the launcher say when a newer release is on GitHub (once a day,
   can be turned off)
 - Mouse camera: click the window, the mouse turns the camera; left button fires, right aims

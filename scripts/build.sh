@@ -127,6 +127,6 @@ fi
 LSRC="$RT/src/launcher"
 (cd "$LSRC" && windres launcher.rc -O coff -o "$OUT/launcher_res.o")
 gcc -O2 -mwindows -DSR_VERSION="\"$VERSION\"" -o "$OUT/The 3rd Birthday.exe" "$LSRC/launcher.c" "$OUT/launcher_res.o" \
-  -lwinhttp -lcomdlg32 -lcomctl32 -lshell32 -lole32 -luuid -static-libgcc \
+  -lwinhttp -lcomdlg32 -lcomctl32 -lshell32 -lole32 -luuid -lshlwapi -lgdiplus -luxtheme -static-libgcc \
   || echo "note: launcher not rebuilt (in use?)"
 echo "built $OUT/${EXE_NAME:-$GAME}.exe"
