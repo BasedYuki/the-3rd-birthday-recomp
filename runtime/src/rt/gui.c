@@ -357,7 +357,8 @@ void gui_vblank(void) {
 static int s_input_block = 0;
 
 /* Controls page: every action with two keys and a controller button. Left/Right picks the
- * column, Enter / A waits for the new key or button, Delete / X(pad) clears, Esc goes back. */
+ * column, Enter / A waits for the new key, mouse button or controller button, Delete / X(pad)
+ * clears, Esc goes back. */
 static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
     enum { VIS = 10 };
     const int nb = sdl3vk_bind_count(), no = sdl3vk_input_opt_count();
@@ -369,7 +370,7 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         char buf[16][96]; const char *lines[16]; int k = 0, selline = 2;
         const int cap = sdl3vk_bind_capturing();
         snprintf(buf[k++], 96, "Controls");
-        snprintf(buf[k++], 96, "Action\tKey\tKey\tController");
+        snprintf(buf[k++], 96, "Action\tKey / mouse\tKey / mouse\tController");
         for (int r = top; r < rows && r < top + VIS; r++) {
             if (r == cur) selline = k;
             if (r == n) { snprintf(buf[k++], 96, "Reset to defaults"); continue; }
@@ -384,7 +385,8 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             snprintf(buf[k++], 96, "%s\t%s\t%s\t%s", sdl3vk_bind_label(r), c[0], c[1], c[2]);
         }
         snprintf(buf[k++], 96, " ");
-        snprintf(buf[k++], 96, cap ? "Press the new key or controller button   (Esc / Guide: cancel)"
+        snprintf(buf[k++], 96, cap ? (col < 2 ? "Press the new key or mouse button   (Esc: cancel)"
+                                              : "Press the new controller button   (Guide: cancel)")
                                    : "Enter / A: change     Delete / X: clear     Esc / B: back");
         for (int i = 0; i < k; i++) lines[i] = buf[i];
         sdl3vk_menu_show(lines, k, selline);

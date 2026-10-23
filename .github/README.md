@@ -63,13 +63,16 @@ any files:
   bar), then starts it. After an update it tells you when the game needs preparing again.
 - **Graphics**: internal resolution, 60 fps, widescreen, glow, FPS counter, skip the intro,
   check for updates at start
-- **Controls**: mouse camera, mouse sensitivity and invert, smooth WASD turning (keys and
-  buttons are remapped in the game: Esc > Controls)
+- **Controls**: mouse camera, mouse sensitivity and invert, smooth WASD turning, mouse buttons
+  on/off, and **Change buttons...**: every action with two keys (keyboard keys or mouse buttons)
+  and a controller button, chosen by pressing them or from a list
 - **Saves**: your saves with their episode and play time; open the folder, back up all,
   restore a backup. **Unlock all extras** unlocks every costume, the extra DNA boards and
   the Cheat Codes; your progress is kept.
 - **Mods**: texture packs on/off, texture dump, memory patches on/off
 - **Updates**: says whether you have the newest version, with a link to the Releases page
+
+![Change buttons](../docs/screenshots/launcher-controls.png)
 
 The background is the game's own PSP cover art (Aya on red, as on the PSP's home screen),
 read from **your** disc image when the launcher starts; it is not included in the download.
@@ -94,7 +97,9 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
   in the settings menu.
 - **Widescreen / ultrawide** (settings menu, "Aspect ratio"): the game renders a wider view to
   fill the window; the HUD keeps its shape in the middle
-- **Remappable controls** (settings menu, "Controls"): two keys and a controller button per action
+- **Remappable controls**, in the game (Esc > Controls) or in the launcher (Change buttons...):
+  every action gets two keys, which can also be mouse buttons (left, right, middle, side buttons
+  4 and 5), and a controller button. Only the two sticks are fixed (left = move, right = camera).
 - **Mouse camera**: click the game window and the mouse turns the camera (left button fires, right
   aims; Esc releases the mouse); smooth WASD turning
 - **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore,
@@ -126,13 +131,18 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 | Screenshot (full render resolution, saved to `screenshots/`) | — | F12 |
 | Fullscreen | — | F11 or Alt+Enter |
 
+Every action in this table can be changed: in the game (Esc > Controls) or in the launcher
+(**Change buttons...**). Keys can be keyboard keys or mouse buttons; mouse buttons work once you
+have clicked into the game window.
+
 ## Settings
 
 Most options are in the launcher and in the in-game settings menu (Esc). They are stored in
 plain text files next to the executable (created on first run):
 
 - `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps), `skip_intro` (1 = skip logos and opening movie; default 0), `widescreen` (1 = fill the window), `texture_dump` (1 = write the game's textures to `textures/dump/` for texture packs)
-- `controls.cfg` — key and controller bindings (edited by the Controls page)
+- `controls.cfg` — key, mouse and controller bindings (edited by the Controls page and the
+  launcher), e.g. `r = E, Mouse Left | righttrigger`
 - `twinstick.cfg` — `sensitivity`, `invert_x`, `invert_y`, `recenter`,
   `recenter_delay`, `recenter_delay_still`
 

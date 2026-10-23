@@ -161,6 +161,47 @@ def main():
         seen = held_bits(lambda: kb.down("c"), lambda: kb.up("c"))
         check("remap: Reset to defaults restores C", 0x8000 in seen and "square = C,  | x" in open(cfg).read(),
               f"seen {[hex(v) for v in seen]}")
+        # -- mouse buttons: bindable on the Controls page (key columns), act once the mouse is captured.
+        #    Clicks are SDL events from the control port (vmouse): Windows messages posted to an
+        #    unfocused window don't count as clicks, and real ones would take the user's mouse.
+        check("defaults: left mouse = R, right mouse = L",
+              "r = E, Mouse Left | righttrigger" in open(cfg).read() and "l = Q, Mouse Right | lefttrigger" in open(cfg).read())
+        open_controls(); kb.tap("down"); kb.tap("down"); kb.tap("right"); kb.tap("enter"); time.sleep(0.3)
+        g._cmd("vmouse 4 1"); time.sleep(0.1); g._cmd("vmouse 4 0"); time.sleep(0.3)   # SDL button 4 = Mouse 4
+        g.shot("controls_mouse"); close_menus()
+        check("remap: Square key 2 -> Mouse 4 saved", "square = C, Mouse 4 | x" in open(cfg).read())
+        _, pos = log_since(errp, pos)
+        g._cmd("vmouse 1 1"); g._cmd("vmouse 1 0")
+        time.sleep(0.5)
+        t, pos = log_since(errp, pos)
+        captured = "mouse captured" in t
+        check("first click captures the mouse", captured)
+        if captured:
+            seen = held_bits(lambda: g._cmd("vmouse 1 1"), lambda: g._cmd("vmouse 1 0"))
+            check("captured: left mouse gives R (fire)", 0x200 in seen, f"seen {[hex(v) for v in seen]}")
+            seen = held_bits(lambda: g._cmd("vmouse 4 1"), lambda: g._cmd("vmouse 4 0"))
+            check("captured: Mouse 4 gives Square", 0x8000 in seen, f"seen {[hex(v) for v in seen]}")
+            kb.tap("esc"); time.sleep(0.5); kb.tap("esc"); time.sleep(0.5)   # release the mouse, close the menu
+    finally:
+        g.close()
+    # -- files from before mouse bindings, and the launcher's format ("Comma" for the , key)
+    open(cfg, "w").write("cross = X, Space | a\ncircle = Comma,  | b\nr = E,  | righttrigger\nl = Q,  | lefttrigger\n"
+                         "mouse_buttons_fire_aim = 1\n")
+    g = drive.Port(OUT, drive.SAVES[save][0], extra_env={"SR_KEYLOG": "1", "SR_VPAD": "1", "SR_TWINSTICK": "1"})
+    try:
+        time.sleep(8)
+        txt = open(cfg).read()
+        check("old controls.cfg: mouse fire / aim added, binds_version 2",
+              "r = E, Mouse Left | righttrigger" in txt and "l = Q, Mouse Right | lefttrigger" in txt and "binds_version = 2" in txt)
+        check("Comma key name kept", "circle = Comma,  | b" in txt)
+        h = hwnd_of(g.p.pid); kb = Keys(h)
+        KEYS["comma"] = (0xBC, 0x33, 0)
+        _, pos = log_since(errp, 0)
+        kb.down("comma"); time.sleep(0.3)
+        t, pos = log_since(errp, pos)
+        kb.up("comma"); time.sleep(0.3)
+        seen = [int(m, 16) for m in re.findall(r"keys: buttons 0x([0-9a-f]+)", t)]
+        check("Comma key gives Circle", 0x2000 in seen, f"seen {[hex(v) for v in seen]}")
     finally:
         g.close()
     open(os.path.join(OUT, "report.txt"), "w").write("\n".join(rep) + "\n")

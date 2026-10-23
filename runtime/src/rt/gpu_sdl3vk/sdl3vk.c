@@ -84,6 +84,22 @@ static const struct { const char *id, *label; uint32_t bit; } k_acts[BA_COUNT] =
     { "camera_left", "Camera left", 0 }, { "camera_right", "Camera right", 0 },
     { "camera_reset", "Camera behind Aya", 0 },
 };
+/* Mouse buttons sit in the key slots too, as codes past the keyboard's (left, middle, right, 4, 5);
+ * they act only while the mouse is captured, and the "Mouse buttons" option switches them all off. */
+#define MOUSE_KEY(b) ((SDL_Scancode)(SDL_SCANCODE_COUNT + (b)))
+static const char *const k_mouse_names[6] = { "", "Mouse Left", "Mouse Middle", "Mouse Right", "Mouse 4", "Mouse 5" };
+static const char *key_name(SDL_Scancode sc) {   /* "," would split the "key, key" list: Comma */
+    if (sc > SDL_SCANCODE_COUNT && sc <= MOUSE_KEY(5)) return k_mouse_names[sc - SDL_SCANCODE_COUNT];
+    if (sc == SDL_SCANCODE_COMMA) return "Comma";
+    if (sc == SDL_SCANCODE_KP_COMMA) return "Keypad Comma";
+    return SDL_GetScancodeName(sc);
+}
+static SDL_Scancode key_from_name(const char *n) {
+    for (int b = 1; b <= 5; b++) if (!SDL_strcasecmp(n, k_mouse_names[b])) return MOUSE_KEY(b);
+    if (!SDL_strcasecmp(n, "Comma")) return SDL_SCANCODE_COMMA;
+    if (!SDL_strcasecmp(n, "Keypad Comma")) return SDL_SCANCODE_KP_COMMA;
+    return SDL_GetScancodeFromName(n);
+}
 typedef struct { SDL_Scancode key[2]; int pad; } Bind;
 static Bind s_bind[BA_COUNT];
 static int  s_cap_act = -1, s_cap_slot = 0;          /* waiting for a key/button to bind */
@@ -94,8 +110,8 @@ static void bind_defaults(void) {
         { BA_CIRCLE, SDL_SCANCODE_Z, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_EAST },
         { BA_SQUARE, SDL_SCANCODE_C, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_WEST },
         { BA_TRIANGLE, SDL_SCANCODE_V, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_NORTH },
-        { BA_L, SDL_SCANCODE_Q, SDL_SCANCODE_UNKNOWN, PADB_LT },
-        { BA_R, SDL_SCANCODE_E, SDL_SCANCODE_UNKNOWN, PADB_RT },
+        { BA_L, SDL_SCANCODE_Q, MOUSE_KEY(SDL_BUTTON_RIGHT), PADB_LT },     /* right mouse button: aim */
+        { BA_R, SDL_SCANCODE_E, MOUSE_KEY(SDL_BUTTON_LEFT), PADB_RT },      /* left mouse button: fire */
         { BA_START, SDL_SCANCODE_RETURN, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_START },
         { BA_SELECT, SDL_SCANCODE_TAB, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_BACK },   /* not Shift: held while walking */
         { BA_UP, SDL_SCANCODE_UP, SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_DPAD_UP },
@@ -157,10 +173,11 @@ static const char *ctl_path(void) {   /* SR_CONTROLS_CFG: test runs keep the pla
 static void bind_save(void) {
     FILE *f = fopen(ctl_path(), "w");
     if (!f) return;
-    fprintf(f, "# action = key, key | gamepad button   (the Esc menu's Controls page edits this file)\n");
+    fprintf(f, "# action = key, key | gamepad button   (keys may be Mouse Left / Middle / Right / 4 / 5;\n"
+               "# the Esc menu's Controls page and the launcher edit this file)\nbinds_version = 2\n");
     for (int a = 0; a < BA_COUNT; a++) {
-        const char *k0 = s_bind[a].key[0] ? SDL_GetScancodeName(s_bind[a].key[0]) : "";
-        const char *k1 = s_bind[a].key[1] ? SDL_GetScancodeName(s_bind[a].key[1]) : "";
+        const char *k0 = s_bind[a].key[0] ? key_name(s_bind[a].key[0]) : "";
+        const char *k1 = s_bind[a].key[1] ? key_name(s_bind[a].key[1]) : "";
         fprintf(f, "%s = %s, %s | %s\n", k_acts[a].id, k0, k1, pad_name(s_bind[a].pad));
     }
     fprintf(f, "bumpers_are_l_r = %d\n", s_bump_too);
@@ -172,11 +189,12 @@ static void bind_load(void) {
     bind_defaults();
     FILE *f = fopen(ctl_path(), "r");
     if (!f) { bind_save(); return; }
-    char line[256];
+    char line[256]; int version = 1;
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#') continue;
         char *eq = strchr(line, '='); if (!eq) continue;
         *eq = 0; char *id = line; trim(id);
+        if (!SDL_strcasecmp(id, "binds_version")) { version = atoi(eq + 1); continue; }
         if (!SDL_strcasecmp(id, "bumpers_are_l_r")) { s_bump_too = atoi(eq + 1) != 0; continue; }
         if (!SDL_strcasecmp(id, "mouse_camera")) { s_mouse_on = atoi(eq + 1) != 0; continue; }
         if (!SDL_strcasecmp(id, "mouse_sensitivity")) { s_mouse_sens = (float)atof(eq + 1); continue; }
@@ -190,11 +208,16 @@ static void bind_load(void) {
         char *c = strchr(keys, ','), *k1 = (char *)"";
         if (c) { *c = 0; k1 = c + 1; }
         trim(keys); trim(k1); trim(pad);
-        s_bind[a].key[0] = *keys ? SDL_GetScancodeFromName(keys) : SDL_SCANCODE_UNKNOWN;
-        s_bind[a].key[1] = *k1 ? SDL_GetScancodeFromName(k1) : SDL_SCANCODE_UNKNOWN;
+        s_bind[a].key[0] = *keys ? key_from_name(keys) : SDL_SCANCODE_UNKNOWN;
+        s_bind[a].key[1] = *k1 ? key_from_name(k1) : SDL_SCANCODE_UNKNOWN;
         s_bind[a].pad = pad_from_name(pad);
     }
     fclose(f);
+    if (version < 2) {   /* older file: the mouse buttons were fixed to fire / aim, keep that */
+        if (!s_bind[BA_R].key[1]) s_bind[BA_R].key[1] = MOUSE_KEY(SDL_BUTTON_LEFT);
+        if (!s_bind[BA_L].key[1]) s_bind[BA_L].key[1] = MOUSE_KEY(SDL_BUTTON_RIGHT);
+        bind_save();
+    }
 }
 /* for the Controls page (gui.c) */
 int  sdl3vk_bind_count(void) { return BA_COUNT; }
@@ -202,7 +225,7 @@ const char *sdl3vk_bind_label(int a) { return a >= 0 && a < BA_COUNT ? k_acts[a]
 void sdl3vk_bind_text(int a, int slot, char *out, int cap) {
     out[0] = 0;
     if (a < 0 || a >= BA_COUNT) return;
-    if (slot < 2) { if (s_bind[a].key[slot]) SDL_strlcpy(out, SDL_GetScancodeName(s_bind[a].key[slot]), (size_t)cap); }
+    if (slot < 2) { if (s_bind[a].key[slot]) SDL_strlcpy(out, key_name(s_bind[a].key[slot]), (size_t)cap); }
     else {   /* Xbox-style names on screen; controls.cfg keeps SDL's names */
         static const char *const nice[][2] = {
             { "a", "A" }, { "b", "B" }, { "x", "X" }, { "y", "Y" }, { "back", "View" }, { "guide", "Guide" },
@@ -234,7 +257,7 @@ void sdl3vk_input_opt_text(int i, char *out, int cap) {
     case 0: snprintf(out, (size_t)cap, "Mouse camera (click the window)\t%s", s_mouse_on ? "On" : "Off"); break;
     case 1: snprintf(out, (size_t)cap, "Mouse sensitivity\t%.2f", s_mouse_sens); break;
     case 2: snprintf(out, (size_t)cap, "Mouse invert up/down\t%s", s_mouse_inv ? "On" : "Off"); break;
-    case 3: snprintf(out, (size_t)cap, "Mouse buttons fire / aim\t%s", s_mouse_btn ? "On" : "Off"); break;
+    case 3: snprintf(out, (size_t)cap, "Mouse buttons (as bound above)\t%s", s_mouse_btn ? "On" : "Off"); break;
     default: snprintf(out, (size_t)cap, "Smooth WASD turning\t%s", s_kbd_smooth ? "On" : "Off"); break;
     }
 }
@@ -263,8 +286,13 @@ static void bind_assign_pad(int b) {
     if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) s_bump_too = 0;
     s_cap_act = -1; bind_save();
 }
+static int key_down(const bool *k, SDL_Scancode sc) {
+    if (!sc) return 0;
+    if (sc < SDL_SCANCODE_COUNT) return k[sc];
+    return s_mouse_cap && s_mouse_btn && (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_MASK(sc - SDL_SCANCODE_COUNT));
+}
 static int bind_key_down(const bool *k, int a) {
-    return (s_bind[a].key[0] && k[s_bind[a].key[0]]) || (s_bind[a].key[1] && k[s_bind[a].key[1]]);
+    return key_down(k, s_bind[a].key[0]) || key_down(k, s_bind[a].key[1]);
 }
 static int bind_pad_down(SDL_Gamepad *pad, int a) {
     const int b = s_bind[a].pad;
@@ -286,10 +314,16 @@ static void vq_push(int kind, int a, int b) {
 }
 void sdl3vk_vpad_button(int button, int down) { vq_push(0, button, down); }
 void sdl3vk_vpad_axis(int axis, int value) { vq_push(1, axis, value); }
+void sdl3vk_vmouse_button(int button, int down) { vq_push(2, button, down); }   /* tests: a mouse click event */
 static void vq_apply(void) {
     while (s_vq_r != s_vq_w) {
         const int *q = s_vq[s_vq_r & 63];
-        if (s_vjoy) {
+        if (q[0] == 2) {
+            SDL_Event e; SDL_zero(e);
+            e.type = q[2] ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+            e.button.windowID = s_win ? SDL_GetWindowID(s_win) : 0; e.button.button = (Uint8)q[1]; e.button.down = q[2] != 0;
+            SDL_PushEvent(&e);
+        } else if (s_vjoy) {
             const bool ok = q[0] == 0 ? SDL_SetJoystickVirtualButton(s_vjoy, q[1], q[2] != 0)
                                       : SDL_SetJoystickVirtualAxis(s_vjoy, q[1], (Sint16)q[2]);
             if (getenv("SR_KEYLOG")) fprintf(stderr, "vpad: %s %d = %d -> %s (pad=%p)%s\n", q[0] ? "axis" : "button", q[1], q[2],
@@ -1116,9 +1150,18 @@ static void poll_input(int *quit) {
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (s_mouse_on && !s_mouse_cap && s_menu_n == 0 && s_cap_act < 0) {
+            if (s_cap_act >= 0) {                 /* Controls page: a mouse button for a key column */
+                if (s_cap_slot < 2 && ev.button.button >= 1 && ev.button.button <= 5)
+                    bind_assign_key(MOUSE_KEY(ev.button.button));
+                break;
+            }
+            if (s_mouse_on && !s_mouse_cap && s_menu_n == 0) {
                 mouse_capture(1);                 /* this click only captures */
                 fprintf(stderr, "input: mouse captured (Esc releases)\n");
+            } else if (s_mouse_cap && s_mouse_btn && ev.button.button >= 1 && ev.button.button <= 5) {
+                const SDL_Scancode mk = MOUSE_KEY(ev.button.button);   /* a quick click still counts */
+                for (int a = 0; a < BA_COUNT; a++)
+                    if (k_acts[a].bit && (s_bind[a].key[0] == mk || s_bind[a].key[1] == mk)) s_key_taps |= k_acts[a].bit;
             }
             break;
         case SDL_EVENT_MOUSE_MOTION:
@@ -1153,11 +1196,6 @@ static void poll_input(int *quit) {
     const bool *k = SDL_GetKeyboardState(NULL);
     for (int a = 0; a < BA_COUNT; a++)
         if (k_acts[a].bit && (bind_key_down(k, a) || bind_pad_down(s_pad, a))) b |= k_acts[a].bit;
-    if (s_mouse_cap && s_mouse_btn) {               /* captured mouse: left = R (fire), right = L (aim) */
-        const SDL_MouseButtonFlags mb = SDL_GetMouseState(NULL, NULL);
-        if (mb & SDL_BUTTON_LMASK) b |= 0x0200;
-        if (mb & SDL_BUTTON_RMASK) b |= 0x0100;
-    }
     if (s_cap_act >= 0) b = 0;                    /* binding a key: nothing reaches the game */
     if ((b & 0x0008u) && (SDL_GetModState() & SDL_KMOD_ALT)) b &= ~0x0008u;   /* Alt+Enter: fullscreen */
 

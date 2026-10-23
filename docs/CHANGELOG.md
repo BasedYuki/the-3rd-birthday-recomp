@@ -23,8 +23,9 @@ First numbered version: everything up to now, plus a round of PC features.
 - Update notice: the game and the launcher say when a newer release is on GitHub (once a day,
   can be turned off)
 - Mouse camera: click the window, the mouse turns the camera; left button fires, right aims
-- Smooth WASD turning; mouse sensitivity / invert; all keys and buttons remappable
-  (Esc menu > Controls, `controls.cfg`)
+- Smooth WASD turning; mouse sensitivity / invert; all keys and buttons remappable, mouse
+  buttons too (left, right, middle, side buttons), in the game (Esc menu > Controls) or in the
+  launcher (Change buttons...); saved in `controls.cfg`
 - Widescreen / ultrawide (Esc menu > Aspect ratio): the game renders a wider view and its own
   culling widens with it; the HUD keeps its shape in the middle; screen effects (Overdive tint,
   Game Over, finale backdrop) cover the whole window
