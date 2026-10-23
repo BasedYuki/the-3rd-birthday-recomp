@@ -53,12 +53,15 @@ static void load_file(const char *path) {
 
 static void load_all(void) {
     s_loaded = 1;
+    const char *md = getenv("SR_MODDIR");   /* test runs keep the player's folder clean */
+    char pat[MAX_PATH];
+    snprintf(pat, sizeof(pat), "%s/patches/*.txt", md && *md ? md : ".");
     WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA("patches/*.txt", &fd);
+    HANDLE h = FindFirstFileA(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
     do {
-        char path[MAX_PATH];
-        snprintf(path, sizeof(path), "patches/%s", fd.cFileName);
+        char path[MAX_PATH * 2];
+        snprintf(path, sizeof(path), "%s/patches/%s", md && *md ? md : ".", fd.cFileName);
         load_file(path);
     } while (FindNextFileA(h, &fd));
     FindClose(h);

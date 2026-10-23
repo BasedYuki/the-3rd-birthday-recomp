@@ -69,7 +69,7 @@ class Port:
             if k.startswith("SR_"): del env[k]
         env.update(PSP_ISO=next(os.path.join(ROOT, f) for f in os.listdir(ROOT) if f.endswith(".iso")),
                    SR_MEMSTICK=ms, PSP_VFPU_TABLES=os.path.join(ROOT, "assets", "vfpu").replace("\\", "/"),
-                   SR_CTRL="45680", SR_OFFSCREEN="1", SR_CONTROLS_CFG=os.path.join(out, "controls.cfg"), SR_SHOTDIR=out, SR_TWINSTICK="0", SR_INTERP="0", SR_SKIPINTRO="0", SR_NOINPUT="1",
+                   SR_CTRL="45680", SR_OFFSCREEN="1", SR_CONTROLS_CFG=os.path.join(out, "controls.cfg"), SR_SHOTDIR=out, SR_MODDIR=out, SR_TWINSTICK="0", SR_INTERP="0", SR_SKIPINTRO="0", SR_NOINPUT="1",
                    PATH=r"K:\msys64\ucrt64\bin;" + env.get("PATH", ""))
         if os.path.isdir(os.path.join(ROOT, "ppsspp", "assets", "vfpu")):
             env["PSP_VFPU_TABLES"] = os.path.join(ROOT, "ppsspp", "assets", "vfpu").replace("\\", "/")

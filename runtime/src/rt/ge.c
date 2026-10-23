@@ -1865,10 +1865,12 @@ static void draw_prim(uint32_t op) {
         extern volatile int g_drawlog_on;   /* ctrl_server.c "drawlog": the draws of one whole frame */
         for (int k = 0; k < nf + (g_drawlog_on == 1); k++) if (k == nf || s_ge_frame == fr[k]) {
             fprintf(stderr, "DRAW f=%u type=%d n=%d vt=%06x fb=%08x/%u/%u tex=%d %08x fmt=%u bw=%u %dx%d func=%05x"
-                    " clut=%08x/%06x blend=%d %06x mat=%06x/%02x\n", s_ge_frame, type, count, ge.vtype,
+                    " clut=%08x/%06x blend=%d %06x mat=%06x/%02x stencil=%d %06x/%06x amask=%02x z=%d/%d clear=%x\n",
+                    s_ge_frame, type, count, ge.vtype,
                     ge.fbp, ge.fbw, ge.fbfmt, ge.tex_enable, ge.tex_addr, ge.tex_fmt, ge.tex_bufw, ge.tex_w,
                     ge.tex_h, ge.tex_func, ge.clut_addr, ge.clut_fmt, ge.blend_enable, ge.blend_mode,
-                    ge.material, ge.material_alpha);
+                    ge.material, ge.material_alpha, ge.stencil_enable, ge.stencil_test & 0xFFFFFF,
+                    ge.stencil_op & 0xFFFFFF, ge.mask_alpha & 0xFF, ge.ztest_enable, !ge.zwrite_disable, ge.clear_mode);
             if (type == 6 && vf.through && ((ge.vtype >> 11) & 3) == 0) {   /* non-indexed sprite rects */
                 for (int k = 0; k + 1 < count && k < 8; k += 2) {
                     float x0, y0, z0, x1, y1, z1, u0 = 0, v0 = 0, u1 = 0, v1 = 0;
@@ -2543,7 +2545,8 @@ static int ge_run_list_inner(GeListCtx *c) {
                     if (!once++) fprintf(stderr, "GE: stencil test enabled - IN USE, stencil ops not emulated\n");
                 }
                 break;
-            case GE_STENCILTEST: case GE_STENCILOP: break;
+            case GE_STENCILTEST: ge.stencil_test = data; break;
+            case GE_STENCILOP:   ge.stencil_op = data; break;
             case GE_ANTIALIASENABLE: case GE_PATCHCULLENABLE: break;
             case GE_COLORTESTENABLE: case GE_LOGICOPENABLE: break;
             case GE_PATCHDIVISION: case GE_PATCHPRIMITIVE: case GE_PATCHFACING: break;

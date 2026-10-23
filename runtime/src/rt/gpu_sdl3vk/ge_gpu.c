@@ -85,13 +85,14 @@ typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba;
 /* fragment push constants (must match psp.frag PC block) */
 typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize[4]; int32_t depal[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
-       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DEPAL = 512 };
+       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DEPAL = 512, F_STENCIL = 1024 };
 
 typedef struct {
     uint8_t blend_on, srcf, dstf, eq;      /* VkBlendFactor / VkBlendOp values */
     uint8_t cull;                          /* VkCullModeFlagBits */
     uint8_t ztest, zwrite, zfunc;          /* VkCompareOp */
     uint8_t cmask;                         /* VkColorComponentFlags */
+    uint8_t arepl;                         /* alpha = stencil value (texenv.w), not blended */
 } PipeKey;
 
 typedef struct {
@@ -497,7 +498,7 @@ static VkPipeline pipe_create(const PipeKey *k) {
     ba.dstColorBlendFactor = (VkBlendFactor)k->dstf;
     ba.colorBlendOp = (VkBlendOp)k->eq;
     ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;    /* PSP: dst alpha = clamp(sa + da) */
-    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    ba.dstAlphaBlendFactor = k->arepl ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;   /* stencil write */
     ba.alphaBlendOp = VK_BLEND_OP_ADD;
     ba.colorWriteMask = k->cmask;
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
@@ -1033,6 +1034,7 @@ static int clut_row_get(void) {
 static int       s_tp_init = 0, s_tp_dump = 0, s_tp_n = 0;
 static uint64_t *s_tp_have = NULL;          /* sorted hashes of textures/*.png */
 static uint64_t  s_tp_dumped[8192]; static int s_tp_ndumped = 0;
+static char s_tp_dir[MAX_PATH];             /* <SR_MODDIR or .>/textures */
 static int u64cmp(const void *a, const void *b) {
     const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
@@ -1041,9 +1043,16 @@ static void tp_init(void) {
     s_tp_init = 1;
     const char *e = getenv("SR_TEXDUMP");
     s_tp_dump = e ? atoi(e) != 0 : sdl3vk_cfg_get("texture_dump", 0) != 0;
-    if (s_tp_dump) { CreateDirectoryA("textures", NULL); CreateDirectoryA("textures/dump", NULL); }
+    const char *md = getenv("SR_MODDIR");   /* test runs keep the player's folder clean */
+    snprintf(s_tp_dir, sizeof(s_tp_dir), "%s/textures", md && *md ? md : ".");
+    char pat[MAX_PATH + 16];
+    if (s_tp_dump) {
+        CreateDirectoryA(s_tp_dir, NULL);
+        snprintf(pat, sizeof(pat), "%s/dump", s_tp_dir); CreateDirectoryA(pat, NULL);
+    }
     WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA("textures/*.png", &fd);
+    snprintf(pat, sizeof(pat), "%s/*.png", s_tp_dir);
+    HANDLE h = FindFirstFileA(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
     int cap = 0;
     do {
@@ -1063,18 +1072,18 @@ static uint32_t *tp_replace(const uint32_t *px, int w, int h, int *rw, int *rh) 
     uint64_t th = 1469598103934665603ull;
     th = fnv64(th, &w, sizeof(w)); th = fnv64(th, &h, sizeof(h));
     th = fnv64(th, px, (size_t)w * (size_t)h * 4);
-    char path[64];
+    char path[MAX_PATH + 40];
     if (s_tp_dump) {
         int seen = 0;
         for (int i = 0; i < s_tp_ndumped; i++) if (s_tp_dumped[i] == th) { seen = 1; break; }
         if (!seen && s_tp_ndumped < 8192) {
             s_tp_dumped[s_tp_ndumped++] = th;
-            snprintf(path, sizeof(path), "textures/dump/%016llx.png", (unsigned long long)th);
+            snprintf(path, sizeof(path), "%s/dump/%016llx.png", s_tp_dir, (unsigned long long)th);
             if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) sdl3vk_png_save(path, px, w, h);
         }
     }
     if (!s_tp_n || !bsearch(&th, s_tp_have, (size_t)s_tp_n, sizeof(uint64_t), u64cmp)) return NULL;
-    snprintf(path, sizeof(path), "textures/%016llx.png", (unsigned long long)th);
+    snprintf(path, sizeof(path), "%s/%016llx.png", s_tp_dir, (unsigned long long)th);
     return sdl3vk_png_load(path, rw, rh);
 }
 
@@ -1274,6 +1283,7 @@ static void build_state(int persp, int sprite, Batch *b) {
     if (sx1 > sx2 || sy1 > sy2) { b->sw = 0; return; }   /* nothing drawable */
     b->sx = sx1; b->sy = sy1; b->sw = sx2 - sx1 + 1; b->sh = sy2 - sy1 + 1;
 
+    int stencil_flag = 0;                  /* F_STENCIL: alpha output = stencil value */
     /* color write mask (partial-byte masks approximate: >= 0x80 disables the channel) */
     if (clear) {
         k->cmask = ((g->clear_mode & 0x100) ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -1291,6 +1301,27 @@ static void build_state(int persp, int sprite, Batch *b) {
         static int aw = -1;
         if (aw < 0) aw = getenv("SR_ALPHAWRITE") ? 1 : 0;
         if (!g->stencil_enable && !aw) k->cmask &= (uint8_t)~VK_COLOR_COMPONENT_A_BIT;
+        /* Stencil test on: the stencil value is the alpha channel. The op for passing pixels
+         * decides what is written: REPLACE -> ref, ZERO -> 0 (the shader outputs it as alpha,
+         * blending leaves alpha alone), KEEP -> nothing. This game only uses func ALWAYS with
+         * REPLACE (ref 0) while drawing 3D. Not emulated: other test functions (there is no
+         * stencil buffer to test against), INVERT/INCR/DECR (need the old value: kept as is),
+         * and the zfail op (depth-failed pixels keep their alpha). */
+        if (g->stencil_enable && !aw) {
+            const uint32_t func = g->stencil_test & 7, ref = (g->stencil_test >> 8) & 0xFF;
+            const uint32_t zpass = (g->stencil_op >> 16) & 7;
+            static int warned = 0;
+            if ((func != 1 || zpass > 2) && warned < 8) {
+                warned++;
+                fprintf(stderr, "GE stencil: func %u ref %02x ops %06x - approximated (alpha kept)\n",
+                        func, ref, g->stencil_op & 0xFFFFFF);
+            }
+            if (zpass == 2 || zpass == 1) {
+                stencil_flag = F_STENCIL;
+                b->pc.texenv[3] = (float)(zpass == 2 ? ref : 0) / 255.0f;
+                k->arepl = 1;
+            } else k->cmask &= (uint8_t)~VK_COLOR_COMPONENT_A_BIT;
+        }
     }
 
     /* blending */
@@ -1360,7 +1391,7 @@ static void build_state(int persp, int sprite, Batch *b) {
 
     /* fragment config */
     int textured = g->tex_enable && !clear && g->tex_addr;
-    int flags = premul;
+    int flags = premul | stencil_flag;
     if (clear) flags |= F_CLEAR;
     if (persp && !(clear && sprite)) flags |= F_PERSP;   /* minz/maxz discard */
     if (persp && g->fog_enable && !clear) flags |= F_FOG;

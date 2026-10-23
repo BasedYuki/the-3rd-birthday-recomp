@@ -168,6 +168,7 @@ void main() {
     }
 
     o_color = col * (1.0 / 255.0);
+    if ((flags & 1024) != 0) o_color.a = pc.texenv.w;   /* stencil value (the PSP keeps it in alpha) */
 #ifdef DUAL_SRC
     o_blend = vec4(0.0, 0.0, 0.0, clamp(col.a * (2.0 / 255.0), 0.0, 1.0));
 #endif

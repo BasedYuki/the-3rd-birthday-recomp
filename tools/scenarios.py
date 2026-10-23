@@ -177,3 +177,11 @@ def hub_walk(g):
         g.press("cross"); g.wait(4)
     g.stick(128, 0, 300); g.wait(5); g.shot("walk")
     g.stick(40, 60, 240); g.wait(4)
+
+
+def fight_triangle(g):
+    """scene_quick, then hold Triangle (the Overdive view, "radio" sound) for 4 s and release:
+    run with PORT_ENV="SR_SASLOG=1" to see what the game changes in the sound."""
+    scene_quick(g)
+    g._cmd("btn 1000 240") if g.name == "port" else g.press("triangle", 240)
+    g.wait(2); g.shot("triangle_held"); g.wait(3); g.shot("released")
