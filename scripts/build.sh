@@ -111,9 +111,9 @@ echo "# init r28=0 r4=0 r5=0" > "$OUT/init.trace"
 # VFPU tables next to the executable.
 python "$ROOT/tools/write_launch_cfg.py" "$ELF" "$BASE" "$OUT/launch.cfg"
 mkdir -p "$OUT/assets" && cp -r "$RT/assets/vfpu" "$OUT/assets/"
-# Unlock-all system data for the launcher's "Unlock all extras" (local file, not in the repo).
-if [ -f "$ROOT/build/ext_saves/unlock/ULUS10567SYSDATA/SYSDATA.BIN" ]; then
-  mkdir -p "$OUT/unlocks" && cp -r "$ROOT/build/ext_saves/unlock/ULUS10567SYSDATA" "$OUT/unlocks/"
+# Unlock-all system data for the launcher's "Unlock all extras" (unlocks/README.md).
+if [ -f "$ROOT/unlocks/ULUS10567SYSDATA/SYSDATA.BIN" ]; then
+  mkdir -p "$OUT/unlocks" && cp -r "$ROOT/unlocks/ULUS10567SYSDATA" "$OUT/unlocks/"
 fi
 # The launcher (settings, saves, mods, update notice, Play) next to the game.
 LSRC="$RT/src/launcher"

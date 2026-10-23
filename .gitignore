@@ -48,3 +48,6 @@ bakeoff/
 
 # Packaged builds (contain code derived from the game)
 dist/
+
+# Unlock-all system data (unlocks/README.md) is shipped on purpose
+!unlocks/ULUS10567SYSDATA/*.BIN
