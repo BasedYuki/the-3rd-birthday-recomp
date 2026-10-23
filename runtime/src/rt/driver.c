@@ -171,6 +171,16 @@ static int launch_defaults(int *pargc, char ***pargv) {
                 snprintf(pat, sizeof(pat), "%s/..", up); snprintf(up, sizeof(up), "%s", pat);
             }
         }
+        if (!iso[0] || GetFileAttributesA(iso) == INVALID_FILE_ATTRIBUTES) {
+            char msg[MAX_PATH + 200];
+            snprintf(msg, sizeof(msg), "The disc image of the game was not found%s%s.\n\n"
+                     "Start \"The 3rd Birthday.exe\" (the launcher) and choose your .iso.",
+                     iso[0] ? ":\n" : "", iso);
+            if (getenv("SR_OFFSCREEN")) {               /* tests: no dialog */
+                FILE *e = fopen("run.err", "w"); if (e) { fprintf(e, "%s\n", msg); fclose(e); }
+            } else MessageBoxA(NULL, msg, "The 3rd Birthday", MB_ICONERROR);
+            exit(1);
+        }
         if (iso[0]) { static char e[MAX_PATH + 16]; snprintf(e, sizeof(e), "PSP_ISO=%s", iso); _putenv(e); }
     }
     if (!getenv("PSP_VFPU_TABLES") && GetFileAttributesA("assets/vfpu") == INVALID_FILE_ATTRIBUTES) {

@@ -613,6 +613,7 @@ static void play(void) {
     if (!game_ready()) { prepare(); return; }
     save_settings();
     if (!s_iso[0]) return;
+    cfg_write("launch.cfg", "iso", s_iso, 0);          /* the game opens exactly this disc image */
     STARTUPINFOA si = { sizeof(si) }; PROCESS_INFORMATION pi;
     char cmd[MAX_PATH] = GAME_EXE;
     if (CreateProcessA(GAME_EXE, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
