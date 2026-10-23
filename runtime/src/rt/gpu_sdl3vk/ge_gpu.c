@@ -1050,6 +1050,7 @@ static void tp_init(void) {
         CreateDirectoryA(s_tp_dir, NULL);
         snprintf(pat, sizeof(pat), "%s/dump", s_tp_dir); CreateDirectoryA(pat, NULL);
     }
+    if (!sdl3vk_cfg_get("texture_packs", 1)) return;   /* launcher / graphics.cfg: packs off */
     WIN32_FIND_DATAA fd;
     snprintf(pat, sizeof(pat), "%s/*.png", s_tp_dir);
     HANDLE h = FindFirstFileA(pat, &fd);

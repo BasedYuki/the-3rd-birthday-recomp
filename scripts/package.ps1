@@ -16,7 +16,7 @@ $name = "The3rdBirthday-" + (Get-Date -Format 'yyyy-MM-dd')
 $dst = Join-Path $root "dist\$name"
 if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
 New-Item -ItemType Directory -Force $dst | Out-Null
-foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll') {
+foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll', 'The 3rd Birthday.exe') {
     Copy-Item (Join-Path $src $f) $dst
 }
 Copy-Item -Recurse (Join-Path $src 'font') $dst
@@ -30,7 +30,8 @@ The 3rd Birthday - PC port (static recompilation), built $(Get-Date -Format 'yyy
 
 1. Put your own disc image of The 3rd Birthday (USA, ULUS10567) next to $Game.exe
    (any name ending in .iso), or write its path into launch.cfg as:  iso=D:\Games\3rd.iso
-2. Double-click $Game.exe.
+2. Double-click "The 3rd Birthday.exe" (the launcher: settings, saves, mods, updates, Play)
+   or $Game.exe to start the game directly.
 
 Esc opens the settings menu (controls, camera, resolution, 60 fps, aspect ratio, fullscreen).
 Saves go to memstick\PSP\SAVEDATA, settings to *.cfg, screenshots (F12) to screenshots\ -

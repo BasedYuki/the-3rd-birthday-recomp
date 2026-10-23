@@ -111,4 +111,10 @@ echo "# init r28=0 r4=0 r5=0" > "$OUT/init.trace"
 # VFPU tables next to the executable.
 python "$ROOT/tools/write_launch_cfg.py" "$ELF" "$BASE" "$OUT/launch.cfg"
 mkdir -p "$OUT/assets" && cp -r "$RT/assets/vfpu" "$OUT/assets/"
+# The launcher (settings, saves, mods, update notice, Play) next to the game.
+LSRC="$RT/src/launcher"
+(cd "$LSRC" && windres launcher.rc -O coff -o "$OUT/launcher_res.o")
+gcc -O2 -mwindows -DSR_VERSION="\"$VERSION\"" -o "$OUT/The 3rd Birthday.exe" "$LSRC/launcher.c" "$OUT/launcher_res.o" \
+  -lwinhttp -lcomdlg32 -lshell32 -lole32 -luuid -static-libgcc \
+  || echo "note: launcher not rebuilt (in use?)"
 echo "built $OUT/${EXE_NAME:-$GAME}.exe"
