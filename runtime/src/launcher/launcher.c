@@ -234,7 +234,7 @@ enum {
     ID_MOUSE, ID_MOUSESENS, ID_MOUSEINV, ID_KBDSMOOTH,
     ID_SAVES, ID_SAVE_OPEN, ID_SAVE_BACKUP, ID_SAVE_RESTORE,
     ID_TEXPACKS, ID_TEXDUMP, ID_PATCHES, ID_PATCH_TOGGLE, ID_MODS_OPEN,
-    ID_RELEASES, ID_UNLOCK, ID_PROGRESS, ID_MOUSEBTN, ID_CTLDLG,
+    ID_RELEASES, ID_UNLOCK, ID_PROGRESS, ID_MOUSEBTN, ID_CTLDLG, ID_CAMSTYLE,
 };
 static HFONT s_font, s_bold;
 static int  s_preparing;
@@ -378,10 +378,11 @@ static void build_ui(void) {
     mk("EDIT", t, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 540, 187, 70, 24, ID_MOUSESENS);
     check("Invert mouse up/down", 402, 216, 360, ID_MOUSEINV, cfg_int(C, "mouse_invert_y", 0));
     check("Smooth WASD turning", 402, 240, 360, ID_KBDSMOOTH, cfg_int(C, "keyboard_smoothing", 1));
-    check("Mouse buttons (fire / aim, or as you set them)", 402, 264, 360, ID_MOUSEBTN, cfg_int(C, "mouse_buttons_fire_aim", 1));
-    mk("BUTTON", "Change buttons...", BS_PUSHBUTTON | WS_TABSTOP, 402, 296, 160, 30, ID_CTLDLG);
-    mk("STATIC", "Keyboard, mouse and controller", 0, 574, 296, 200, 18, 0);
-    mk("STATIC", "(also in the game: Esc > Controls)", 0, 574, 314, 200, 18, 0);
+    check("Modern camera (over the shoulder, mouse aims)", 402, 264, 360, ID_CAMSTYLE, cfg_int("twinstick.cfg", "style", 0));
+    check("Mouse buttons (fire / aim, or as you set them)", 402, 288, 360, ID_MOUSEBTN, cfg_int(C, "mouse_buttons_fire_aim", 1));
+    mk("BUTTON", "Change buttons...", BS_PUSHBUTTON | WS_TABSTOP, 402, 314, 160, 28, ID_CTLDLG);
+    mk("STATIC", "Keyboard, mouse and controller", 0, 574, 312, 200, 18, 0);
+    mk("STATIC", "(also in the game: Esc > Controls)", 0, 574, 328, 200, 18, 0);
 
     group("Saves  (backed up automatically before each save)", L - 6, 358, W + 12, 170);
     mk("LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | WS_TABSTOP, L + 6, 382, W - 150, 132, ID_SAVES);
@@ -420,6 +421,7 @@ static void save_settings(void) {
     cfg_set_int(C, "mouse_invert_y", checked(ID_MOUSEINV), 1);
     cfg_set_int(C, "keyboard_smoothing", checked(ID_KBDSMOOTH), 1);
     cfg_set_int(C, "mouse_buttons_fire_aim", checked(ID_MOUSEBTN), 1);
+    cfg_set_int("twinstick.cfg", "style", checked(ID_CAMSTYLE), 0);
     char t[32]; GetDlgItemTextA(s_win, ID_MOUSESENS, t, sizeof(t));
     double v = atof(t); if (v < 0.1) v = 0.1; if (v > 10) v = 10;
     snprintf(t, sizeof(t), "%.2f", v); cfg_write(C, "mouse_sensitivity", t, 1);

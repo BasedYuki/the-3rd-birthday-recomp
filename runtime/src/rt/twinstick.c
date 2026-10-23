@@ -17,6 +17,14 @@
  *
  * SR_TWINSTICK=0 disables it. Sensitivity and inversion live in twinstick.cfg (see below);
  * the - and = keys adjust sensitivity in game.
+ *
+ * Modern style (style=1, Esc menu "Camera style"): the camera holds an absolute direction set
+ * by the mouse / right stick instead of an offset from the game's follow camera, so it doesn't
+ * swing behind Aya when she runs; both cameras get that direction (W walks where you look). The
+ * rendered view is also moved over Aya's shoulder: closer, eye and target shifted to the side
+ * (only the view camera's source, so the game's logic camera keeps its own distance). While
+ * aiming, mouse motion moves the aim like the stick does. A camera cut or a special camera
+ * (aim, Overdive) takes the direction from the game's camera again.
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -60,7 +68,16 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
 #define SENS_MIN 0.2f
 #define SENS_MAX 4.0f
 
+/* Modern style framing, relative to the game's follow distance */
+#define MODERN_DOLLY  0.70f   /* eye this much of the game's distance from the target */
+#define MODERN_SIDE   0.22f   /* eye and target moved this much of the distance to the side */
+#define MODERN_RAISE  0.06f   /* target raised a little: Aya's shoulder, not her waist */
+#define MODERN_AIM_GAIN 9.0f  /* mouse radians per pad sample -> aim stick deflection (x4 when steady) */
+
 static int s_on = -1;
+static int s_style = 0;                              /* 0 classic orbit, 1 modern */
+static int s_abs_valid = 0;                          /* modern: direction taken from the game yet */
+static float s_abs_yaw = 0.0f, s_abs_elev = 0.0f;    /* modern: where the camera looks from */
 static float s_speed = 1.0f;
 static int s_inv_x = 0, s_inv_y = 0;
 static int s_recenter = 1;
@@ -82,8 +99,8 @@ static struct { uint32_t base; float eye[3]; } s_last[MAX_CAMS];
 static void cfg_save(void) {
     FILE *f = fopen(CFG_FILE, "w");
     if (!f) return;
-    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\n",
-            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still);
+    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\nstyle=%d\n",
+            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still, s_style);
     fclose(f);
 }
 
@@ -102,12 +119,14 @@ static void init_once(void) {
             else if (sscanf(line, "recenter_delay_still=%f", &v) == 1) s_recenter_delay_still = v;
             else if (sscanf(line, "recenter_delay=%f", &v) == 1) s_recenter_delay = v;
             else if (sscanf(line, "recenter=%f", &v) == 1) s_recenter = v != 0.0f;
+            else if (sscanf(line, "style=%f", &v) == 1) s_style = v != 0.0f;
         }
         fclose(f);
         cfg_save();                                  /* add keys missing from older files */
     } else {
         cfg_save();                                  /* write the defaults so they can be edited */
     }
+    { const char *st = getenv("SR_CAMSTYLE"); if (st) s_style = atoi(st) != 0; }   /* tests */
     const char *sp = getenv("SR_TWINSTICK_SPEED");
     if (sp) s_speed = (float)atof(sp);
     if (!(s_speed >= SENS_MIN)) s_speed = SENS_MIN;
@@ -124,6 +143,7 @@ float sr_twinstick_setting(int id) {
     case SR_TS_RECENTER:    return (float)s_recenter;
     case SR_TS_TURNING:     return (s_yaw_vel != 0.0f || s_pitch_vel != 0.0f) ? 1.0f : 0.0f;
     case SR_TS_MOVING:      return (float)s_moving;
+    case SR_TS_STYLE:       return (float)s_style;
     default:                return 0.0f;
     }
 }
@@ -134,6 +154,7 @@ void sr_twinstick_set(int id, float v) {
     case SR_TS_INVERT_X:    s_inv_x = v != 0.0f; break;
     case SR_TS_INVERT_Y:    s_inv_y = v != 0.0f; break;
     case SR_TS_RECENTER:    s_recenter = v != 0.0f; break;
+    case SR_TS_STYLE:       s_style = v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
     default: return;
     }
     cfg_save();
@@ -194,12 +215,31 @@ void sr_twinstick_tick(void) {
         if (gui_on()) gui_mouse_look(&myaw, &mpitch);
         if (s_inv_x) myaw = -myaw;
         if (myaw != 0.0f || mpitch != 0.0f) {
-            s_yaw_off -= myaw;
-            s_pitch_off += mpitch;
-            if (s_pitch_off > ELEV_MAX - ELEV_MIN) s_pitch_off = ELEV_MAX - ELEV_MIN;
-            if (s_pitch_off < ELEV_MIN - ELEV_MAX) s_pitch_off = ELEV_MIN - ELEV_MAX;
+            if (s_style) {
+                s_abs_yaw -= myaw;
+                s_abs_elev += mpitch;
+            } else {
+                s_yaw_off -= myaw;
+                s_pitch_off += mpitch;
+                if (s_pitch_off > ELEV_MAX - ELEV_MIN) s_pitch_off = ELEV_MAX - ELEV_MIN;
+                if (s_pitch_off < ELEV_MIN - ELEV_MAX) s_pitch_off = ELEV_MIN - ELEV_MAX;
+            }
             s_idle_s = 0.0f; m_mouse = 1;
         }
+    }
+    if (s_style) {   /* modern: the stick turns the absolute direction; no automatic recentre */
+        s_abs_yaw += s_yaw_vel * step;
+        s_abs_elev += s_pitch_vel * step;
+        const float pi = 3.14159265f;
+        while (s_abs_yaw > pi) s_abs_yaw -= 2.0f * pi;
+        while (s_abs_yaw < -pi) s_abs_yaw += 2.0f * pi;
+        if (s_abs_elev < ELEV_MIN) s_abs_elev = ELEV_MIN;
+        if (s_abs_elev > ELEV_MAX) s_abs_elev = ELEV_MAX;
+        if (gui_on() && gui_cam_reset()) {           /* R3 / O: behind Aya again */
+            s_abs_valid = 0;
+            fprintf(stderr, "twinstick: camera reset\n");
+        }
+        return;
     }
     if (s_yaw_vel != 0.0f) {
         s_yaw_off += s_yaw_vel * step;
@@ -276,6 +316,25 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
         gui_rstick(&rx, &ry);
         if (s_inv_x) rx = -rx;
         if (s_inv_y) ry = -ry;
+        if (s_style && rx * rx + ry * ry <= 0.0004f) {   /* modern: the mouse moves the aim */
+            /* Mouse motion becomes stick deflection that fades over ~0.1 s: the game reads the
+             * pad once per frame (30 Hz) and keeps the latest sample, so a one-sample spike
+             * could be missed; steady motion settles at 4x the per-sample amount. */
+            static float ax_f = 0.0f, ay_f = 0.0f;
+            extern void gui_mouse_look(float *yaw, float *pitch);
+            float my = 0.0f, mp = 0.0f;
+            gui_mouse_look(&my, &mp);
+            if (s_inv_x) my = -my;
+            ax_f = fmaxf(-1.0f, fminf(1.0f, ax_f * 0.75f + my * MODERN_AIM_GAIN));
+            ay_f = fmaxf(-1.0f, fminf(1.0f, ay_f * 0.75f + mp * MODERN_AIM_GAIN));
+            if (fabsf(ax_f) < 0.02f) ax_f = 0.0f;
+            if (fabsf(ay_f) < 0.02f) ay_f = 0.0f;
+            /* past the game's dead zone: any motion starts at 0.35 of a full push */
+            rx = ax_f == 0.0f ? 0.0f : copysignf(0.35f + 0.65f * fabsf(ax_f), ax_f);
+            ry = ay_f == 0.0f ? 0.0f : copysignf(0.35f + 0.65f * fabsf(ay_f), ay_f);
+            static int nlog = 0;
+            if ((rx != 0.0f || ry != 0.0f) && nlog < 20) { nlog++; fprintf(stderr, "twinstick: mouse aim %.2f %.2f\n", rx, ry); }
+        }
         if (rx * rx + ry * ry > 0.0004f) {
             int ax = 128 + (int)lrintf(rx * 127.0f), ay = 128 + (int)lrintf(ry * 127.0f);
             *lx = (uint8_t)(ax < 0 ? 0 : ax > 255 ? 255 : ax);
@@ -289,8 +348,13 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
 
 /* Rotate the eye of the camera object at base (eye +0x10, target +0x20) around its target by
  * the current offset, unless the eye is still the one we wrote last time. */
+/* Modern style: the view camera's target we shifted, in case the game doesn't rewrite it every
+ * frame like the eye (then the shift is taken off before it is applied again). */
+static uint32_t s_tgt_obj; static float s_tgt_written[3], s_tgt_orig[3];
+
 static void rotate_camera(uint32_t base, const char *why) {
-    if (s_yaw_off == 0.0f && s_pitch_off == 0.0f) return;
+    const int view = why[0] == 'v';                  /* the view camera's source (else the logic camera) */
+    if (!s_style && s_yaw_off == 0.0f && s_pitch_off == 0.0f) return;
     if (base < 0x08800000u || base >= 0x0A000000u - 0x40u) return;
     int slot = -1, freeslot = -1;
     for (int i = 0; i < MAX_CAMS; i++) {
@@ -305,20 +369,52 @@ static void rotate_camera(uint32_t base, const char *why) {
         s_last[slot].base = base;
         fprintf(stderr, "twinstick: rotating camera object 0x%08x (%s)\n", base, why);
     }
-    const float t[3] = { rdf(tgt), rdf(tgt + 4), rdf(tgt + 8) };
+    float t[3] = { rdf(tgt), rdf(tgt + 4), rdf(tgt + 8) };
+    if (s_style && view && base == s_tgt_obj && memcmp(t, s_tgt_written, sizeof(t)) == 0)
+        memcpy(t, s_tgt_orig, sizeof(t));            /* our shifted target from last frame: undo */
     const float v[3] = { e[0] - t[0], e[1] - t[1], e[2] - t[2] };
     const float horiz = sqrtf(v[0] * v[0] + v[2] * v[2]);
-    const float dist = sqrtf(horiz * horiz + v[1] * v[1]);
+    float dist = sqrtf(horiz * horiz + v[1] * v[1]);
     if (!(dist > 1.0f && dist < 100000.0f)) return;
-    const float yaw = atan2f(v[0], v[2]) + s_yaw_off;
-    float elev = atan2f(v[1], horiz) + s_pitch_off;
+    const float game_yaw = atan2f(v[0], v[2]), game_elev = atan2f(v[1], horiz);
+    float yaw, elev;
+    if (s_style && !view && !s_abs_valid) return;    /* modern: the view camera sets the direction first */
+    if (s_style) {                                   /* modern: an absolute direction */
+        if (!s_abs_valid) {
+            s_abs_yaw = game_yaw; s_abs_elev = game_elev; s_abs_valid = 1;
+            fprintf(stderr, "twinstick: modern camera direction from the game (yaw %.2f, elevation %.2f)\n", game_yaw, game_elev);
+        }
+        yaw = s_abs_yaw;
+        /* the logic camera has its own tilt (steeper than the view's): it gets the same change */
+        elev = view ? s_abs_elev : game_elev + s_pitch_off;
+        if (view) {                                  /* what the aim turn and the menu look at */
+            float d = s_abs_yaw - game_yaw;
+            while (d > 3.14159265f) d -= 6.2831853f;
+            while (d < -3.14159265f) d += 6.2831853f;
+            s_yaw_off = d; s_pitch_off = s_abs_elev - game_elev;
+        }
+    } else {
+        yaw = game_yaw + s_yaw_off; elev = game_elev + s_pitch_off;
+    }
     if (elev < ELEV_MIN) elev = ELEV_MIN;
     if (elev > ELEV_MAX) elev = ELEV_MAX;
+    float tw[3] = { t[0], t[1], t[2] };              /* the target written back */
+    if (s_style && view) {                           /* over the shoulder: closer, to the side */
+        const float side = MODERN_SIDE * dist;
+        dist *= MODERN_DOLLY;
+        const float rx = cosf(yaw), rz = -sinf(yaw);   /* horizontal, perpendicular to the view */
+        tw[0] += rx * side; tw[2] += rz * side; tw[1] += MODERN_RAISE * dist;
+        memcpy(s_tgt_orig, t, sizeof(t));
+    }
     const float ch = cosf(elev) * dist;
-    e[0] = t[0] + sinf(yaw) * ch;
-    e[1] = t[1] + sinf(elev) * dist;
-    e[2] = t[2] + cosf(yaw) * ch;
+    e[0] = tw[0] + sinf(yaw) * ch;
+    e[1] = tw[1] + sinf(elev) * dist;
+    e[2] = tw[2] + cosf(yaw) * ch;
     wrf(eye, e[0]); wrf(eye + 4, e[1]); wrf(eye + 8, e[2]);
+    if (s_style && view) {
+        wrf(tgt, tw[0]); wrf(tgt + 4, tw[1]); wrf(tgt + 8, tw[2]);
+        s_tgt_obj = base; memcpy(s_tgt_written, tw, sizeof(tw));
+    }
     memcpy(s_last[slot].eye, e, sizeof(e));
 }
 
@@ -333,6 +429,7 @@ static void reset_offset(const char *why) {
     if (s_yaw_off != 0.0f || s_pitch_off != 0.0f)
         fprintf(stderr, "twinstick: camera cut (%s), offset reset\n", why);
     s_yaw_off = s_pitch_off = 0.0f;
+    s_abs_valid = 0;                                 /* modern: take the new shot's direction */
     memset(s_last, 0, sizeof(s_last));
 }
 

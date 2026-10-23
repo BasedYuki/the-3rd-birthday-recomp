@@ -102,6 +102,9 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 - **Remappable controls**, in the game (Esc > Controls) or in the launcher (Change buttons...):
   every action gets two keys, which can also be mouse buttons (left, right, middle, side buttons
   4 and 5), and a controller button. Only the two sticks are fixed (left = move, right = camera).
+- **Two camera styles** (Esc menu > Camera style, or the launcher): *Classic* orbits around Aya
+  and returns behind her like the original; *Modern* is an over-the-shoulder camera that stays
+  where you point it, Aya walks where you look, and while aiming the mouse moves the aim
 - **Mouse camera**: click the game window and the mouse turns the camera (left button fires, right
   aims; Esc releases the mouse); smooth WASD turning
 - **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore,

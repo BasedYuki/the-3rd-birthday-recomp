@@ -8,6 +8,10 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - Cheats (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite Liberation,
   max BP. From the community CWCheat database; the code cheats are compiled into the game as
   switchable instructions, so the game has to be prepared again once (the launcher says so)
+- Modern camera style (Esc menu > Camera style, or the launcher's "Modern camera"): over the
+  shoulder, keeps the direction you set with the mouse or right stick instead of swinging back
+  behind Aya, W walks where you look, and while aiming the mouse moves the aim. The classic
+  orbit camera is still the default
 
 ## 0.9.0 — 2026-10-23
 
