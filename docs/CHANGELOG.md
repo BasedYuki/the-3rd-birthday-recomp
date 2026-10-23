@@ -3,6 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- 60 fps on slower PCs: if your PC can't keep up, the game now drops to 30 fps for a bit instead
+  of slowing down (that's what made the sound slow and crackly). it tries 60 again after a few
+  seconds
+
 ## 0.9.1 — 2026-10-24
 
 two things people asked for after the first release:
