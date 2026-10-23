@@ -18,10 +18,10 @@ $m = [regex]::Match($log, "(?ms)^## $([regex]::Escape($Version))\b.*?(?=^## |\z)
 if (-not $m.Success) { Write-Error "docs/CHANGELOG.md has no '## $Version' section yet - write it first" }
 $notes = Join-Path $root "dist\release-notes-$Version.md"
 New-Item -ItemType Directory -Force (Join-Path $root 'dist') | Out-Null
-$body = $m.Value.Trim() + "`n`n---`n**Download** ``The3rdBirthday-$Version.zip``, extract it, start ``The 3rd Birthday.exe``," +
-        " choose your own disc image of the game (USA, ULUS10567) and press **Prepare game**: the game is built once" +
-        " on your PC (3-10 minutes). No game files are included.`n`n" +
-        "If Windows says ""Windows protected your PC"": click **More info**, then **Run anyway** (the program isn't signed).`n"
+$body = $m.Value.Trim() + "`n`n---`n**how to play:** download ``The3rdBirthday-$Version.zip``, extract it and open ``The 3rd Birthday.exe``." +
+        " pick your own iso of the game (US version, ULUS10567) and press **Prepare game**. it builds the game on your pc" +
+        " once, takes a few minutes. no game files are included, you need your own copy.`n`n" +
+        "if windows says ""Windows protected your PC"" just click **More info** then **Run anyway** (the exe isn't signed).`n"
 Set-Content -Encoding utf8 $notes $body
 "notes: $notes"
 
