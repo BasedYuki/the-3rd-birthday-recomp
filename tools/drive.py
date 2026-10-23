@@ -274,7 +274,7 @@ def main():
     for kind in (("port", "ppsspp") if which == "both" else (which,)):
         out = os.path.join(base, kind)
         shutil.rmtree(out, ignore_errors=True); os.makedirs(out)
-        port_save, pp_save = SAVES[save]
+        port_save, pp_save = SAVES[save] if save in SAVES else (os.path.abspath(save), None)   # or a save folder
         patches = [(0xB9D8, 0xFFFF0000 | scene)] if scene is not None else []
         if patches and kind == "port":           # the port reads plaintext: patch a copy
             import struct
