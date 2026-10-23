@@ -11,6 +11,10 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
+#ifndef SR_VERSION
+#define SR_VERSION "0.0.0"
+#endif
+#define SR_VERSION_STR SR_VERSION
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -218,7 +222,7 @@ have_image:;
 
     int use_sched = 0;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--sched") == 0) use_sched = 1;
-    for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) { gui_init("PSP Recomp"); use_sched = 1; }
+    for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) { gui_init("The 3rd Birthday  (PC port v" SR_VERSION_STR ")"); use_sched = 1; }
 
     if (use_sched) {
         /* Run with the cooperative scheduler so the game's threads interleave (the boot busy-

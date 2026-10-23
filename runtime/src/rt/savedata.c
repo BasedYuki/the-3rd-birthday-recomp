@@ -106,14 +106,79 @@ int gui_dialog(const char *title, const char *const *items, int n, const char *c
                int *sel, const char *help);
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
 
+/* Safe write: the data goes to <name>.tmp first and replaces the file only when complete, so
+ * a crash or a full disk in the middle of a save never leaves a damaged save. */
 static int write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
-    char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s\\%s", dir, name);
-    FILE *f = fopen(path, "wb");
+    char path[MAX_PATH], tmp[MAX_PATH + 8];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
     if (!f) return 0;
     int ok = !n || fwrite(data, 1, n, f) == n;
+    ok = fflush(f) == 0 && ok;
     fclose(f);
+    if (ok) ok = MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!ok) DeleteFileA(tmp);
     return ok;
+}
+
+/* Before a save is overwritten, its folder is copied to <memstick>/BACKUP/<save>/<date-time>/
+ * (outside PSP/SAVEDATA, so the game never lists it); the newest 10 per save are kept. To
+ * restore one, copy its files back into PSP/SAVEDATA/<save>/. */
+static int dir_exists(const char *dir);
+static int name_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static void del_dir(const char *d) {
+    char pat[MAX_PATH], f[MAX_PATH * 2];
+    WIN32_FIND_DATAA fd;
+    snprintf(pat, sizeof(pat), "%s/*", d);
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            snprintf(f, sizeof(f), "%s/%s", d, fd.cFileName);
+            DeleteFileA(f);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryA(d);
+}
+static void backup_save(const char *dir, const char *saveDir) {
+    char pat[MAX_PATH], root[MAX_PATH], dst[MAX_PATH + 32];
+    if (!dir_exists(dir)) return;
+    snprintf(root, sizeof(root), "%s/BACKUP/%s", ms_root(), saveDir);
+    SYSTEMTIME st; GetLocalTime(&st);
+    snprintf(dst, sizeof(dst), "%s/%04u%02u%02u-%02u%02u%02u", root, st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond);
+    if (dir_exists(dst)) return;              /* saved twice within a second: one copy is enough */
+    mkdirs(dst);
+    WIN32_FIND_DATAA fd;
+    snprintf(pat, sizeof(pat), "%s/*", dir);
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        char a[MAX_PATH * 2], b[MAX_PATH * 2];
+        snprintf(a, sizeof(a), "%s/%s", dir, fd.cFileName);
+        snprintf(b, sizeof(b), "%s/%s", dst, fd.cFileName);
+        CopyFileA(a, b, FALSE);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    static char names[64][32];               /* keep the newest 10 */
+    int n = 0;
+    snprintf(pat, sizeof(pat), "%s/*", root);
+    h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.' && n < 64)
+            snprintf(names[n++], 32, "%s", fd.cFileName);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    qsort(names, (size_t)n, sizeof(names[0]), name_cmp);
+    for (int i = 0; i + 10 < n; i++) {
+        char old[MAX_PATH + 40];
+        snprintf(old, sizeof(old), "%s/%s", root, names[i]);
+        del_dir(old);
+    }
 }
 
 /* Write a guest FileData blob (icon0/icon1/pic1/snd0) if present. */
@@ -244,6 +309,7 @@ static void load_sfo_param(uint32_t param, const char *dir) {
 static uint32_t do_save(uint32_t param, const char *game, const char *save) {
     char dir[MAX_PATH], fileName[16], title[129], saveTitle[129], detail[1025], saveDir[64];
     save_dir(dir, sizeof(dir), game, save);
+    { char sd[64]; snprintf(sd, sizeof(sd), "%s%s", game, save); backup_save(dir, sd); }
     mkdirs(dir);
     rd_cstr(param + SDP_fileName, fileName, sizeof(fileName));
     uint32_t dataBuf = MEM_R32(param + SDP_dataBuf);

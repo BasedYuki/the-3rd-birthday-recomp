@@ -193,3 +193,22 @@ def patch_check(g):
     to_title_menu(g)
     a = g.read(0x08800100, 8); b = g.read(0x088001FC, 4)
     print("patch words:", hex(struct.unpack("<I", a[:4])[0]), struct.unpack("<f", a[4:8])[0], hex(b[3]), flush=True)
+
+
+def update_notice(g):
+    """Boot and wait for the update notice (PORT_ENV="SR_UPDATE_FORCE=1 SR_UPDATE_REPO=<repo with releases>")."""
+    g.wait(18); g.shot("a"); g.wait(3); g.shot("b")
+
+
+def hub_config_save(g):
+    """Load into the hub, open START > Config and confirm with OK twice: the game saves its system
+    data each time (save writing / backup tests)."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(3)
+    g.press("cross"); g.wait(6)
+    for i in range(3):
+        g.press("cross"); g.wait(4)
+    for _ in range(2):
+        g.press("start"); g.wait(2); g.press("down"); g.wait(1); g.press("cross"); g.wait(2)
+        for _ in range(8): g.press("down"); g.wait(0.4)
+        g.press("cross"); g.wait(3); g.shot("after_ok"); g.press("circle"); g.wait(2); g.wait(1.5)

@@ -183,6 +183,7 @@ void gui_init(const char *title) {
         if (!v || strcmp(v, "gdi") != 0) {
             if (sdl3vk_init(title)) {
                 s_sdl3 = 1;
+                { extern void sr_update_check_start(void); sr_update_check_start(); }
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 QueryPerformanceFrequency(&s_freq);
                 QueryPerformanceCounter(&s_last);
@@ -401,7 +402,7 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -410,7 +411,10 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         char buf[M_COUNT + 1][96];
         const char *lines[M_COUNT + 1];
         const int cfg_scale = sdl3vk_render_scale_cfg();
-        snprintf(buf[0], 96, "Settings  (game paused)");
+        {   extern const char *sr_version(void); extern const char *sr_update_available(void);
+            const char *up = sr_update_available();
+            if (up) snprintf(buf[0], 96, "Settings  (paused)   v%s  -  %s available", sr_version(), up);
+            else snprintf(buf[0], 96, "Settings  (game paused)   v%s", sr_version()); }
         snprintf(buf[M_RESUME], 96, "Resume");
         snprintf(buf[M_CONTROLS], 96, "Controls...");
         snprintf(buf[M_SPEED], 96, "Camera speed:  %.2f", sr_twinstick_setting(SR_TS_SENSITIVITY));
@@ -425,6 +429,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_WIDE], 96, "Aspect ratio:  %s", sdl3vk_cfg_get("widescreen", 0) ? "Fill the window (wider view)" : "Original");
         snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
         snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 0) ? "On" : "Off");
+        snprintf(buf[M_UPDATE], 96, "Check for updates at start:  %s", sdl3vk_cfg_get("update_check", 1) ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
         snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
         snprintf(buf[M_QUIT], 96, "Quit game");
@@ -460,6 +465,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 sdl3vk_set_render_scale_cfg(v);
                 break;
             }
+            case M_UPDATE: sdl3vk_cfg_set("update_check", !sdl3vk_cfg_get("update_check", 1)); break;
             case M_WIDE: sdl3vk_set_widescreen(!sdl3vk_cfg_get("widescreen", 0)); break;
             case M_INTRO: sdl3vk_cfg_set("skip_intro", !sdl3vk_cfg_get("skip_intro", 0)); break;
             case M_FPS: {
