@@ -77,7 +77,8 @@ static const uint32_t k_frag_dual_spv[] =   /* + the dual-source blend output (s
 ;
 
 /* ---- captured vertex (must match psp.vert input layout) ------------------------------ */
-typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; } GpuVert;
+typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba;
+                 float px, py, pz, pw; } GpuVert;   /* p*: previous-frame clip position (pw 0: none) */
 
 /* fragment push constants (must match psp.frag PC block) */
 typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize[4]; int32_t depal[4]; } PushPC;
@@ -231,7 +232,7 @@ static uint32_t s_nbatch = 0, s_nverts = 0;
 #define FI_MAX_OPS   2048
 #define FI_MAX_BATCH 32768
 #define FI_HASH      16384                 /* power of two, > 2 * FI_MAX_DRAWS */
-typedef struct { float m[16], pv[16], vp[6], off[2]; uint32_t key[5], occ; } FiDraw;
+typedef struct { float m[16], pv[16], vp[6], off[2]; uint32_t key[5], occ; int has_prev; } FiDraw;
 typedef struct { uint32_t k[6]; int idx; } FiSlot;       /* (key, occurrence) -> draw */
 typedef struct { uint32_t k[5]; uint32_t n; } FiOcc;     /* key -> occurrences so far */
 typedef struct {
@@ -256,6 +257,7 @@ static uint32_t s_fi_nb = 0;
 static unsigned long s_cnt_interp = 0, s_cnt_interp_skip = 0;
 static unsigned long s_fi_stat[2][3];      /* [skinned][matched, camera only, as is] draws replayed */
 static void fi_invalidate(void) { s_fi_ok = 0; }
+static int  s_draw_has_prev = 0;           /* current draw: vertices carry previous positions */
 static int  fi_seed(int ti);               /* copy a target into its shadow before first use */
 static int  s_fi_seeded[MAX_TGT];                /* per target slot: shadow seeded this frame */
 
@@ -454,15 +456,16 @@ static VkPipeline pipe_create(const PipeKey *k) {
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = s_fs; st[1].pName = "main";
 
     VkVertexInputBindingDescription bind = { 0, sizeof(GpuVert), VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription at[4] = {
+    VkVertexInputAttributeDescription at[5] = {
         { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
         { 1, 0, VK_FORMAT_R32G32_SFLOAT,       16 },
         { 2, 0, VK_FORMAT_R32_SFLOAT,          24 },
         { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,      28 },
+        { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32 },
     };
     VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     vi.vertexBindingDescriptionCount = 1;   vi.pVertexBindingDescriptions = &bind;
-    vi.vertexAttributeDescriptionCount = 4; vi.pVertexAttributeDescriptions = at;
+    vi.vertexAttributeDescriptionCount = 5; vi.pVertexAttributeDescriptions = at;
 
     VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1127,10 +1130,15 @@ static VkDescriptorSet tex_get(void) {
 
 static float snap16(float v) { return floorf(v * 16.0f + 0.375f) * (1.0f / 16.0f); }
 
+static const GeVtx *s_put_prev = NULL;   /* next put_vert's previous-frame position, if any */
 static void put_vert(float x, float y, float z, float rw, float u, float v, float fog,
                      int r, int g, int b, int a) {
     s_vy[s_nverts] = snap16(y);
     GpuVert *o = &s_vmap[s_nverts++];
+    if (s_put_prev && s_put_prev->pcw != 0.0f) {
+        o->px = s_put_prev->pcx; o->py = s_put_prev->pcy; o->pz = s_put_prev->pcz; o->pw = s_put_prev->pcw;
+    } else o->px = o->py = o->pz = o->pw = 0.0f;
+    s_put_prev = NULL;
     o->x = snap16(x); o->y = s_vy[s_nverts - 1]; o->z = z; o->rw = rw;
     o->u = u; o->v = v; o->fog = fog;
     uint32_t cr = (uint32_t)(r < 0 ? 0 : r > 255 ? 255 : r);
@@ -1505,8 +1513,12 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     int flat = !s_ge->shade_gouraud || s_ge->clear;
     const GeVtx *ca = flat ? C : A;
     const GeVtx *cb = flat ? C : B;
+    const int pv = s_draw_has_prev;        /* skinned draw: vertices carry last frame's position */
+    s_put_prev = pv ? A : NULL;
     put_vert(A->x, A->y, A->z, A->rw, A->u, A->v, A->fog, ca->r, ca->g, ca->b, ca->a);
+    s_put_prev = pv ? B : NULL;
     put_vert(B->x, B->y, B->z, B->rw, B->u, B->v, B->fog, cb->r, cb->g, cb->b, cb->a);
+    s_put_prev = pv ? C : NULL;
     put_vert(C->x, C->y, C->z, C->rw, C->u, C->v, C->fog, C->r, C->g, C->b, C->a);
     append(&b, first, 3);
     s_cnt_tri++;
@@ -1769,6 +1781,7 @@ static uint32_t fi_hash(const uint32_t *k, int n) {
 
 /* GE primitive start: register the draw in the frame table (3D only) and make it current. */
 static void hook_draw_begin(const GeDrawInfo *d) {
+    s_draw_has_prev = !d->through && d->has_prev;
     if (!s_fi_on) { s_fi_draw = -1; return; }
     FiFrame *f = s_fi[s_fi_cur];
     if (d->through || f->nd >= FI_MAX_DRAWS) { s_fi_draw = -1; if (!d->through) fi_invalidate(); return; }
@@ -1782,7 +1795,7 @@ static void hook_draw_begin(const GeDrawInfo *d) {
     FiDraw *x = &f->d[f->nd];
     memcpy(x->m, d->m, sizeof(x->m)); memcpy(x->pv, d->pv, sizeof(x->pv));
     memcpy(x->vp, d->vp, sizeof(x->vp)); memcpy(x->off, d->off, sizeof(x->off));
-    memcpy(x->key, d->key, sizeof(x->key)); x->occ = occ;
+    memcpy(x->key, d->key, sizeof(x->key)); x->occ = occ; x->has_prev = d->has_prev;
     uint32_t k6[6]; memcpy(k6, d->key, 5 * sizeof(uint32_t)); k6[5] = occ;
     for (uint32_t i = fi_hash(k6, 6) & (FI_HASH - 1);; i = (i + 1) & (FI_HASH - 1)) {
         FiSlot *sl = &f->h[i];
@@ -1967,6 +1980,9 @@ static int fi_replay(Target *disp, float t) {
         memcpy(v->R, R, sizeof(R));
         v->vs[0] = x->vp[0]; v->vs[1] = x->vp[1]; v->vs[2] = x->vp[2]; v->vs[3] = 1.0f;
         v->vc[0] = x->vp[3] - x->off[0]; v->vc[1] = x->vp[4] - x->off[1]; v->vc[2] = x->vp[5];
+        /* matched skinned draw whose vertices carry last frame's positions: every vertex moves
+         * halfway on its own (limbs too); R stays the fallback for vertices without one */
+        if (x->has_prev && j >= 0 && ((x->key[0] >> 9) & 3)) { v->vs[3] = 2.0f; v->vc[3] = t; }
     }
 
     /* every target the frame drew into was copied to its shadow before its first draw

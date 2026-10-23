@@ -623,9 +623,10 @@ static void shot_save(void) {
         _snwprintf(name, 400, L"%hs\\%hs.png", sd, s_shot_name);
         s_shot_name[0] = 0;
     } else {
-        CreateDirectoryA("screenshots", NULL);
+        const char *dir = sd && *sd ? sd : "screenshots";   /* test runs keep the player's folder clean */
+        CreateDirectoryA(dir, NULL);
         SYSTEMTIME st; GetLocalTime(&st);
-        _snwprintf(name, 400, L"screenshots\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u-%03u.png",
+        _snwprintf(name, 400, L"%hs\\3rd_Birthday_%04u-%02u-%02u_%02u-%02u-%02u-%03u.png", dir,
                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
     }
     name[399] = 0;

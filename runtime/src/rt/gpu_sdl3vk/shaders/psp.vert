@@ -9,6 +9,7 @@ layout(location = 0) in vec4 in_pos;    /* x px, y px, z 0..65535, rw */
 layout(location = 1) in vec2 in_uv;     /* u*rw, v*rw texel coords (raw u,v in through mode) */
 layout(location = 2) in float in_fog;   /* per-vertex fog factor, 1 = no fog */
 layout(location = 3) in vec4 in_color;  /* UNORM8 RGBA */
+layout(location = 4) in vec4 in_prev;   /* skinned: clip position in the previous frame (w 0: none) */
 
 layout(location = 0) noperspective out vec2  v_uv;
 layout(location = 1) noperspective out float v_rw;
@@ -17,7 +18,8 @@ layout(location = 3) noperspective out vec4  v_color;
 
 /* Frame interpolation (ge_gpu.c fi_replay): R moves this draw's clip-space positions from the
  * frame being replayed to the in-between time. vs = viewport scale (x, y, z) and an enable
- * flag, vc = viewport centre minus the screen offset. Live rendering pushes vs.w = 0. */
+ * flag, vc = viewport centre minus the screen offset. Live rendering pushes vs.w = 0.
+ * vs.w = 2: skinned draw, each vertex goes to mix(previous clip position, this one, vc.w). */
 layout(push_constant) uniform PCV {
     layout(offset = 80) mat4 R;
     vec4 vs;
@@ -31,7 +33,8 @@ void main() {
         /* screen -> clip (undo the divide and the viewport), move, project again */
         float w = 1.0 / p.w;
         vec3 ndc = (p.xyz - pcv.vc.xyz) / pcv.vs.xyz;
-        vec4 c = pcv.R * vec4(ndc * w, w);
+        vec4 cc = vec4(ndc * w, w);
+        vec4 c = (pcv.vs.w > 1.5 && in_prev.w != 0.0) ? mix(in_prev, cc, pcv.vc.w) : pcv.R * cc;
         if (c.w > 1e-3) {
             float rw = 1.0 / c.w;
             uv *= rw / p.w;                  /* the varying carries u*rw */

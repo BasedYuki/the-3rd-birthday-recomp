@@ -840,6 +840,7 @@ static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt
 static void load_vtx(uint32_t addr, const VFmt *vf, Vtx *o) {
     float pz; read_pos(addr, vf, &o->x, &o->y, &pz);
     if (s_draw_ws != 1.0f && vf->through) o->x = 240.0f + (o->x - 240.0f) * s_draw_ws;
+    o->pcx = o->pcy = o->pcz = o->pcw = 0.0f;
     o->z = pz; o->rw = 1.0f; o->fog = 1.0f;
     read_tc(addr, vf, &o->u, &o->v);
     read_color(addr, vf, &o->r, &o->g, &o->b, &o->a);
@@ -1320,6 +1321,7 @@ static void light_vertex(float wx, float wy, float wz, float nx, float ny, float
  * scenes (the hangar floor/aircraft) that erased whole models. */
 struct CVtx {
     float cx, cy, cz, cw; float u, v; float fog; int r, g, b, a;
+    float pcx, pcy, pcz, pcw;   /* previous frame (skinned draws with a match), pcw 0 = none */
     /* PSP primitive-acceptance flags (PPSSPP Clipper::ProcessTriangle / ClipToScreenInternal):
      * oor = projected screen coords outside the GE's 4096-grid; ozp/ozn = z/w beyond +-1. */
     int oor, ozp, ozn;
@@ -1342,6 +1344,60 @@ static void read_nrm_skinned(uint32_t addr, const VFmt *vf, const float *w, int 
         px += tx*w[i]; py += ty*w[i]; pz += tz*w[i];
     }
     *x = px; *y = py; *z = pz;
+}
+
+/* Frame interpolation of skinned meshes: each frame keeps every skinned draw's bones, world,
+ * view and projection, keyed like ge_gpu.c matches draws (vtype, prim, count, texture,
+ * framebuffer format/width + occurrence). A draw found in the previous frame transforms its
+ * vertices a second time with those matrices (transform_vtx_clip -> pcx..pcw), so the
+ * in-between frame can put every vertex halfway, limbs included, instead of moving the
+ * whole mesh with its first bone. */
+typedef struct { uint32_t k[6]; int used; float bone[96], world[12], view[12], proj[16]; } SkinRec;
+#define SKIN_HASH 4096
+static SkinRec *s_skin[2];
+int g_ge_interp_on = 0;   /* gui.c: frame interpolation is on (else no tracking cost) */
+static int s_skin_cur = 0, s_skin_n = 0;
+static const SkinRec *s_skin_prev = NULL;   /* the current draw's previous-frame matrices */
+static uint32_t skin_hash(const uint32_t *k) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 6; i++) { h ^= k[i]; h *= 16777619u; }
+    return h;
+}
+static const SkinRec *skin_track(const GeDrawInfo *d, const VFmt *vf) {
+    s_skin_prev = NULL;
+    if (!g_ge_interp_on || vf->through || !vf->w_n) return NULL;
+    if (!s_skin[0]) {
+        s_skin[0] = calloc(SKIN_HASH, sizeof(SkinRec));
+        s_skin[1] = calloc(SKIN_HASH, sizeof(SkinRec));
+        if (!s_skin[0] || !s_skin[1]) return NULL;
+    }
+    if (s_skin_n >= SKIN_HASH / 2) return NULL;
+    uint32_t k[6]; memcpy(k, d->key, 5 * sizeof(uint32_t)); k[5] = 0;
+    SkinRec *cur = s_skin[s_skin_cur], *slot;
+    for (;;) {   /* next free occurrence of this key in the current frame */
+        uint32_t i = skin_hash(k) & (SKIN_HASH - 1);
+        while (cur[i].used && memcmp(cur[i].k, k, sizeof(k))) i = (i + 1) & (SKIN_HASH - 1);
+        if (!cur[i].used) { slot = &cur[i]; break; }
+        k[5]++;
+    }
+    memcpy(slot->k, k, sizeof(k)); slot->used = 1; s_skin_n++;
+    memcpy(slot->bone, ge.bone, sizeof(slot->bone)); memcpy(slot->world, ge.world, sizeof(slot->world));
+    memcpy(slot->view, ge.view, sizeof(slot->view)); memcpy(slot->proj, ge.proj, sizeof(slot->proj));
+    const SkinRec *prev = s_skin[s_skin_cur ^ 1];
+    uint32_t i = skin_hash(k) & (SKIN_HASH - 1);
+    while (prev[i].used) {
+        if (!memcmp(prev[i].k, k, sizeof(k))) { s_skin_prev = &prev[i]; break; }
+        i = (i + 1) & (SKIN_HASH - 1);
+    }
+    return s_skin_prev;
+}
+/* frame boundary (gui.c, with gegpu_interp_frame) */
+void ge_interp_frame(void) {
+    if (!s_skin[0]) return;
+    s_skin_cur ^= 1;
+    memset(s_skin[s_skin_cur], 0, SKIN_HASH * sizeof(SkinRec));
+    s_skin_n = 0;
+    s_skin_prev = NULL;
 }
 
 static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o);
@@ -1386,6 +1442,23 @@ static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o) {
      * depth must NOT divide (hangar/menu 3D and overlay quads use ortho). */
     mat44_mul(ge.proj, cx, cy, cz, &o->cx, &o->cy, &o->cz, &o->cw);
     o->cx *= s_draw_ws;   /* widescreen */
+    o->pcx = o->pcy = o->pcz = o->pcw = 0.0f;
+    if (skinned && s_skin_prev) {   /* the same vertex through last frame's bones and camera */
+        float rx, ry, rz, px = 0, py = 0, pz = 0;
+        read_pos(addr, vf, &rx, &ry, &rz);
+        for (int i = 0; i < vf->w_n; i++) {
+            if (skw[i] == 0.0f) continue;
+            float tx, ty, tz;
+            mat43_mul(s_skin_prev->bone + 12*i, rx, ry, rz, &tx, &ty, &tz);
+            px += tx*skw[i]; py += ty*skw[i]; pz += tz*skw[i];
+        }
+        float qx, qy, qz, vx, vy, vz;
+        mat43_mul(s_skin_prev->world, px, py, pz, &qx, &qy, &qz);
+        mat43_mul(s_skin_prev->view, qx, qy, qz, &vx, &vy, &vz);
+        mat44_mul(s_skin_prev->proj, vx, vy, vz, &o->pcx, &o->pcy, &o->pcz, &o->pcw);
+        o->pcx *= s_draw_ws;
+        if (o->pcw == 0.0f) o->pcw = 1e-9f;
+    }
 
     /* Fog factor from view-space depth: 1 = no fog, 0 = full fog (PPSSPP convention).
      * Linear in cz, so interpolating the factor across a clipped edge stays exact. */
@@ -1522,6 +1595,7 @@ static void project_cvtx(const CVtx *c, Vtx *o) {
     o->v  = c->v * inv_w;
     o->fog = c->fog;
     o->r = c->r; o->g = c->g; o->b = c->b; o->a = c->a;
+    o->pcx = c->pcx; o->pcy = c->pcy; o->pcz = c->pcz; o->pcw = c->pcw;
 }
 
 /* Compatibility wrapper for points/lines/sprites: reject behind-camera vertices. */
@@ -1549,6 +1623,10 @@ static void clip_lerp_cvtx(const CVtx *a, const CVtx *b, float t, CVtx *o) {
     o->g = a->g + (int)((float)(b->g - a->g) * t);
     o->b = a->b + (int)((float)(b->b - a->b) * t);
     o->a = a->a + (int)((float)(b->a - a->a) * t);
+    o->pcx = a->pcx + (b->pcx - a->pcx) * t;
+    o->pcy = a->pcy + (b->pcy - a->pcy) * t;
+    o->pcz = a->pcz + (b->pcz - a->pcz) * t;
+    o->pcw = (a->pcw != 0.0f && b->pcw != 0.0f) ? a->pcw + (b->pcw - a->pcw) * t : 0.0f;
     /* oor=2 marks a vertex CREATED by the near clip: PPSSPP's clip_interpolate re-projects
      * such vertices and re-checks the screen-grid range (clip_vtx_out_of_range below). */
     o->oor = 2; o->ozp = o->ozn = 0;
@@ -1766,6 +1844,7 @@ static void draw_info_emit(uint32_t op, const VFmt *vf) {
     /* not the framebuffer address: the game double-buffers, so consecutive frames draw the
      * same things into alternating buffers (with it in the key nothing ever matched) */
     d.key[3] = ge.tex_enable ? ge.tex_addr : 0; d.key[4] = ge.fbfmt | (ge.fbw << 8);
+    d.has_prev = skin_track(&d, vf) != NULL;
     s_gpu->draw_begin(&d);
 }
 

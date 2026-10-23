@@ -165,3 +165,15 @@ def scene_drawlog(g):
     scene_quick(g)
     if g.name == "port":
         g._cmd("drawlog"); g.wait(1); g.shot("drawlog_frame")
+
+
+def hub_walk(g):
+    """Load the first slot into the hub, then walk forward and turn (frame interpolation tests:
+    PORT_ENV="SR_INTERP=1 SR_TWINSTICK=1 SR_FI_SHOT=move")."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(3)
+    g.press("cross"); g.wait(6)
+    for i in range(3):
+        g.press("cross"); g.wait(4)
+    g.stick(128, 0, 300); g.wait(5); g.shot("walk")
+    g.stick(40, 60, 240); g.wait(4)

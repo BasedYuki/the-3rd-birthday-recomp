@@ -83,7 +83,10 @@ typedef struct {
 /* A rasterized vertex: screen position, reciprocal clip-w (for persp-correct interp), UV,
  * colour, and per-vertex fog factor (1 = no fog). In transform mode u/v are stored
  * pre-multiplied by rw (texel coords over w). */
-typedef struct GeVtx { float x, y, z, rw; float u, v; float fog; int r, g, b, a; } GeVtx;
+/* pcx..pcw: the vertex's clip-space position in the previous frame (skinned draws matched to
+ * the previous frame, for frame interpolation of limbs; pcw = 0: none) */
+typedef struct GeVtx { float x, y, z, rw; float u, v; float fog; int r, g, b, a;
+                       float pcx, pcy, pcz, pcw; } GeVtx;
 
 /* Per-draw description for frame interpolation (ge_gpu.c): emitted at the start of every GE
  * primitive command. Matrices are 4x4 column-major. m = proj*view*world*bone0 (bone0 only for
@@ -95,6 +98,7 @@ typedef struct GeDrawInfo {
     float m[16], pv[16];
     float vp[6], off[2];
     uint32_t key[5];            /* vtype, prim type, count, texture address, framebuffer format/width */
+    int has_prev;               /* skinned, and its vertices carry previous-frame positions */
 } GeDrawInfo;
 
 /* GPU rasterizer hooks. The primitive hooks return 1 when the primitive was taken by

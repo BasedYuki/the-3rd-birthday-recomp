@@ -576,12 +576,14 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             sdl3vk_rstick(&s_rx, &s_ry);
             return;
         }
+        { extern int g_ge_interp_on; g_ge_interp_on = gegpu_interp_enabled(); }
         if (gegpu_interp_enabled()) {
             extern uint64_t sched_vblank_count(void);
             static uint64_t last_flip = 0;
             const uint64_t vb = sched_vblank_count();
             if (s_fi_phase) fi_show_held();              /* still holding the previous frame */
             mid = gegpu_interp_frame(fbaddr, fmt, vb - last_flip == 2 ? 0.5f : -1.0f);
+            { extern void ge_interp_frame(void); ge_interp_frame(); }   /* skinned-draw tables */
             last_flip = vb;
         }
         if (mid) {
