@@ -803,7 +803,7 @@ static void ws_clip_x(uint32_t addr, const VFmt *vf, float *x, float *y);
 static float s_draw_ws = 1.0f;   /* x scale for the current draw (1 = untouched) */
 static int   s_draw_ws_skip = 0; /* flat draw entirely off the PSP screen: squeezing would show it */
 static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt, int count) {
-    s_draw_ws = 1.0f; s_draw_ws_skip = 0;
+    s_draw_ws = 1.0f; s_draw_ws_skip = 0; ge.ws_clip = 0;
     if (g_ge_ws <= 1.001f || ge.fbw != 512 || (ge.fbp & 0xFFFFFF) >= 0x110000) return;
     if (!vf->through && fabsf(ge.proj[15]) < 1e-6f) {   /* perspective */
         extern volatile int g_drawlog_on;
@@ -813,6 +813,24 @@ static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt
         const float a = ge.proj[0] != 0.0f ? fabsf(ge.proj[5] / ge.proj[0]) : 480.0f / 272.0f;
         const float k = a / (480.0f / 272.0f * g_ge_ws);
         s_draw_ws = k > 1.0f ? 1.0f : k < 0.2f ? 0.2f : k;
+        /* A small draw on a still-480:272 camera that spans the whole PSP screen width is a
+         * screen-sized effect in 3D (the Overdive colour tint: a 4-vertex quad, sized to the
+         * PSP's view): stretch it like 2D full-screen effects, or the window's sides miss it
+         * (the dark strips in the tunnels). */
+        if (s_draw_ws < 0.999f && count <= 16) {
+            float lx = 1e9f, hx = -1e9f, ly = 1e9f, hy = -1e9f;
+            for (int i = 0; i < count; i++) {
+                float x, y;
+                ws_clip_x(prim_vtx_addr(vbase, ibase, idxfmt, i, vf->stride), vf, &x, &y);
+                if (x < lx) lx = x;
+                if (x > hx) hx = x;
+                if (y < ly) ly = y;
+                if (y > hy) hy = y;
+            }
+            if (lx <= -0.98f && hx >= 0.98f) s_draw_ws = 1.0f;   /* spans the PSP screen's width */
+            extern volatile int g_drawlog_on;
+            if (g_drawlog_on == 1) fprintf(stderr, "WS persp overlay? ndc x %.2f..%.2f y %.2f..%.2f -> %.3f\n", lx, hx, ly, hy, s_draw_ws);
+        }
         return;
     }
     /* a texture inside the display buffers is a screen copy: its UVs must keep lining up */
@@ -835,6 +853,7 @@ static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt
     if (wide && (tall || !ge.tex_enable)) return;
     if (hx <= 0.0f || lx >= 480.0f) { s_draw_ws_skip = 1; return; }   /* parked off-screen (sliding HUD) */
     s_draw_ws = 1.0f / g_ge_ws;
+    ge.ws_clip = 1;   /* what lay off the PSP screen stays hidden (HUD panels parked at the edge) */
 }
 
 static void load_vtx(uint32_t addr, const VFmt *vf, Vtx *o) {

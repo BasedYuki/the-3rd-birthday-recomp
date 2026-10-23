@@ -72,6 +72,7 @@ typedef struct {
     /* Write masks: bits set = write-disabled (per PSP semantics). */
     uint32_t mask_rgb; int mask_alpha;
     int stencil_enable;         /* stencil test on (stencil = framebuffer alpha) */
+    int ws_clip;                /* widescreen: squeezed flat draw, clip x to the PSP screen's edges */
     uint32_t stencil_test;      /* GE 0xDC: func | ref << 8 | mask << 16 */
     uint32_t stencil_op;        /* GE 0xDD: sfail | zfail << 8 | zpass << 16 */
     /* Bumped on every GE_LOADCLUT: lets the GPU backend detect palette changes without

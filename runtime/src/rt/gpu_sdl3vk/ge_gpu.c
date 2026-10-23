@@ -1278,7 +1278,14 @@ static void build_state(int persp, int sprite, Batch *b) {
 
     /* scissor, clamped to the drawable region */
     int sx1 = g->scis_x1 > 0 ? g->scis_x1 : 0, sy1 = g->scis_y1 > 0 ? g->scis_y1 : 0;
-    int sx2 = g->scis_x2 < DRAW_W - 1 ? g->scis_x2 : DRAW_W - 1;
+    int ws_x2 = DRAW_W - 1;
+    if (g->ws_clip) {   /* widescreen: a squeezed flat draw stays inside the PSP screen's area */
+        extern float g_ge_ws;
+        const int half = (int)(240.0f / g_ge_ws);
+        if (sx1 < 240 - half) sx1 = 240 - half;
+        ws_x2 = 240 + half - 1;
+    }
+    int sx2 = g->scis_x2 < ws_x2 ? g->scis_x2 : ws_x2;
     int sy2 = g->scis_y2 < FB_H - 1 ? g->scis_y2 : FB_H - 1;
     if (sx1 > sx2 || sy1 > sy2) { b->sw = 0; return; }   /* nothing drawable */
     b->sx = sx1; b->sy = sy1; b->sw = sx2 - sx1 + 1; b->sh = sy2 - sy1 + 1;
