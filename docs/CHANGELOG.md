@@ -3,15 +3,23 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.1 — 2026-10-24
 
-- Cheats (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite Liberation,
-  max BP. From the community CWCheat database; the code cheats are compiled into the game as
-  switchable instructions, so the game has to be prepared again once (the launcher says so)
-- Modern camera style (Esc menu > Camera style, or the launcher's "Modern camera"): over the
-  shoulder, keeps the direction you set with the mouse or right stick instead of swinging back
-  behind Aya, W walks where you look, and while aiming the mouse moves the aim. The classic
-  orbit camera is still the default
+two things people asked for after the first release:
+
+**cheats menu**
+press Esc and go to Cheats. you've got no damage, infinite ammo, infinite grenades, infinite
+liberation and max BP. turn them on and off whenever you want, they stay how you left them.
+the codes come from the cwcheat database so big thanks to the people who found them
+
+**new camera option**
+Esc > Camera style, or tick "Modern camera" in the launcher. the camera sits over Aya's
+shoulder, stays where you point it instead of swinging back behind her, and she walks where
+you're looking. when you aim, the mouse moves the aim too. the old camera is still the default
+if you like it better
+
+heads up: you need to press "Prepare game" one more time after updating (the launcher will
+tell you). takes a couple of minutes, your saves and settings stay
 
 ## 0.9.0 — 2026-10-23
 
