@@ -29,6 +29,13 @@ is included in this repository.
 - **Widescreen / ultrawide** (settings menu, "Aspect ratio"): the game renders a wider view to
   fill the window; the HUD keeps its shape in the middle
 - **Remappable controls** (settings menu, "Controls"): two keys and a controller button per action
+- **Mouse camera**: click the game window and the mouse turns the camera (left button fires, right
+  aims; Esc releases the mouse); smooth WASD turning
+- **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore, mods,
+  update status, Play
+- **Update notice**: the game and the launcher tell you when a newer release is out
+- **Safe saves**: every save is written safely and the previous one is kept in `memstick/BACKUP/`
+- FPS counter and a glow (bloom) on/off switch in the settings menu
 - **Mods**: HD texture packs, memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
 - Data Install (Extra menu) works, and **Use Install Data** reads from it like on a PSP
 - Saves from a real PSP or PPSSPP can be imported (`tools/save_import.py`); the port's saves load in PPSSPP
@@ -44,6 +51,7 @@ is included in this repository.
 | Camera (twin-stick orbit) | Right stick | I / J / K / L |
 | Aim while holding L | Right stick (or left stick) | I / J / K / L |
 | Reset camera behind Aya | Right stick click (R3) | O |
+| Camera / fire / aim with the mouse | — | click the window, then mouse / left button / right button |
 | Cross / Circle / Square / Triangle | A / B / X / Y | X or Space / Z / C / V |
 | L / R | LB or LT / RB or RT | Q / E |
 | D-pad (the game's own camera turn) | D-pad | Arrow keys |
@@ -71,6 +79,12 @@ The toolchain is MSYS2 UCRT64 (GCC, SDL3, Vulkan headers, glslc). See
 builds; `scripts/build.ps1` rebuilds. Afterwards `build/ULUS10567/ULUS10567.exe` starts with a
 double-click (it finds the .iso in its folder or up to three folders above, or `iso=` in
 `launch.cfg`). `scripts/package.ps1` makes a portable folder and zip for your own use.
+
+## Versions
+
+`VERSION` holds the current version; [`docs/CHANGELOG.md`](../docs/CHANGELOG.md) lists what
+changed. Releases on GitHub carry the notes; the game itself is always built from your own copy
+of the disc (`scripts/setup.ps1`), so a release never contains game code.
 
 ## Credits and license
 
