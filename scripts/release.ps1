@@ -33,11 +33,13 @@ if ($LASTEXITCODE) { Write-Error 'build failed' }
 # 3. publish (only when asked)
 if ($Publish) {
     Push-Location $root
+    $ErrorActionPreference = 'Continue'   # git writes progress to stderr; check exit codes instead
     try {
         git add VERSION docs/CHANGELOG.md
         git commit -m "Release v$Version" | Out-Null
         git tag "v$Version"
-        git push origin HEAD "v$Version"
+        git push origin HEAD "v$Version" 2>&1 | Out-Null
+        if ($LASTEXITCODE) { Write-Error 'git push failed' -ErrorAction Stop }
         gh release create "v$Version" (Join-Path $root "dist\The3rdBirthday-$Version.zip") --title "v$Version" --notes-file $notes
     } finally { Pop-Location }
     "published v$Version"
