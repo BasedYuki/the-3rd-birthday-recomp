@@ -4,6 +4,8 @@ A native Windows build of **The 3rd Birthday** (PSP, US release ULUS10567), made
 statically recompiling the game's MIPS code to C and running it on a native runtime
 with a Vulkan renderer. It is not an emulator: the game logic runs as compiled PC code.
 
+[![Support me on Ko-fi](https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/yuki_visuals7)
+
 ![The launcher](../docs/screenshots/launcher.png)
 
 **Work in progress.** All 111 scenes of the game load and run at full speed, with movies,
@@ -24,6 +26,31 @@ is included in this repository or in the releases.
 
 The download contains no game code or data: only the PC runtime, the launcher and a kit
 (compiler, Python, translation tools) with which your PC turns your disc into the game.
+
+## Before you start: what is and isn't tested yet
+
+Tested: on a clean copy of the download, with nothing else installed, **Prepare game**
+finishes in about 3 minutes and **Play** starts the game. All 111 scenes of the game load and
+run at full speed. Not tested yet, so these may give you trouble:
+
+- **Other PCs.** So far it has only run on one PC: Windows 11 with an NVIDIA RTX 3050 laptop
+  GPU. Other graphics cards (AMD, Intel), Windows 10 and older drivers haven't been tried. You
+  need a graphics card with Vulkan support and up-to-date drivers.
+- **Antivirus.** **Prepare game** runs a compiler and creates a new `game.dll`, which some
+  antivirus programs block, quarantine or slow down a lot. If preparing fails or `game.dll`
+  disappears, allow the game's folder in your antivirus.
+- **Where you extract it.** Use a folder you can write to, such as `C:\Games\The3rdBirthday`
+  or your Documents. Not `Program Files`: the launcher writes settings, saves and the
+  prepared game next to itself.
+- **Only the US disc image** (ULUS10567) as a plain `.iso` works. The European and Japanese
+  versions and compressed images (`.cso`, `.chd`) aren't supported. Convert a `.cso` back to
+  `.iso` first.
+- **Full playthroughs.** Every scene was checked by jumping to it, but the whole game hasn't
+  been played from start to finish yet. Missions may still have bugs.
+
+If something goes wrong, please open an
+[issue](https://github.com/BasedYuki/the-3rd-birthday-recomp/issues) with your PC (Windows
+version, graphics card), what happened, and the `run.err` file from the game's folder.
 
 ## The launcher
 
@@ -125,6 +152,12 @@ makes the release package (runtime, launcher, kit; checked to hold no game code)
 `VERSION` holds the current version; [`docs/CHANGELOG.md`](../docs/CHANGELOG.md) lists what
 changed. A release carries the notes and the package; the game code is always built from your
 own disc on your PC, so a release never contains it.
+
+## Support
+
+This port is made in my free time. If you enjoy it and want to support the work, you can on
+**[Ko-fi](https://ko-fi.com/yuki_visuals7)**. It's completely optional: the port is and stays
+free.
 
 ## Credits and license
 

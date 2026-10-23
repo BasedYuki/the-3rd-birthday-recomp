@@ -61,6 +61,17 @@ Saves: memstick\PSP\SAVEDATA (backups in memstick\BACKUP). Settings: *.cfg. Logs
 Mods: mods\README.md. Changes: CHANGELOG.md.
 Needs Windows 10/11 64-bit and a GPU with Vulkan.
 
+Not tested yet (see the README on GitHub):
+- So far it has only run on Windows 11 with an NVIDIA GPU; AMD/Intel GPUs and Windows 10 are untested.
+- Antivirus programs may block "Prepare game" (it runs a compiler and makes game.dll);
+  if it fails, allow this folder in your antivirus.
+- Extract somewhere you can write to (not Program Files).
+- Only the US disc image (ULUS10567) as a plain .iso; no EU/JP versions, no .cso/.chd.
+- The whole game has not been played start to finish yet.
+Problems: https://github.com/BasedYuki/the-3rd-birthday-recomp/issues (attach run.err)
+
+Support the project (optional): https://ko-fi.com/yuki_visuals7
+
 Licenses: this project GPL-2.0-or-later; the kit's compiler, Python and decrypter keep their
 own licenses (kit\licenses).
 "@ | Set-Content -Encoding utf8 (Join-Path $dst 'README.txt')
