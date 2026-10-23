@@ -7,6 +7,14 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 
 First numbered version: everything up to now, plus a round of PC features.
 
+**Download and play**
+- The release package holds no game code: the launcher's **Prepare game** builds the game from
+  your own disc image on your PC (decrypts the program from the ISO, translates and compiles it
+  with the bundled kit, about 3-10 minutes, nothing downloaded). Updates of the PC runtime don't
+  need the game prepared again; the launcher says when they do.
+- Unlock all extras (launcher): every costume, extra DNA boards and Cheat Codes; your progress
+  is kept
+
 **PC features**
 - Launcher (`The 3rd Birthday.exe`): finds or asks for your disc image and checks it, settings,
   save list with backup and restore, texture packs and patches on/off, update status, Play

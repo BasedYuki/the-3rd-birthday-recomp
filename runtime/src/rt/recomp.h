@@ -29,12 +29,48 @@ typedef struct CpuState {
     uint32_t vfpuCtrl[16];  /* VFPU control: prefixes (S/T/D), cc, etc. */
 } CpuState;
 
+typedef void (*RecompFn)(CpuState *);   /* also below */
+/* ---- the runtime / game.dll boundary ------------------------------------------------------
+ * The runtime (ULUS10567.exe, no game code) loads game.dll, calls its sr_game_attach with this
+ * table, then sr_register_all. The data pointers are what the generated code reads (via the
+ * macros above when SR_GAME_DLL is defined); the functions are what it calls (forwarded by
+ * game_glue.c). SR_API_VERSION changes whenever the table does. */
+#define SR_API_VERSION 1
+struct SrApi {
+    uint8_t **mem; int *dbg; int *sched_on; int32_t *timeslice;
+    void (*oor)(uint32_t, uint32_t, int);
+    uint32_t (*lwl)(uint32_t, uint32_t); uint32_t (*lwr)(uint32_t, uint32_t);
+    void (*swl)(uint32_t, uint32_t); void (*swr)(uint32_t, uint32_t);
+    void (*vread)(float *, const CpuState *, const uint8_t *, int, uint32_t);
+    void (*vwrite)(CpuState *, const uint8_t *, float *, int, uint32_t);
+    float (*vfpu_rcp)(float), (*vfpu_rsqrt)(float), (*vfpu_sqrt)(float), (*vfpu_sin)(float),
+          (*vfpu_cos)(float), (*vfpu_exp2)(float);
+    void (*vfpu_ext)(CpuState *, uint32_t);
+    void (*reg)(uint32_t, RecompFn);
+    void (*dispatch)(CpuState *, uint32_t);
+    void (*begin_dbg)(const CpuState *, uint32_t, uint32_t);
+    void (*end_dbg)(const CpuState *, uint32_t, int);
+    int (*func_hook)(CpuState *, uint32_t);
+    void (*syscall)(CpuState *, uint32_t);
+    void (*yield)(CpuState *);
+    void (*unimplemented)(uint32_t, const char *);
+    void (*toast)(const char *);                       /* for code mods */
+};
+
+
 /* Guest memory: a single host region. g_mem points at guest 0x08000000, and the underlying
  * allocation also extends 0x04000000 bytes *below* g_mem so the same arena covers VRAM/eDRAM
  * (0x04000000..0x041fffff). SR_HOST maps a VRAM address to g_mem minus an offset that still
  * lands inside the allocation. Keeping SR_RAM_BASE at 0x08000000 means the recompiled code's
  * MEM_* macros are unchanged (no rebuild of the big object). */
 extern uint8_t *g_mem;
+#ifdef SR_GAME_DLL
+/* game.dll (the recompiled game code, built on the player's PC) reaches the runtime's data
+ * through the pointer table the runtime hands it at start (SrApi below, game_glue.c). */
+struct SrApi;
+extern struct SrApi sr_api;
+#define g_mem (*sr_api.mem)
+#endif
 #define SR_RAM_BASE 0x08000000u
 #define SR_PHYS(a)  ((a) & 0x1FFFFFFFu)
 /* Signed offset so addresses below SR_RAM_BASE (VRAM/eDRAM at 0x04000000) map below g_mem,
@@ -130,6 +166,9 @@ void sr_trace_close(void);
  * debug switch (SR_WATCH, SR_PCPROBE, SR_READWATCH, ...) is on, so the release path is one
  * predictable flag test instead of two calls per guest instruction. */
 extern int g_sr_dbg;
+#ifdef SR_GAME_DLL
+#define g_sr_dbg (*sr_api.dbg)
+#endif
 void sr_begin_dbg(const CpuState *s, uint32_t pc, uint32_t op);
 void sr_end_dbg(const CpuState *s, uint32_t mem_addr, int mem_size);
 static inline void sr_begin(const CpuState *s, uint32_t pc, uint32_t op) {
@@ -211,6 +250,10 @@ extern uint32_t sr_last_nid;
  * changes nothing, so it does not affect the existing trace verification. */
 extern int     sr_sched_on;
 extern int32_t sr_timeslice;
+#ifdef SR_GAME_DLL
+#define sr_sched_on  (*sr_api.sched_on)
+#define sr_timeslice (*sr_api.timeslice)
+#endif
 void sr_yield(CpuState *s);
 #define SR_YIELD(s) do { if (sr_sched_on && --sr_timeslice <= 0) sr_yield(s); } while (0)
 

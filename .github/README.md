@@ -10,6 +10,18 @@ with movies, voice, music and saving. Expect bugs.
 You need your own copy of the game (a PSP disc image you dumped yourself). No game data
 is included in this repository.
 
+## Playing it
+
+1. Download `The3rdBirthday-<version>.zip` from the
+   [Releases](https://github.com/BasedYuki/the-3rd-birthday-recomp/releases) page and extract it.
+2. Start `The 3rd Birthday.exe` (the launcher) and choose your own disc image of the game
+   (USA, ULUS10567, `.iso`).
+3. Press **Prepare game**. The game is built once, on your PC, from your disc (3-10 minutes;
+   nothing is downloaded). Then press **Play**.
+
+The download contains no game code or data: only the PC runtime, the launcher and a kit
+(compiler, Python, translation tools) with which your PC turns your disc into the game.
+
 ## Screenshots
 
 ![Boss fight in the theater](../docs/screenshots/boss-crossfire.png)
@@ -75,16 +87,17 @@ next to the executable (created on first run):
 The toolchain is MSYS2 UCRT64 (GCC, SDL3, Vulkan headers, glslc). See
 [`runtime/README.md`](../runtime/README.md) for the recompiler and runtime, and
 [`PLAN.md`](../PLAN.md) for the design decisions and a dated log of the work.
-`scripts/setup.ps1` sets up a fresh clone (MSYS2 packages, the decrypted EBOOT via PPSSPP) and
-builds; `scripts/build.ps1` rebuilds. Afterwards `build/ULUS10567/ULUS10567.exe` starts with a
-double-click (it finds the .iso in its folder or up to three folders above, or `iso=` in
-`launch.cfg`). `scripts/package.ps1` makes a portable folder and zip for your own use.
+`scripts/setup.ps1` sets up a fresh clone (MSYS2 packages, the program decrypted from your
+disc image) and builds; `scripts/build.ps1` rebuilds. The build makes `ULUS10567.exe` (the
+runtime, no game code) and `game.dll` (the game's code, recompiled). `scripts/package.ps1`
+makes the release package (runtime, launcher, kit; checked to hold no game code) and
+`scripts/release.ps1` publishes it.
 
 ## Versions
 
 `VERSION` holds the current version; [`docs/CHANGELOG.md`](../docs/CHANGELOG.md) lists what
-changed. Releases on GitHub carry the notes; the game itself is always built from your own copy
-of the disc (`scripts/setup.ps1`), so a release never contains game code.
+changed. A release carries the notes and the package; the game code is always built from your
+own disc on your PC, so a release never contains it.
 
 ## Credits and license
 

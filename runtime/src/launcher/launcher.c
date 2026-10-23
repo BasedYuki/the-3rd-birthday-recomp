@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <commctrl.h>
 
 #ifndef SR_VERSION
 #define SR_VERSION "0.0.0"
@@ -140,6 +141,7 @@ static long long ver_num(const char *v) {
 }
 static HWND s_win, s_status;
 #define WM_APP_UPDATE (WM_APP + 1)
+#define WM_APP_PREP   (WM_APP + 2)     /* wparam: percent (or -1 failed, 101 done) */
 static DWORD WINAPI update_thread(void *arg) {
     (void)arg;
     HINTERNET ses = WinHttpOpen(L"ThirdBirthdayPC-Launcher/" SR_VERSION, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -231,9 +233,11 @@ enum {
     ID_MOUSE, ID_MOUSESENS, ID_MOUSEINV, ID_KBDSMOOTH,
     ID_SAVES, ID_SAVE_OPEN, ID_SAVE_BACKUP, ID_SAVE_RESTORE,
     ID_TEXPACKS, ID_TEXDUMP, ID_PATCHES, ID_PATCH_TOGGLE, ID_MODS_OPEN,
-    ID_RELEASES, ID_UNLOCK,
+    ID_RELEASES, ID_UNLOCK, ID_PROGRESS,
 };
 static HFONT s_font, s_bold;
+static int  s_preparing;
+static void play_button_text(void);
 static float s_dpi = 1.0f;                 /* layout scale: the layout is in 96-DPI pixels */
 #define S(v) ((int)((v) * s_dpi + 0.5f))
 
@@ -258,7 +262,7 @@ static void iso_show(void) {
     if (!s_iso[0]) snprintf(t, sizeof(t), "No disc image found - choose your copy of the game (.iso).");
     else snprintf(t, sizeof(t), "%s%s", s_iso, iso_is_game(s_iso) ? "" : "   (not the US release ULUS10567!)");
     SetDlgItemTextA(s_win, ID_ISO_TEXT, t);
-    EnableWindow(GetDlgItem(s_win, ID_PLAY), s_iso[0] != 0);
+    EnableWindow(GetDlgItem(s_win, ID_PLAY), s_iso[0] != 0 && !s_preparing);
 }
 
 static void saves_fill(void) {
@@ -324,6 +328,9 @@ static void build_ui(void) {
     snprintf(t, sizeof(t), "The 3rd Birthday  -  PC port v%s", SR_VERSION);
     HWND h = mk("STATIC", t, 0, L, 12, 500, 30, 0); SendMessageA(h, WM_SETFONT, (WPARAM)s_bold, TRUE);
     s_status = mk("STATIC", "Checking for updates...", 0, L, 42, 520, 20, 0);
+    HWND pb = mk(PROGRESS_CLASSA, "", 0, L, 64, 520, 8, ID_PROGRESS);
+    SendMessageA(pb, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+    ShowWindow(pb, SW_HIDE);
     mk("BUTTON", "Releases page", BS_PUSHBUTTON, W - 280, 14, 120, 28, ID_RELEASES);
     HWND play = mk("BUTTON", "Play", BS_DEFPUSHBUTTON | WS_TABSTOP, W - 150, 10, 150, 46, ID_PLAY);
     SendMessageA(play, WM_SETFONT, (WPARAM)s_bold, TRUE);
@@ -372,6 +379,7 @@ static void build_ui(void) {
     mk("BUTTON", "Patch on / off", BS_PUSHBUTTON, W - 130, 562, 130, 28, ID_PATCH_TOGGLE);
 
     iso_show();
+    play_button_text();
     saves_fill();
     patches_fill();
 }
@@ -501,7 +509,90 @@ static void patch_toggle(void) {
     patches_fill();
 }
 
+/* ---- prepare: build game.dll from the player's disc (kit/tools/prepare.py) ----------------- */
+
+static char s_prep_text[160], s_prep_err[2048];
+
+/* game.dll present and built by this kit? */
+static int game_ready(void) {
+    if (GetFileAttributesA("game.dll") == INVALID_FILE_ATTRIBUTES) return 0;
+    char kit[64] = "", built[64] = "";
+    FILE *f = fopen("kit/kit_id.txt", "r");
+    if (!f) return 1;                          /* dev build without a kit: trust what is there */
+    if (fgets(kit, sizeof(kit), f)) kit[strcspn(kit, "\r\n")] = 0;
+    fclose(f);
+    if (!cfg_read("game_build.txt", "kit", built, sizeof(built))) return 0;
+    return !strcmp(kit, built);
+}
+
+static void play_button_text(void) {
+    SetDlgItemTextA(s_win, ID_PLAY, s_preparing ? "Preparing..." : game_ready() ? "Play" : "Prepare game");
+}
+
+static DWORD WINAPI prepare_thread(void *arg) {
+    (void)arg;
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    HANDLE rd, wr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) { PostMessageA(s_win, WM_APP_PREP, (WPARAM)-1, 0); return 0; }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si = { sizeof(si) };
+    si.dwFlags = STARTF_USESTDHANDLES; si.hStdOutput = wr; si.hStdError = wr; si.hStdInput = NULL;
+    PROCESS_INFORMATION pi;
+    char cmd[MAX_PATH * 3];
+    snprintf(cmd, sizeof(cmd), "\"kit\\python\\python.exe\" \"kit\\tools\\prepare.py\" --iso \"%s\" --game-dir .", s_iso);
+    /* the kit's Python must not see another Python's settings */
+    SetEnvironmentVariableA("PYTHONHOME", NULL); SetEnvironmentVariableA("PYTHONPATH", NULL);
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    CloseHandle(wr);
+    if (!ok) { CloseHandle(rd); snprintf(s_prep_err, sizeof(s_prep_err), "Could not start the kit (kit\\python\\python.exe).");
+               PostMessageA(s_win, WM_APP_PREP, (WPARAM)-1, 0); return 0; }
+    char buf[4096], line[512]; int ln = 0; DWORD n;
+    s_prep_err[0] = 0;
+    while (ReadFile(rd, buf, sizeof(buf), &n, NULL) && n) {
+        for (DWORD i = 0; i < n; i++) {
+            char c = buf[i];
+            if (c == '\r') continue;
+            if (c != '\n' && ln < (int)sizeof(line) - 1) { line[ln++] = c; continue; }
+            line[ln] = 0; ln = 0;
+            int pct;
+            if (sscanf(line, "PROGRESS %d", &pct) == 1) {
+                const char *t = line + 13; while (*t == ' ') t++;
+                snprintf(s_prep_text, sizeof(s_prep_text), "%s", t);
+                PostMessageA(s_win, WM_APP_PREP, (WPARAM)pct, 0);
+            } else {   /* keep the tail of anything else (errors) */
+                size_t L = strlen(s_prep_err);
+                if (L > sizeof(s_prep_err) - 600) { memmove(s_prep_err, s_prep_err + 600, L - 599); L = strlen(s_prep_err); }
+                snprintf(s_prep_err + L, sizeof(s_prep_err) - L, "%s\n", line);
+            }
+        }
+    }
+    CloseHandle(rd);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    PostMessageA(s_win, WM_APP_PREP, code == 0 && game_ready() ? 101 : (WPARAM)-1, 0);
+    return 0;
+}
+
+static void prepare(void) {
+    if (s_preparing || !s_iso[0]) return;
+    if (GetFileAttributesA("kit/tools/prepare.py") == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxA(s_win, "The kit folder is missing next to the launcher.", "Prepare game", MB_ICONERROR); return;
+    }
+    if (MessageBoxA(s_win, "The game is built once from your disc image, on this PC (about 3-10 minutes,\n"
+                    "depending on the processor). Nothing is downloaded.\n\nStart now?", "Prepare game",
+                    MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    s_preparing = 1;
+    play_button_text();
+    EnableWindow(GetDlgItem(s_win, ID_PLAY), FALSE);
+    EnableWindow(GetDlgItem(s_win, ID_ISO_BROWSE), FALSE);
+    ShowWindow(GetDlgItem(s_win, ID_PROGRESS), SW_SHOW);
+    HANDLE t = CreateThread(NULL, 0, prepare_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
 static void play(void) {
+    if (!game_ready()) { prepare(); return; }
     save_settings();
     if (!s_iso[0]) return;
     STARTUPINFOA si = { sizeof(si) }; PROCESS_INFORMATION pi;
@@ -542,7 +633,30 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         case ID_UNLOCK: unlock_all(); return 0;
         }
         break;
+    case WM_APP_PREP: {
+        const int pct = (int)wp;
+        if (pct >= 0 && pct <= 100) {
+            SendMessageA(GetDlgItem(w, ID_PROGRESS), PBM_SETPOS, (WPARAM)pct, 0);
+            char t[200]; snprintf(t, sizeof(t), "Preparing the game: %s", s_prep_text);
+            SetWindowTextA(s_status, t);
+            return 0;
+        }
+        s_preparing = 0;
+        ShowWindow(GetDlgItem(w, ID_PROGRESS), SW_HIDE);
+        EnableWindow(GetDlgItem(w, ID_ISO_BROWSE), TRUE);
+        iso_show();
+        play_button_text();
+        if (pct == 101) {
+            SetWindowTextA(s_status, "The game is ready. Press Play.");
+        } else {
+            SetWindowTextA(s_status, "Preparing the game failed - see the message.");
+            char m[2300]; snprintf(m, sizeof(m), "Preparing the game failed.\n\n%s", s_prep_err[0] ? s_prep_err : "(no details)");
+            MessageBoxA(w, m, "Prepare game", MB_ICONERROR);
+        }
+        return 0;
+    }
     case WM_APP_UPDATE:
+        if (s_preparing) return 0;
         if ((int)wp == 1) {
             char t[128]; snprintf(t, sizeof(t), "Update available: %s  (you have v%s) - see the Releases page", s_latest, SR_VERSION);
             SetWindowTextA(s_status, t);
@@ -552,7 +666,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if ((HWND)lp == s_status && s_latest[0]) { SetTextColor((HDC)wp, RGB(200, 90, 20)); SetBkMode((HDC)wp, TRANSPARENT);
                                                     return (LRESULT)GetSysColorBrush(COLOR_BTNFACE); }
         break;
-    case WM_CLOSE: save_settings(); DestroyWindow(w); return 0;
+    case WM_CLOSE:
+        if (s_preparing && MessageBoxA(w, "The game is still being prepared. Stop and close?", "The 3rd Birthday",
+                                       MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+        save_settings(); DestroyWindow(w); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
     return DefWindowProcA(w, m, wp, lp);
@@ -564,6 +681,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show) {
     char *sl = strrchr(exe, '\\'); if (sl) *sl = 0;
     SetCurrentDirectoryA(exe);                 /* settings, saves and mods live next to the game */
     CoInitialize(NULL);
+    { INITCOMMONCONTROLSEX ic = { sizeof(ic), ICC_PROGRESS_CLASS }; InitCommonControlsEx(&ic); }
     NONCLIENTMETRICSA ncm = { sizeof(ncm) };
     SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
     s_font = CreateFontIndirectA(&ncm.lfMessageFont);

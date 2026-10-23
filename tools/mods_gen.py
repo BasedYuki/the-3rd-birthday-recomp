@@ -26,7 +26,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def mods():
     out = []
-    for toml in sorted(glob.glob(os.path.join(ROOT, "mods", "*", "mod.toml"))):
+    mods_dir = os.environ.get("SR_MODS_DIR") or os.path.join(ROOT, "mods")   # prepare.py: the game folder's mods/
+    for toml in sorted(glob.glob(os.path.join(mods_dir, "*", "mod.toml"))):
         with open(toml, "rb") as f:
             data = tomllib.load(f)
         if not data.get("enabled", True):

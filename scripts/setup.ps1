@@ -1,11 +1,10 @@
 # One-time setup on a fresh clone, then a full build:
-#   .\scripts\setup.ps1 [-Msys C:\msys64] [-Ppsspp <folder with PPSSPPWindows64.exe>]
+#   .\scripts\setup.ps1 [-Msys C:\msys64]
 #
 # Needs: your own disc image of the game (ULUS10567, *.iso) in the project folder; MSYS2
-# (https://www.msys2.org); Python 3 on PATH; PPSSPP (https://www.ppsspp.org), used once to
-# decrypt the game's EBOOT (it writes a decrypted copy when its "dump decrypted EBOOT"
-# option is on, which this script switches on for that one run and back off).
-param([string]$Msys = '', [string]$Ppsspp = '', [string]$Game = 'ULUS10567')
+# (https://www.msys2.org); Python 3 on PATH. (Players don't need this: the release package's
+# launcher builds the game itself.)
+param([string]$Msys = '', [string]$Game = 'ULUS10567')
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -35,34 +34,19 @@ $iso = Get-ChildItem $root -Filter *.iso | Select-Object -First 1
 if (-not $iso) { Write-Host "Put your disc image of the game (*.iso) into $root and run this again."; exit 1 }
 "disc image: $($iso.Name)"
 
-# 4. Decrypted EBOOT through PPSSPP
+# 4. Decrypted EBOOT, straight from the disc image (runtime/third_party/eboot_decrypt)
 $elf = Join-Path $root "dumps\${Game}_EBOOT.elf"
 if (-not (Test-Path $elf)) {
-    if (-not $Ppsspp) { $Ppsspp = $root }
-    $exe = Join-Path $Ppsspp 'PPSSPPWindows64.exe'
-    if (-not (Test-Path $exe)) { Write-Host "PPSSPP not found in $Ppsspp (use -Ppsspp <folder>)."; exit 1 }
-    $ini = Join-Path $Ppsspp 'memstick\PSP\SYSTEM\ppsspp.ini'
-    if (-not (Test-Path $ini)) { $ini = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PPSSPP\PSP\SYSTEM\ppsspp.ini' }
-    $dumpdir = Join-Path (Split-Path $ini -Parent) 'DUMP'
-    $orig = if (Test-Path $ini) { Get-Content -Raw $ini } else { $null }
-    if ($orig) {
-        $t = if ($orig -match '(?m)^DumpFileTypes = ') { $orig -replace '(?m)^DumpFileTypes = .*$', 'DumpFileTypes = 1' }
-             else { $orig -replace '(?m)^\[General\]\s*$', "[General]`r`nDumpFileTypes = 1" }
-        Set-Content -NoNewline -Encoding utf8 $ini $t
-    }
-    "decrypting the EBOOT with PPSSPP (its window opens for a few seconds)..."
-    $p = Start-Process $exe -ArgumentList "`"$($iso.FullName)`"" -PassThru
-    $dump = Join-Path $dumpdir "${Game}_EBOOT.BIN"
-    for ($i = 0; $i -lt 120 -and -not (Test-Path $dump); $i++) { Start-Sleep 1 }
-    Start-Sleep 2
-    if (-not $p.HasExited) { $p.Kill() }
-    if ($orig) { Set-Content -NoNewline -Encoding utf8 $ini $orig }
-    if (-not (Test-Path $dump)) {
-        Write-Host "PPSSPP did not write $dump. In PPSSPP: Settings > Tools > Developer tools > 'Dump decrypted EBOOT.BIN on game boot', start the game once, then copy that file to $elf."
-        exit 1
-    }
     New-Item -ItemType Directory -Force (Split-Path $elf) | Out-Null
-    Copy-Item $dump $elf
+    $env:MSYSTEM = 'UCRT64'; $env:CHERE_INVOKING = '1'
+    Push-Location $root
+    try {
+        & "$Msys\usr\bin\bash.exe" -lc ('ED=runtime/third_party/eboot_decrypt; T=$(mktemp -d); ' +
+            'for c in AES SHA1 bn ec kirk_engine amctrl; do gcc -O2 -w -c $ED/libkirk/$c.c -o $T/$c.o; done; ' +
+            'g++ -std=c++17 -O2 -w -I$ED/shim -I$ED $ED/eboot_decrypt.cpp $ED/PrxDecrypter.cpp $T/*.o -static -s -o $T/ed.exe && ' +
+            '$T/ed.exe "$1" "$2"') _ $iso.FullName $elf
+    } finally { Pop-Location }
+    if (-not (Test-Path $elf)) { Write-Error 'could not decrypt the game program from the disc image' }
     "decrypted EBOOT: $elf"
 }
 

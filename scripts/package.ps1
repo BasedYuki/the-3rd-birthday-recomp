@@ -1,51 +1,71 @@
-# Make a portable folder (and zip) of the built game for playing on another PC.
-#   .\scripts\package.ps1             -> dist\The3rdBirthday-<date>\ and .zip
+# Make the release package: dist\The3rdBirthday-<version>\ and its .zip.
+#   .\scripts\package.ps1 [-NoZip]
 #
-# The package holds the executable, the recompiled image (code derived from YOUR copy of the
-# game: for your own use, do not share it), SDL3.dll, fonts, VFPU tables and launch.cfg. It
-# does not include the disc image: put your .iso in the package folder (or a folder above it),
-# or set iso=<path> in launch.cfg. Saves and settings stay in the package folder.
+# The package holds NO game code or data. It contains the runtime (ULUS10567.exe: renderer,
+# audio, input, saves - none of the game's code), the launcher, the libraries they need, and the
+# kit (compiler, Python, translation tools) with which the launcher builds game.dll from the
+# player's own disc image on first start ("Prepare game"). game.dll, image.bin and launch.cfg
+# are made on the player's PC and are never part of the package.
 param([string]$Game = 'ULUS10567', [switch]$NoZip)
 
+$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $src = Join-Path $root "build\$Game"
-foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll') {
-    if (-not (Test-Path (Join-Path $src $f))) { Write-Error "missing $src\$f - build first (scripts\build.ps1)"; exit 1 }
+$version = (Get-Content -Raw (Join-Path $root 'VERSION')).Trim()
+$files = "$Game.exe", 'The 3rd Birthday.exe', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll'
+foreach ($f in $files) {
+    if (-not (Test-Path (Join-Path $src $f))) { Write-Error "missing $src\$f - build first (scripts\build.ps1)" }
 }
-$name = "The3rdBirthday-" + (Get-Date -Format 'yyyy-MM-dd')
+$name = "The3rdBirthday-$version"
 $dst = Join-Path $root "dist\$name"
 if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
 New-Item -ItemType Directory -Force $dst | Out-Null
-foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll', 'The 3rd Birthday.exe') {
-    Copy-Item (Join-Path $src $f) $dst
-}
+foreach ($f in $files) { Copy-Item (Join-Path $src $f) $dst }
 Copy-Item -Recurse (Join-Path $src 'font') $dst
-if (Test-Path (Join-Path $src 'unlocks')) { Copy-Item -Recurse (Join-Path $src 'unlocks') $dst }
 New-Item -ItemType Directory -Force (Join-Path $dst 'assets') | Out-Null
 Copy-Item -Recurse (Join-Path $root 'runtime\assets\vfpu') (Join-Path $dst 'assets')
-# launch.cfg: no machine-specific iso= path in a package
-(Get-Content (Join-Path $dst 'launch.cfg')) | Where-Object { $_ -notmatch '^iso=' } |
-    Set-Content -Encoding ascii (Join-Path $dst 'launch.cfg')
+Copy-Item -Recurse (Join-Path $root 'unlocks') $dst
+New-Item -ItemType Directory -Force (Join-Path $dst 'mods') | Out-Null
+Copy-Item (Join-Path $root 'mods\README.md') (Join-Path $dst 'mods')
+Copy-Item -Recurse (Join-Path $root 'mods\example_wider_fov') (Join-Path $dst 'mods')
+Copy-Item (Join-Path $root 'docs\CHANGELOG.md') $dst
+
+# the kit, built with MSYS2's tools into the package
+$env:MSYSTEM = 'UCRT64'; $env:CHERE_INVOKING = '1'
+Push-Location $root
+try { & K:\msys64\usr\bin\bash.exe -lc "bash scripts/make_kit.sh 'dist/$name/kit'" | Select-Object -Last 1 } finally { Pop-Location }
+if (-not (Test-Path (Join-Path $dst 'kit\tools\prepare.py'))) { Write-Error 'kit was not built' }
+
+# no game code may slip in
+foreach ($f in 'image.bin', 'game.dll', 'launch.cfg', 'init.trace') {
+    if (Test-Path (Join-Path $dst $f)) { Write-Error "$f must not be in the package" }
+}
 @"
-The 3rd Birthday - PC port (static recompilation), built $(Get-Date -Format 'yyyy-MM-dd')
+The 3rd Birthday - PC port v$version
 
-1. Put your own disc image of The 3rd Birthday (USA, ULUS10567) next to $Game.exe
-   (any name ending in .iso), or write its path into launch.cfg as:  iso=D:\Games\3rd.iso
-2. Double-click "The 3rd Birthday.exe" (the launcher: settings, saves, mods, updates, Play)
-   or $Game.exe to start the game directly.
+You need your own disc image of The 3rd Birthday (USA, ULUS10567), as an .iso file.
+Nothing from the game is included here.
 
-Esc opens the settings menu (controls, camera, resolution, 60 fps, aspect ratio, fullscreen).
-Saves go to memstick\PSP\SAVEDATA, settings to *.cfg, screenshots (F12) to screenshots\ -
-all inside this folder. Logs: run.err.
-Needs a Vulkan graphics driver (any GPU from the last ~8 years).
+1. Extract this folder somewhere permanent (for example C:\Games\The3rdBirthday).
+2. Start "The 3rd Birthday.exe" (the launcher).
+3. Choose your .iso if it was not found (it is looked for in this folder and up to three
+   folders above).
+4. Press "Prepare game": the game is built once from your disc, on your PC (about 3-10
+   minutes; nothing is downloaded). Then press Play.
 
-This folder contains code derived from the game. It is for your own use with your own copy
-of the game; do not share it.
+Esc in the game opens the settings (controls, camera, resolution, 60 fps, aspect ratio...).
+Saves: memstick\PSP\SAVEDATA (backups in memstick\BACKUP). Settings: *.cfg. Logs: run.err.
+Mods: mods\README.md. Changes: CHANGELOG.md.
+Needs Windows 10/11 64-bit and a GPU with Vulkan.
+
+Licenses: this project GPL-2.0-or-later; the kit's compiler, Python and decrypter keep their
+own licenses (kit\licenses).
 "@ | Set-Content -Encoding utf8 (Join-Path $dst 'README.txt')
+
 if (-not $NoZip) {
     $zip = "$dst.zip"
     if (Test-Path $zip) { Remove-Item $zip }
-    Compress-Archive -Path $dst -DestinationPath $zip
-    "package: $zip"
+    Compress-Archive -Path $dst -DestinationPath $zip -CompressionLevel Optimal
+    "package: $zip  ($([math]::Round((Get-Item $zip).Length / 1MB)) MB)"
 }
 "folder:  $dst"

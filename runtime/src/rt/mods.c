@@ -84,6 +84,7 @@ void sr_mods_vblank(void) {
     s_once_done = 1;
 }
 
-/* Code mods: scripts/build.sh compiles mods/<name>/*.c and a generated sr_mods_hook that calls
- * each mod's hook; this weak default is used when there are none. */
-__attribute__((weak)) int sr_mods_hook(CpuState *s, uint32_t addr) { (void)s; (void)addr; return 0; }
+/* Code mods are compiled into game.dll (with the game code, see tools/prepare.py); driver.c
+ * sets this to the DLL's sr_game_mods_hook. */
+int (*g_game_mods_hook)(CpuState *, uint32_t) = NULL;
+int sr_mods_hook(CpuState *s, uint32_t addr) { return g_game_mods_hook ? g_game_mods_hook(s, addr) : 0; }

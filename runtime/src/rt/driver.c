@@ -21,7 +21,40 @@
 #include <string.h>
 #include <windows.h>
 
-void sr_register_all(void);
+/* The recompiled game code lives in game.dll, built on the player's PC from their own disc
+ * (tools/prepare.py); load it and give it the runtime's table (recomp.h SrApi). */
+extern int sr_sched_on; extern int32_t sr_timeslice;
+uint32_t sr_lwl(uint32_t, uint32_t); uint32_t sr_lwr(uint32_t, uint32_t);
+void sr_swl(uint32_t, uint32_t); void sr_swr(uint32_t, uint32_t);
+static int load_game(void) {
+    const char *name = getenv("SR_GAME_DLL");
+    HMODULE m = LoadLibraryA(name && *name ? name : "game.dll");
+    if (!m) {
+        MessageBoxA(NULL, "The game is not prepared yet.\n\nStart \"The 3rd Birthday.exe\" (the launcher) and choose your "
+                    "disc image: it builds the game from it once.", "The 3rd Birthday", MB_ICONINFORMATION);
+        return 0;
+    }
+    int (*attach)(const struct SrApi *, int) = (int (*)(const struct SrApi *, int))(void *)GetProcAddress(m, "sr_game_attach");
+    void (*reg)(void) = (void (*)(void))(void *)GetProcAddress(m, "sr_game_register_all");
+    extern int (*g_game_mods_hook)(CpuState *, uint32_t);
+    g_game_mods_hook = (int (*)(CpuState *, uint32_t))(void *)GetProcAddress(m, "sr_game_mods_hook");
+    static struct SrApi api;
+    api.mem = &g_mem; api.dbg = &g_sr_dbg; api.sched_on = &sr_sched_on; api.timeslice = &sr_timeslice;
+    api.oor = sr_oor; api.lwl = sr_lwl; api.lwr = sr_lwr; api.swl = sr_swl; api.swr = sr_swr;
+    api.vread = sr_vread; api.vwrite = sr_vwrite;
+    api.vfpu_rcp = sr_vfpu_rcp; api.vfpu_rsqrt = sr_vfpu_rsqrt; api.vfpu_sqrt = sr_vfpu_sqrt;
+    api.vfpu_sin = sr_vfpu_sin; api.vfpu_cos = sr_vfpu_cos; api.vfpu_exp2 = sr_vfpu_exp2; api.vfpu_ext = sr_vfpu_ext;
+    api.reg = sr_register; api.dispatch = dispatch; api.begin_dbg = sr_begin_dbg; api.end_dbg = sr_end_dbg;
+    api.func_hook = sr_func_hook; api.syscall = sr_syscall; api.yield = sr_yield;
+    api.unimplemented = sr_unimplemented; api.toast = gui_toast;
+    if (!attach || !reg || !attach(&api, SR_API_VERSION)) {
+        MessageBoxA(NULL, "game.dll is from another version of the port.\n\nStart \"The 3rd Birthday.exe\" (the launcher): "
+                    "it prepares the game again.", "The 3rd Birthday", MB_ICONWARNING);
+        return 0;
+    }
+    reg();
+    return 1;
+}
 
 /* Last-resort crash reporter: a silent host fault (access violation etc.) otherwise kills
  * the process with nothing in the log. Maps a faulting address inside the guest arena back
@@ -210,7 +243,7 @@ have_image:;
     seed_from_init(ref_trace, &s);
     s.pc = entry;
 
-    sr_register_all();
+    if (!load_game()) return 2;
     /* "none" as the out path disables tracing -- much faster for HLE bring-up, where the goal
      * is to reach the next unimplemented import rather than diff a trace. */
     if (strcmp(out, "none") != 0 && sr_trace_open(out, "cgtest", entry) != 0) {

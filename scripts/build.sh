@@ -44,11 +44,12 @@ fi
 
 # 2. Compile the generated chunks in parallel (the single file needs >16 GB RAM).
 CFLAGS=(-O1 -foptimize-sibling-calls -I"$RT/src/rt" -I"$GEN" -DSR_SDL3VK -w)
+GAMEFLAGS=("${CFLAGS[@]}" -DSR_GAME_DLL)   # game.dll: the runtime is reached through SrApi
 export OUT
 export RTH="$RT/src/rt/recomp.h"
 ls "$GEN"/recomp_*.c | xargs -P "$JOBS" -I{} bash -c '
   c="$1"; o="${c%.c}.o"; shift
-  [ "$o" -nt "$c" ] && [ "$o" -nt "$RTH" ] || gcc "$@" -c "$c" -o "$o"' _ {} "${CFLAGS[@]}"
+  [ "$o" -nt "$c" ] && [ "$o" -nt "$RTH" ] || gcc "$@" -c "$c" -o "$o"' _ {} "${GAMEFLAGS[@]}"
 
 # 3. Runtime + link.
 { [ "$OUT/ge.o" -nt "$RT/src/rt/ge.c" ] && [ "$OUT/ge.o" -nt "$RT/src/rt/recomp.h" ]; } 2>/dev/null || \
@@ -90,17 +91,24 @@ mkdir -p "$OUT/mods_obj"
 while read -r id src; do
   [ -n "$id" ] || continue
   o="$OUT/mods_obj/${id}_$(basename "$src" .c).o"
-  gcc -O2 -g -I"$RT/src/rt" -I"$OUT" -include "$OUT/mods_hooks.h" -Dmod_hook="mod_${id}_hook" -c "$src" -o "$o"
+  gcc -O2 -g -DSR_GAME_DLL -I"$RT/src/rt" -I"$OUT" -include "$OUT/mods_hooks.h" -Dmod_hook="mod_${id}_hook" -c "$src" -o "$o"
   MOD_OBJS+=("$o")
 done < "$OUT/mods_srcs.txt"
 # The runtime (GE backend, HLE, scheduler) at -O2; the later flag overrides CFLAGS' -O1, which
 # is only there for the huge generated chunks.
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"   # release version (window title, update check)
-gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -DSR_VERSION="\"$VERSION\"" -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
-  "${RT_SRCS[@]/#/$RT/src/rt/}" "${MOD_OBJS[@]}" \
+gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -DSR_VERSION="\"$VERSION\"" -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$OUT/ge.o" "$OUT"/at3/*.o \
+  "${RT_SRCS[@]/#/$RT/src/rt/}" \
   -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -lws2_32 -lwinhttp -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 
+# game.dll: the generated code, game_glue.c and code mods. The runtime exe above holds no game
+# code and loads it at start (driver.c load_game); on a player's PC tools/prepare.py builds it.
+gcc -O2 -DSR_GAME_DLL -I"$RT/src/rt" -c "$RT/src/rt/game_glue.c" -o "$OUT/game_glue.o"
+gcc -O2 -DSR_GAME_DLL -I"$RT/src/rt" -c "$OUT/mods_gen.c" -o "$OUT/mods_gen.o"
+MOD_OBJS[0]="$OUT/mods_gen.o"
+gcc -shared -s -o "$OUT/${GAME_DLL:-game.dll}" "$GEN"/*.o "$OUT/game_glue.o" "${MOD_OBJS[@]}" -static-libgcc \
+  || echo "note: game.dll not rebuilt (in use?)"
 cp /ucrt64/bin/SDL3.dll "$OUT/" 2>/dev/null || echo "note: SDL3.dll in use (game running), kept the existing copy"
 # SDL3's own dependency and the Vulkan loader next to the exe: a double-click start (no MSYS2 on
 # PATH) found neither and fell back to the slow GDI path.
@@ -119,6 +127,6 @@ fi
 LSRC="$RT/src/launcher"
 (cd "$LSRC" && windres launcher.rc -O coff -o "$OUT/launcher_res.o")
 gcc -O2 -mwindows -DSR_VERSION="\"$VERSION\"" -o "$OUT/The 3rd Birthday.exe" "$LSRC/launcher.c" "$OUT/launcher_res.o" \
-  -lwinhttp -lcomdlg32 -lshell32 -lole32 -luuid -static-libgcc \
+  -lwinhttp -lcomdlg32 -lcomctl32 -lshell32 -lole32 -luuid -static-libgcc \
   || echo "note: launcher not rebuilt (in use?)"
 echo "built $OUT/${EXE_NAME:-$GAME}.exe"
