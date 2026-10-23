@@ -385,40 +385,46 @@ static int create_swapchain(void) {
  * and re-rendered only when the message or the size changes. */
 #define TOAST_MAX_W 1400
 #define TOAST_MAX_H 160
-static char     s_toast_msg[96];
-static Uint64   s_toast_until = 0;            /* SDL_GetTicks() deadline */
-static char     s_toast_drawn[96];
-static int      s_toast_w = 0, s_toast_h = 0, s_toast_px = 0;
-static VkBuffer s_toast_buf; static VkDeviceMemory s_toast_mem; static void *s_toast_map;
+/* A text label drawn with GDI into a host-visible buffer, copied onto the swapchain image. */
+typedef struct {
+    char msg[96], drawn[96];
+    int w, h, px;
+    uint32_t panel;                          /* background colour (BGRX), 0 = none (dark) */
+    VkBuffer buf; VkDeviceMemory mem; void *map;
+} Label;
+static Label  s_toast, s_fps;
+static Uint64 s_toast_until = 0;             /* SDL_GetTicks() deadline */
+static int    s_show_fps = -1;               /* graphics.cfg show_fps (Esc menu) */
+static Uint64 s_fps_t0 = 0; static int s_fps_shown = 0, s_fps_game = 0, s_fps_v = 0, s_fps_gv = 0;
 
 void sdl3vk_toast(const char *msg, int ms) {
-    SDL_strlcpy(s_toast_msg, msg ? msg : "", sizeof(s_toast_msg));
+    SDL_strlcpy(s_toast.msg, msg ? msg : "", sizeof(s_toast.msg));
     s_toast_until = SDL_GetTicks() + (Uint64)(ms > 0 ? ms : 2500);
 }
 
-/* Render the toast bitmap for a font of `px` pixels. Returns 0 if unavailable. */
-static int toast_render(int px) {
-    if (!strcmp(s_toast_drawn, s_toast_msg) && s_toast_px == px && s_toast_w) return 1;
-    if (!s_toast_buf) {
+/* Render a label's bitmap for a font of `px` pixels. Returns 0 if unavailable. */
+static int label_render(Label *L, int px, int accent) {
+    if (!strcmp(L->drawn, L->msg) && L->px == px && L->w) return 1;
+    if (!L->buf) {
         VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.size = (VkDeviceSize)TOAST_MAX_W * TOAST_MAX_H * 4;
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        if (vkCreateBuffer(s_dev, &bci, NULL, &s_toast_buf) != VK_SUCCESS) return 0;
-        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, s_toast_buf, &mr);
+        if (vkCreateBuffer(s_dev, &bci, NULL, &L->buf) != VK_SUCCESS) return 0;
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, L->buf, &mr);
         VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
         mai.allocationSize = mr.size;
         mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(s_dev, &mai, NULL, &s_toast_mem) != VK_SUCCESS) return 0;
-        vkBindBufferMemory(s_dev, s_toast_buf, s_toast_mem, 0);
-        vkMapMemory(s_dev, s_toast_mem, 0, VK_WHOLE_SIZE, 0, &s_toast_map);
+        if (vkAllocateMemory(s_dev, &mai, NULL, &L->mem) != VK_SUCCESS) return 0;
+        vkBindBufferMemory(s_dev, L->buf, L->mem, 0);
+        vkMapMemory(s_dev, L->mem, 0, VK_WHOLE_SIZE, 0, &L->map);
     }
     HDC dc = CreateCompatibleDC(NULL);
     HFONT font = CreateFontA(-px, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
     HGDIOBJ oldf = SelectObject(dc, font);
-    SIZE ts; GetTextExtentPoint32A(dc, s_toast_msg, (int)strlen(s_toast_msg), &ts);
-    int pad = px * 2 / 3, bar = px / 5 > 2 ? px / 5 : 2;
+    SIZE ts; GetTextExtentPoint32A(dc, L->msg, (int)strlen(L->msg), &ts);
+    int pad = px * 2 / 3, bar = accent ? (px / 5 > 2 ? px / 5 : 2) : 0;
     int w = ts.cx + pad * 2 + bar, h = ts.cy + pad;
     if (w > TOAST_MAX_W) w = TOAST_MAX_W;
     if (h > TOAST_MAX_H) h = TOAST_MAX_H;
@@ -436,9 +442,9 @@ static int toast_render(int px) {
         for (int y = 0; y < h; y++) for (int x = 0; x < bar; x++) p[y * w + x] = 0x00E08A2Eu;  /* orange edge */
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(240, 240, 240));
-        TextOutA(dc, bar + pad, pad / 2, s_toast_msg, (int)strlen(s_toast_msg));
+        TextOutA(dc, bar + pad, pad / 2, L->msg, (int)strlen(L->msg));
         GdiFlush();
-        uint32_t *dst = (uint32_t *)s_toast_map;
+        uint32_t *dst = (uint32_t *)L->map;
         for (int i = 0; i < w * h; i++) dst[i] = p[i] | 0xFF000000u;   /* BGRA, opaque */
         SelectObject(dc, oldb);
         DeleteObject(bm);
@@ -447,35 +453,66 @@ static int toast_render(int px) {
     DeleteObject(font);
     DeleteDC(dc);
     if (!ok) return 0;
-    s_toast_w = w; s_toast_h = h; s_toast_px = px;
-    SDL_strlcpy(s_toast_drawn, s_toast_msg, sizeof(s_toast_drawn));
+    L->w = w; L->h = h; L->px = px;
+    SDL_strlcpy(L->drawn, L->msg, sizeof(L->drawn));
     return 1;
 }
 
-/* Record the toast copy onto a swapchain image in TRANSFER_DST layout. */
-static void toast_record(VkImage dst) {
-    if (!s_toast_msg[0] || SDL_GetTicks() >= s_toast_until) return;
-    int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
-    int px = dh / 28; if (px < 14) px = 14; if (px > 64) px = 64;
-    if (!toast_render(px)) return;
-    int margin = px;
-    if (s_toast_w + margin > dw || s_toast_h + margin > dh) return;
+static void label_copy(const Label *L, VkImage dst, int x, int y) {
     VkBufferImageCopy c = {0};
     c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     c.imageSubresource.layerCount = 1;
-    c.bufferRowLength = (uint32_t)s_toast_w;
-    c.imageOffset.x = dw - s_toast_w - margin;
-    c.imageOffset.y = dh - s_toast_h - margin;
-    c.imageExtent.width = (uint32_t)s_toast_w; c.imageExtent.height = (uint32_t)s_toast_h; c.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(s_cmd, s_toast_buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    c.bufferRowLength = (uint32_t)L->w;
+    c.imageOffset.x = x; c.imageOffset.y = y;
+    c.imageExtent.width = (uint32_t)L->w; c.imageExtent.height = (uint32_t)L->h; c.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, L->buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+}
+
+/* FPS counter: frames shown per second and game frames per second (sceDisplaySetFrameBuf). */
+void sdl3vk_fps_game_frame(void) { s_fps_game++; }
+int  sdl3vk_show_fps(void) {
+    if (s_show_fps < 0) { const char *e = getenv("SR_SHOWFPS"); s_show_fps = e ? atoi(e) : sdl3vk_cfg_get("show_fps", 0); }
+    return s_show_fps;
+}
+void sdl3vk_set_show_fps(int on) { s_show_fps = on; sdl3vk_cfg_set("show_fps", on); }
+static int s_glow = -1;
+int  sdl3vk_glow(void) {
+    if (s_glow < 0) { const char *e = getenv("SR_GLOW"); s_glow = e ? atoi(e) : sdl3vk_cfg_get("glow", 1); }
+    return s_glow;
+}
+void sdl3vk_set_glow(int on) { s_glow = on; sdl3vk_cfg_set("glow", on); }
+
+/* Record the toast and the FPS counter onto a swapchain image in TRANSFER_DST layout. */
+static void toast_record(VkImage dst) {
+    int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
+    const Uint64 now = SDL_GetTicks();
+    s_fps_shown++;
+    if (!s_fps_t0) s_fps_t0 = now;
+    if (now - s_fps_t0 >= 1000) {
+        s_fps_v = (int)((s_fps_shown * 1000 + 500) / (now - s_fps_t0));
+        s_fps_gv = (int)((s_fps_game * 1000 + 500) / (now - s_fps_t0));
+        s_fps_shown = s_fps_game = 0; s_fps_t0 = now;
+    }
+    if (sdl3vk_show_fps() && s_fps_v) {
+        snprintf(s_fps.msg, sizeof(s_fps.msg), "%d FPS   (game %d)", s_fps_v, s_fps_gv);
+        int px = dh / 40; if (px < 12) px = 12; if (px > 40) px = 40;
+        if (label_render(&s_fps, px, 0) && s_fps.w + px < dw && s_fps.h + px < dh)
+            label_copy(&s_fps, dst, px / 2, px / 2);
+    }
+    if (!s_toast.msg[0] || now >= s_toast_until) return;
+    int px = dh / 28; if (px < 14) px = 14; if (px > 64) px = 64;
+    if (!label_render(&s_toast, px, 1)) return;
+    int margin = px;
+    if (s_toast.w + margin > dw || s_toast.h + margin > dh) return;
+    label_copy(&s_toast, dst, dw - s_toast.w - margin, dh - s_toast.h - margin);
 }
 
 /* ---- settings menu panel ----------------------------------------------------------------
  * Same technique as the toast: GDI text into a bitmap, copied onto the swapchain image after
  * the frame blit, centred. Line 0 is the title; the selected line gets an orange marker. */
-#define MENU_MAX_LINES 16
+#define MENU_MAX_LINES 20
 #define MENU_MAX_W 1600
-#define MENU_MAX_H 1100
+#define MENU_MAX_H 1400
 static char     s_menu_lines[MENU_MAX_LINES][96];
 static int      s_menu_n = 0, s_menu_sel = 0, s_menu_dirty = 1;
 static int      s_menu_w = 0, s_menu_h = 0, s_menu_px = 0;

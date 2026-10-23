@@ -797,6 +797,7 @@ typedef GeVtx Vtx;
  * keep their shape in the middle. Flat draws that cover the whole screen (backgrounds, post
  * effects) or the whole width without a texture (fades, cinema bars) are left to stretch. */
 float g_ge_ws = 1.0f;
+uint32_t g_ge_skip_glow = 0;   /* glow buffer address while the glow effect is turned off */
 static uint32_t prim_vtx_addr(uint32_t vbase, uint32_t ibase, int idxfmt, int i, int stride);
 typedef struct CVtx CVtx;
 static void ws_clip_x(uint32_t addr, const VFmt *vf, float *x, float *y);
@@ -1950,6 +1951,10 @@ static void draw_prim(uint32_t op) {
     if (idxfmt) ge.iaddr += (uint32_t)(count << (idxfmt - 1));
     else        ge.vaddr += (uint32_t)(count * vf.stride);
     if (s_draw_ws_skip) return;
+    /* Esc menu "Glow effect: Off": skip the full-screen sprite that adds the glow buffer over
+     * the frame (gui.c sets the buffer's address, ADDR_GLOW_BUFFER) */
+    if (g_ge_skip_glow && vf.through && ge.tex_enable && ge.tex_addr == g_ge_skip_glow &&
+        (ge.fbp & 0xFFFFFF) < 0x110000) return;
 
     /* ---- THROUGH-MODE (2D, screen coords) ---- */
     if (vf.through) {

@@ -35,6 +35,9 @@ index   = "/PSP_GAME/USRDIR/3rd.fsd"   # 7932 bytes, presumably the pkg index
 
 [addresses]
 # Emitted as ADDR_<NAME> into build/<game>/game_addrs.h by tools/toml_addrs.py.
+# VRAM buffer of the glow (bloom) post effect: the frame is downsampled into it (4444, 128x64),
+# blurred, and drawn back over the screen as a full-screen sprite (Esc menu "Glow effect").
+glow_buffer = 0x04154000
 # Global pointer to the gameplay camera (an orbit camera). Found 2026-09-27 by diffing RAM
 # around scripted input (tools/ram_camdiff.py); stable across runs, the struct is on the heap.
 camera_ptr        = 0x08C3C664

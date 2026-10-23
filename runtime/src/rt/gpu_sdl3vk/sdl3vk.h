@@ -52,6 +52,11 @@ void sdl3vk_menu_show(const char *const *lines, int n, int sel);
 int sdl3vk_png_save(const char *path, const unsigned int *rgba, int w, int h);
 unsigned int *sdl3vk_png_load(const char *path, int *w, int *h);
 float sdl3vk_widescreen_factor(void);
+void sdl3vk_fps_game_frame(void);                  /* FPS counter: one game frame finished */
+int  sdl3vk_show_fps(void);
+int  sdl3vk_glow(void);                            /* the game's glow post effect on (default) */
+void sdl3vk_set_glow(int on);
+void sdl3vk_set_show_fps(int on);
 void sdl3vk_mouse_look(float *yaw, float *pitch);   /* mouse camera motion since the last call (radians) */   /* 1 = original 480:272, >1 = window is that much wider */
 void sdl3vk_set_widescreen(int on);
 int  sdl3vk_bind_count(void);

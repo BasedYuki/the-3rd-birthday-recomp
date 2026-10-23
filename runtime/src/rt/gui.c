@@ -9,6 +9,7 @@
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
+#include "game_addrs.h"
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/sdl3vk.h"
 #include "gpu_sdl3vk/ge_gpu.h"
@@ -415,7 +416,7 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -442,6 +443,8 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_WIDE], 96, "Aspect ratio:  %s", sdl3vk_cfg_get("widescreen", 0) ? "Fill the window (wider view)" : "Original");
         snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
         snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 0) ? "On" : "Off");
+        snprintf(buf[M_GLOW], 96, "Glow effect (bloom):  %s", sdl3vk_glow() ? "On (original)" : "Off");
+        snprintf(buf[M_SHOWFPS], 96, "Show FPS counter:  %s", sdl3vk_show_fps() ? "On" : "Off");
         snprintf(buf[M_UPDATE], 96, "Check for updates at start:  %s", sdl3vk_cfg_get("update_check", 1) ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
         snprintf(buf[M_SHOT], 96, "Save screenshot  (F12)");
@@ -478,6 +481,8 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 sdl3vk_set_render_scale_cfg(v);
                 break;
             }
+            case M_GLOW: sdl3vk_set_glow(!sdl3vk_glow()); break;
+            case M_SHOWFPS: sdl3vk_set_show_fps(!sdl3vk_show_fps()); break;
             case M_UPDATE: sdl3vk_cfg_set("update_check", !sdl3vk_cfg_get("update_check", 1)); break;
             case M_WIDE: sdl3vk_set_widescreen(!sdl3vk_cfg_get("widescreen", 0)); break;
             case M_INTRO: sdl3vk_cfg_set("skip_intro", !sdl3vk_cfg_get("skip_intro", 0)); break;
@@ -575,6 +580,8 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 
 #ifdef SR_SDL3VK
     { extern float g_ge_ws; if (s_sdl3) g_ge_ws = sdl3vk_widescreen_factor(); }   /* next frame's squeeze */
+    if (s_sdl3) sdl3vk_fps_game_frame();
+    { extern uint32_t g_ge_skip_glow; g_ge_skip_glow = (s_sdl3 && !sdl3vk_glow()) ? ADDR_GLOW_BUFFER : 0; }
     if (s_sdl3) {
         /* GPU-resident framebuffer: blit straight from the GE's target image. Falls back
          * to the guest-VRAM convert for CPU-written frames (movies) or pure software GE.
