@@ -53,6 +53,9 @@ Nothing from the game is included here.
 4. Press "Prepare game": the game is built once from your disc, on your PC (about 3-10
    minutes; nothing is downloaded). Then press Play.
 
+The launcher also has the settings, your saves (backup, restore, Unlock all extras) and the
+mods. Its background art is read from your disc image.
+
 Esc in the game opens the settings (controls, camera, resolution, 60 fps, aspect ratio...).
 Saves: memstick\PSP\SAVEDATA (backups in memstick\BACKUP). Settings: *.cfg. Logs: run.err.
 Mods: mods\README.md. Changes: CHANGELOG.md.

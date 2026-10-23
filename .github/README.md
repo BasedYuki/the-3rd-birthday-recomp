@@ -4,11 +4,14 @@ A native Windows build of **The 3rd Birthday** (PSP, US release ULUS10567), made
 statically recompiling the game's MIPS code to C and running it on a native runtime
 with a Vulkan renderer. It is not an emulator: the game logic runs as compiled PC code.
 
-**Work in progress.** The game is playable from the start through the first missions,
-with movies, voice, music and saving. Expect bugs.
+![The launcher](../docs/screenshots/launcher.png)
+
+**Work in progress.** All 111 scenes of the game load and run at full speed, with movies,
+voice, music and saving, but few people have played it through yet. Expect bugs, and please
+report them.
 
 You need your own copy of the game (a PSP disc image you dumped yourself). No game data
-is included in this repository.
+is included in this repository or in the releases.
 
 ## Playing it
 
@@ -21,6 +24,30 @@ is included in this repository.
 
 The download contains no game code or data: only the PC runtime, the launcher and a kit
 (compiler, Python, translation tools) with which your PC turns your disc into the game.
+
+## The launcher
+
+`The 3rd Birthday.exe` is where you start the game and change its settings without opening
+any files:
+
+- **Disc image**: finds your `.iso` next to it or lets you choose one, and checks it is the
+  right game
+- **Prepare game / Play**: builds the game from your disc the first time (with a progress
+  bar), then starts it. After an update it tells you when the game needs preparing again.
+- **Graphics**: internal resolution, 60 fps, widescreen, glow, FPS counter, skip the intro,
+  check for updates at start
+- **Controls**: mouse camera, mouse sensitivity and invert, smooth WASD turning (keys and
+  buttons are remapped in the game: Esc > Controls)
+- **Saves**: your saves with their episode and play time; open the folder, back up all,
+  restore a backup. **Unlock all extras** unlocks every costume, the extra DNA boards and
+  the Cheat Codes; your progress is kept.
+- **Mods**: texture packs on/off, texture dump, memory patches on/off
+- **Updates**: says whether you have the newest version, with a link to the Releases page
+
+The background is the game's own PSP cover art (Aya on red, as on the PSP's home screen),
+read from **your** disc image when the launcher starts; it is not included in the download.
+The blood drips and splatters are drawn by the launcher, and the window icon is the disc's
+icon. Until a disc image is chosen, the background is dark red with the blood only.
 
 ## Screenshots
 
@@ -43,8 +70,8 @@ The download contains no game code or data: only the PC runtime, the launcher an
 - **Remappable controls** (settings menu, "Controls"): two keys and a controller button per action
 - **Mouse camera**: click the game window and the mouse turns the camera (left button fires, right
   aims; Esc releases the mouse); smooth WASD turning
-- **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore, mods,
-  update status, Play
+- **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore,
+  unlock all extras, mods, update status, Play (see [The launcher](#the-launcher))
 - **Update notice**: the game and the launcher tell you when a newer release is out
 - **Safe saves**: every save is written safely and the previous one is kept in `memstick/BACKUP/`
 - FPS counter and a glow (bloom) on/off switch in the settings menu
@@ -74,8 +101,8 @@ The download contains no game code or data: only the PC runtime, the launcher an
 
 ## Settings
 
-Most options are in the in-game settings menu (Esc). They are stored in plain text files
-next to the executable (created on first run):
+Most options are in the launcher and in the in-game settings menu (Esc). They are stored in
+plain text files next to the executable (created on first run):
 
 - `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps), `skip_intro` (1 = skip logos and opening movie; default 0), `widescreen` (1 = fill the window), `texture_dump` (1 = write the game's textures to `textures/dump/` for texture packs)
 - `controls.cfg` — key and controller bindings (edited by the Controls page)
