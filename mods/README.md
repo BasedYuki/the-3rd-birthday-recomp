@@ -63,8 +63,8 @@ the same function; they run in folder-name order, and the first one returning 1 
 
 Finding functions: `tools/disasm.py` disassembles the game, `tools/callers_of.py` lists
 callers, and the debug switches in `PLAN.md` (`SR_PCPROBE`, `SR_WATCH`, ...) show what the
-game does at run time. `example_wider_fov/` is a working example (disabled; set
-`enabled = true` and rebuild).
+game does at run time. `example_wider_fov/` is a working example of the mechanism (disabled;
+set `enabled = true` and rebuild, then look for its line in run.err).
 
-Adding or changing hooks regenerates the recompiled code (a full rebuild, a few minutes);
-changing only a mod's C code just relinks.
+A new hook address regenerates the recompiled code (a full rebuild, a few minutes); a mod
+that only hooks functions already hooked, or a change to a mod's C code, just relinks.

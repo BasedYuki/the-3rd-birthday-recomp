@@ -24,8 +24,14 @@ is included in this repository.
 - Saving and loading (a virtual memory stick; a "Game saved" notice after each save)
 - Vulkan renderer at higher internal resolution (4x the PSP's on a 1080p screen)
 - **60 fps**: the game runs at 30 fps; an in-between frame is generated on the GPU for every
-  game frame (camera and object motion are blended; limb animation stays at 30). It can be
-  switched back to 30 in the settings menu.
+  game frame (camera, objects and limb animation are blended). It can be switched back to 30
+  in the settings menu.
+- **Widescreen / ultrawide** (settings menu, "Aspect ratio"): the game renders a wider view to
+  fill the window; the HUD keeps its shape in the middle
+- **Remappable controls** (settings menu, "Controls"): two keys and a controller button per action
+- **Mods**: HD texture packs, memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
+- Data Install (Extra menu) works, and **Use Install Data** reads from it like on a PSP
+- Saves from a real PSP or PPSSPP can be imported (`tools/save_import.py`); the port's saves load in PPSSPP
 - Xbox, PlayStation and other controllers through SDL3, plus keyboard
 - **Twin-stick camera**: the right stick orbits the camera around Aya. Aiming follows
   the camera, and the game's own cameras take over for aiming, Overdive and Liberation.
@@ -51,7 +57,8 @@ is included in this repository.
 Most options are in the in-game settings menu (Esc). They are stored in plain text files
 next to the executable (created on first run):
 
-- `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps), `skip_intro` (1 = skip logos and opening movie; default 0)
+- `graphics.cfg` — `render_scale` (0 = match the display, or 1 to 8), `frame_interpolation` (1 = 60 fps), `skip_intro` (1 = skip logos and opening movie; default 0), `widescreen` (1 = fill the window), `texture_dump` (1 = write the game's textures to `textures/dump/` for texture packs)
+- `controls.cfg` — key and controller bindings (edited by the Controls page)
 - `twinstick.cfg` — `sensitivity`, `invert_x`, `invert_y`, `recenter`,
   `recenter_delay`, `recenter_delay_still`
 
@@ -60,7 +67,10 @@ next to the executable (created on first run):
 The toolchain is MSYS2 UCRT64 (GCC, SDL3, Vulkan headers, glslc). See
 [`runtime/README.md`](../runtime/README.md) for the recompiler and runtime, and
 [`PLAN.md`](../PLAN.md) for the design decisions and a dated log of the work.
-`scripts/build.sh` builds the game; `scripts/run.ps1` runs it.
+`scripts/setup.ps1` sets up a fresh clone (MSYS2 packages, the decrypted EBOOT via PPSSPP) and
+builds; `scripts/build.ps1` rebuilds. Afterwards `build/ULUS10567/ULUS10567.exe` starts with a
+double-click (it finds the .iso in its folder or up to three folders above, or `iso=` in
+`launch.cfg`). `scripts/package.ps1` makes a portable folder and zip for your own use.
 
 ## Credits and license
 

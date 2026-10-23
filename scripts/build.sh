@@ -23,17 +23,23 @@ REGEN=0
 mkdir -p "$OUT" "$GEN"
 
 # 1. Relocate, map imports, discover functions, generate C.
+# Hooked function entries: the game's (versions/<game>.toml) and the enabled code mods'. The
+# code is regenerated only when this list changes (a mod hooking an already hooked function,
+# or a change to a mod's C code, just relinks).
+HOOKS="$(python "$ROOT/tools/toml_addrs.py" --hooks "$ROOT/versions/$GAME.toml"),$(python "$ROOT/tools/mods_gen.py" --hooks)"
+HOOKS="$(echo "$HOOKS" | tr ',' '\n' | grep . | sort -u | paste -sd, -)"
 if [ $REGEN = 1 ] || [ ! -f "$OUT/recomp.c" ] || [ "$ELF" -nt "$OUT/recomp.c" ] \
    || [ "$RT/tools/codegen.py" -nt "$OUT/recomp.c" ] || [ "$ROOT/versions/$GAME.toml" -nt "$OUT/recomp.c" ] \
-   || [ -n "$(find "$ROOT/mods" -name mod.toml -newer "$OUT/recomp.c" 2>/dev/null)" ]; then
+   || [ "$HOOKS" != "$(cat "$OUT/hooks.txt" 2>/dev/null)" ]; then
   python "$RT/tools/prxload.py"  "$ELF" $BASE --out="$OUT/image.bin"
   python "$RT/tools/imports.py"  "$ELF" $BASE --toml="$OUT/imports.toml" > /dev/null
   python "$RT/tools/analyze.py"  "$ELF" --base=$BASE --toml="$OUT/functions.toml" --quiet
   python "$RT/tools/codegen.py"  "$ELF" "$OUT/recomp.c" --base=$BASE --toml="$OUT/functions.toml" \
-    --hooks="$(python "$ROOT/tools/toml_addrs.py" --hooks "$ROOT/versions/$GAME.toml"),$(python "$ROOT/tools/mods_gen.py" --hooks)" \
+    --hooks="$HOOKS" \
     | grep -v '^DEBUG'
   rm -rf "$GEN"
   python "$ROOT/tools/split_recomp.py" "$OUT/recomp.c" "$GEN"
+  echo "$HOOKS" > "$OUT/hooks.txt"
 fi
 
 # 2. Compile the generated chunks in parallel (the single file needs >16 GB RAM).
@@ -95,6 +101,9 @@ gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_N
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 
 cp /ucrt64/bin/SDL3.dll "$OUT/" 2>/dev/null || echo "note: SDL3.dll in use (game running), kept the existing copy"
+# SDL3's own dependency and the Vulkan loader next to the exe: a double-click start (no MSYS2 on
+# PATH) found neither and fell back to the slow GDI path.
+for d in libiconv-2.dll vulkan-1.dll; do cp /ucrt64/bin/$d "$OUT/" 2>/dev/null || true; done
 cp -r "$RT/font" "$OUT/"
 echo "# init r28=0 r4=0 r5=0" > "$OUT/init.trace"
 # Double-click launch (driver.c launch_defaults): the image, its base and entry point; the

@@ -185,3 +185,11 @@ def fight_triangle(g):
     scene_quick(g)
     g._cmd("btn 1000 240") if g.name == "port" else g.press("triangle", 240)
     g.wait(2); g.shot("triangle_held"); g.wait(3); g.shot("released")
+
+
+def patch_check(g):
+    """Boot to the title and print what is at the memory-patch test addresses (patches/test.txt)."""
+    import struct
+    to_title_menu(g)
+    a = g.read(0x08800100, 8); b = g.read(0x088001FC, 4)
+    print("patch words:", hex(struct.unpack("<I", a[:4])[0]), struct.unpack("<f", a[4:8])[0], hex(b[3]), flush=True)

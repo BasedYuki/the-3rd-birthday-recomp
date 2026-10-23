@@ -9,14 +9,14 @@ param([string]$Game = 'ULUS10567', [switch]$NoZip)
 
 $root = Split-Path $PSScriptRoot -Parent
 $src = Join-Path $root "build\$Game"
-foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll') {
+foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll') {
     if (-not (Test-Path (Join-Path $src $f))) { Write-Error "missing $src\$f - build first (scripts\build.ps1)"; exit 1 }
 }
 $name = "The3rdBirthday-" + (Get-Date -Format 'yyyy-MM-dd')
 $dst = Join-Path $root "dist\$name"
 if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
 New-Item -ItemType Directory -Force $dst | Out-Null
-foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll') {
+foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll', 'libiconv-2.dll', 'vulkan-1.dll') {
     Copy-Item (Join-Path $src $f) $dst
 }
 Copy-Item -Recurse (Join-Path $src 'font') $dst

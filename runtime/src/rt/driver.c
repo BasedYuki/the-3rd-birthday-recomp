@@ -145,9 +145,11 @@ static int launch_defaults(int *pargc, char ***pargv) {
     }
     freopen("run.err", "w", stderr);
     freopen("run.out", "w", stdout);
+    setvbuf(stderr, NULL, _IONBF, 0);   /* the log is complete even after a crash */
     {   /* a console window that exists only for this process (double-click): close it */
         DWORD pids[2];
-        if (GetConsoleProcessList(pids, 2) == 1) FreeConsole();
+        /* hidden, not freed: FreeConsole leaves the redirected stderr writing nowhere */
+        if (GetConsoleProcessList(pids, 2) == 1) ShowWindow(GetConsoleWindow(), SW_HIDE);
     }
     args[0] = exe; args[1] = "--image"; args[2] = image; args[3] = base; args[4] = entry;
     args[5] = "init.trace"; args[6] = "none"; args[7] = "--gui"; args[8] = NULL;
