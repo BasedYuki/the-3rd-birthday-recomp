@@ -212,3 +212,19 @@ def hub_config_save(g):
         g.press("start"); g.wait(2); g.press("down"); g.wait(1); g.press("cross"); g.wait(2)
         for _ in range(8): g.press("down"); g.wait(0.4)
         g.press("cross"); g.wait(3); g.shot("after_ok"); g.press("circle"); g.wait(2); g.wait(1.5)
+
+
+def hub_mouse(g):
+    """Hub, then turn the camera with mouse motion (ctrl "mouse"), PORT_ENV="SR_TWINSTICK=1"."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(3)
+    g.press("cross"); g.wait(6)
+    for i in range(3):
+        g.press("cross"); g.wait(4)
+    g.shot("a_before")
+    for _ in range(20):
+        g._cmd("mouse 40 0"); g.wait(0.05)
+    g.wait(0.5); g.shot("b_turned_right")
+    for _ in range(10):
+        g._cmd("mouse 0 -30"); g.wait(0.05)
+    g.wait(0.5); g.shot("c_looked_up")

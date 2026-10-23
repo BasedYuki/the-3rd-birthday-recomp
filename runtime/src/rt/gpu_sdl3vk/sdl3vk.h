@@ -51,7 +51,8 @@ void sdl3vk_menu_show(const char *const *lines, int n, int sel);
 /* PNG load/save, RGBA8 with R in the low byte (texture packs). load returns malloc'd pixels. */
 int sdl3vk_png_save(const char *path, const unsigned int *rgba, int w, int h);
 unsigned int *sdl3vk_png_load(const char *path, int *w, int *h);
-float sdl3vk_widescreen_factor(void);   /* 1 = original 480:272, >1 = window is that much wider */
+float sdl3vk_widescreen_factor(void);
+void sdl3vk_mouse_look(float *yaw, float *pitch);   /* mouse camera motion since the last call (radians) */   /* 1 = original 480:272, >1 = window is that much wider */
 void sdl3vk_set_widescreen(int on);
 int  sdl3vk_bind_count(void);
 const char *sdl3vk_bind_label(int action);
@@ -60,6 +61,9 @@ void sdl3vk_bind_capture(int action, int slot);   /* the next key / pad button p
 int  sdl3vk_bind_capturing(void);
 void sdl3vk_bind_clear(int action, int slot);
 void sdl3vk_bind_reset(void);
+int  sdl3vk_input_opt_count(void);                 /* mouse / keyboard options (Controls page) */
+void sdl3vk_input_opt_text(int i, char *out, int cap);
+void sdl3vk_input_opt_change(int i, int dir);
 /* Configured render scale in graphics.cfg (0 = auto) and writing it (takes effect on restart). */
 int  sdl3vk_render_scale_cfg(void);
 void sdl3vk_set_render_scale_cfg(int v);

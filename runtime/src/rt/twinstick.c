@@ -169,6 +169,7 @@ void sr_twinstick_tick(void) {
     if (++s_ticks - s_hook_tick > 4) { s_yaw_vel = s_pitch_vel = 0.0f; return; }
     if (s_suspended) { s_yaw_vel = s_pitch_vel = 0.0f; s_idle_s = 0.0f; return; }   /* special camera */
     float rx = 0.0f, ry = 0.0f;
+    int m_mouse = 0;                       /* the mouse moved the camera this tick */
     if (gui_on()) gui_rstick(&rx, &ry);
     if (g_script_rx != 0.0f || g_script_ry != 0.0f) { rx = g_script_rx; ry = g_script_ry; }
     /* squared radial response: direction kept, magnitude m becomes m*m */
@@ -187,6 +188,19 @@ void sr_twinstick_tick(void) {
     s_pitch_vel += ( ry * PITCH_RATE * s_speed - s_pitch_vel) * k;   /* stick up = look up (eye lower) */
     if (fabsf(rx) < 1e-4f && fabsf(s_yaw_vel) < 0.01f) s_yaw_vel = 0.0f;
     if (fabsf(ry) < 1e-4f && fabsf(s_pitch_vel) < 0.01f) s_pitch_vel = 0.0f;
+    {   /* mouse camera: motion turns the camera directly (1:1, no speed curve) */
+        extern void gui_mouse_look(float *yaw, float *pitch);
+        float myaw = 0.0f, mpitch = 0.0f;
+        if (gui_on()) gui_mouse_look(&myaw, &mpitch);
+        if (s_inv_x) myaw = -myaw;
+        if (myaw != 0.0f || mpitch != 0.0f) {
+            s_yaw_off -= myaw;
+            s_pitch_off += mpitch;
+            if (s_pitch_off > ELEV_MAX - ELEV_MIN) s_pitch_off = ELEV_MAX - ELEV_MIN;
+            if (s_pitch_off < ELEV_MIN - ELEV_MAX) s_pitch_off = ELEV_MIN - ELEV_MAX;
+            s_idle_s = 0.0f; m_mouse = 1;
+        }
+    }
     if (s_yaw_vel != 0.0f) {
         s_yaw_off += s_yaw_vel * step;
         const float pi = 3.14159265f;
@@ -202,7 +216,7 @@ void sr_twinstick_tick(void) {
      * game's own follow camera (which keeps itself behind Aya) takes over again. Walking starts
      * it after recenter_delay; otherwise after recenter_delay_still, because Liberation mode
      * dashes and attacks move Aya without the left stick. R3 / O snaps back at once. */
-    if (m > 0.0f) s_idle_s = 0.0f;
+    if (m > 0.0f || m_mouse) s_idle_s = 0.0f;
     else          s_idle_s += step;
     if (gui_on() && gui_cam_reset()) {
         s_snap = 1;

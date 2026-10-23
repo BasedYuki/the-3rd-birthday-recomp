@@ -233,6 +233,12 @@ int gui_on(void) { return s_on; }
 uint32_t gui_buttons(void) { return s_buttons; }
 void gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 void gui_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
+void gui_mouse_look(float *yaw, float *pitch) {
+    *yaw = *pitch = 0.0f;
+#ifdef SR_SDL3VK
+    if (s_sdl3) sdl3vk_mouse_look(yaw, pitch);
+#endif
+}
 void gui_toast(const char *msg) {
     fprintf(stderr, "toast: %s\n", msg);
 #ifdef SR_SDL3VK
@@ -353,7 +359,8 @@ static int s_input_block = 0;
  * column, Enter / A waits for the new key or button, Delete / X(pad) clears, Esc goes back. */
 static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
     enum { VIS = 10 };
-    const int n = sdl3vk_bind_count(), rows = n + 2;      /* + "Reset to defaults", "Back" */
+    const int nb = sdl3vk_bind_count(), no = sdl3vk_input_opt_count();
+    const int n = nb + no, rows = n + 2;               /* bindings, options, "Reset to defaults", "Back" */
     int cur = 0, col = 0, top = 0;
     for (;;) {
         if (cur < top) top = cur;
@@ -366,6 +373,7 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             if (r == cur) selline = k;
             if (r == n) { snprintf(buf[k++], 96, "Reset to defaults"); continue; }
             if (r == n + 1) { snprintf(buf[k++], 96, "Back"); continue; }
+            if (r >= nb) { sdl3vk_input_opt_text(r - nb, buf[k++], 96); continue; }
             char c[3][40];
             for (int j = 0; j < 3; j++) {
                 char t[32]; sdl3vk_bind_text(r, j, t, sizeof(t));
@@ -387,14 +395,19 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             if (ev & (SDL3VK_MENU_TOGGLE | SDL3VK_MENU_BACK)) break;
             if (ev & SDL3VK_MENU_UP)    cur = cur > 0 ? cur - 1 : rows - 1;
             if (ev & SDL3VK_MENU_DOWN)  cur = cur < rows - 1 ? cur + 1 : 0;
-            if (ev & SDL3VK_MENU_LEFT)  col = col > 0 ? col - 1 : 2;
-            if (ev & SDL3VK_MENU_RIGHT) col = col < 2 ? col + 1 : 0;
-            if (ev & SDL3VK_MENU_OK) {
-                if (cur == n) sdl3vk_bind_reset();
-                else if (cur == n + 1) break;
-                else sdl3vk_bind_capture(cur, col);
+            const int opt = cur >= nb && cur < n;
+            if (opt && (ev & (SDL3VK_MENU_LEFT | SDL3VK_MENU_RIGHT | SDL3VK_MENU_OK)))
+                sdl3vk_input_opt_change(cur - nb, (ev & SDL3VK_MENU_LEFT) ? -1 : 1);
+            else {
+                if (ev & SDL3VK_MENU_LEFT)  col = col > 0 ? col - 1 : 2;
+                if (ev & SDL3VK_MENU_RIGHT) col = col < 2 ? col + 1 : 0;
+                if (ev & SDL3VK_MENU_OK) {
+                    if (cur == n) sdl3vk_bind_reset();
+                    else if (cur == n + 1) break;
+                    else sdl3vk_bind_capture(cur, col);
+                }
             }
-            if ((ev & SDL3VK_MENU_CLEAR) && cur < n) sdl3vk_bind_clear(cur, col);
+            if ((ev & SDL3VK_MENU_CLEAR) && cur < nb) sdl3vk_bind_clear(cur, col);
         }
         Sleep(15);
     }

@@ -60,6 +60,9 @@ static void handle(SOCKET c, char *line) {
         for (unsigned long i = 0; i < b; i++) n += snprintf(out + n, sizeof out - n, "%02x", MEM_R8((uint32_t)a + (uint32_t)i));
         snprintf(out + n, sizeof out - n, "\n");
         reply(c, out);
+    } else if (!strcmp(cmd, "mouse")) {   /* test: mouse camera motion "mouse <dx> <dy>" (pixels) */
+        float dx = 0, dy = 0; sscanf(line, "%*s %f %f", &dx, &dy);
+        extern void sdl3vk_mouse_test(float dx, float dy); sdl3vk_mouse_test(dx, dy); reply(c, "ok\n");
     } else if (!strcmp(cmd, "vbtn") && sscanf(line, "%*s %lu %lu", &a, &b) == 2) {   /* SR_VPAD: SDL gamepad button */
         extern void sdl3vk_vpad_button(int, int); sdl3vk_vpad_button((int)a, (int)b); reply(c, "ok\n");
     } else if (!strcmp(cmd, "vaxis") && sscanf(line, "%*s %lu %ld", &a, (long *)&b) == 2) {  /* SDL gamepad axis, -32768..32767 */

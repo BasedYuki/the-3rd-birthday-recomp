@@ -117,6 +117,19 @@ static void bind_defaults(void) {
     }
 }
 static int s_bump_too = 1;   /* bumpers also give L / R (as before remapping existed) */
+/* Mouse camera: a click into the window captures the mouse (Esc or leaving the window releases
+ * it); its movement turns the twin-stick camera, the left button is R (fire), the right L (aim).
+ * Keyboard smoothing eases WASD direction changes instead of jumping between the 8 directions. */
+static int   s_mouse_on = 1, s_mouse_btn = 1, s_mouse_inv = 0, s_kbd_smooth = 1;
+static float s_mouse_sens = 1.0f;
+static int   s_mouse_cap = 0;                   /* captured (relative mode) */
+static float s_mdx = 0.0f, s_mdy = 0.0f;        /* motion since the camera last read it */
+static void mouse_capture(int on) {
+    if (!s_win || on == s_mouse_cap) return;
+    s_mouse_cap = on;
+    SDL_SetWindowRelativeMouseMode(s_win, on ? true : false);
+    s_mdx = s_mdy = 0.0f;
+}
 static const char *pad_name(int b) {
     if (b == PADB_LT) return "lefttrigger";
     if (b == PADB_RT) return "righttrigger";
@@ -151,6 +164,8 @@ static void bind_save(void) {
         fprintf(f, "%s = %s, %s | %s\n", k_acts[a].id, k0, k1, pad_name(s_bind[a].pad));
     }
     fprintf(f, "bumpers_are_l_r = %d\n", s_bump_too);
+    fprintf(f, "mouse_camera = %d\nmouse_sensitivity = %.2f\nmouse_invert_y = %d\nmouse_buttons_fire_aim = %d\n"
+               "keyboard_smoothing = %d\n", s_mouse_on, s_mouse_sens, s_mouse_inv, s_mouse_btn, s_kbd_smooth);
     fclose(f);
 }
 static void bind_load(void) {
@@ -163,6 +178,11 @@ static void bind_load(void) {
         char *eq = strchr(line, '='); if (!eq) continue;
         *eq = 0; char *id = line; trim(id);
         if (!SDL_strcasecmp(id, "bumpers_are_l_r")) { s_bump_too = atoi(eq + 1) != 0; continue; }
+        if (!SDL_strcasecmp(id, "mouse_camera")) { s_mouse_on = atoi(eq + 1) != 0; continue; }
+        if (!SDL_strcasecmp(id, "mouse_sensitivity")) { s_mouse_sens = (float)atof(eq + 1); continue; }
+        if (!SDL_strcasecmp(id, "mouse_invert_y")) { s_mouse_inv = atoi(eq + 1) != 0; continue; }
+        if (!SDL_strcasecmp(id, "mouse_buttons_fire_aim")) { s_mouse_btn = atoi(eq + 1) != 0; continue; }
+        if (!SDL_strcasecmp(id, "keyboard_smoothing")) { s_kbd_smooth = atoi(eq + 1) != 0; continue; }
         int a = -1; for (int i = 0; i < BA_COUNT; i++) if (!SDL_strcasecmp(id, k_acts[i].id)) a = i;
         if (a < 0) continue;
         char *keys = eq + 1, *bar = strchr(keys, '|'), *pad = (char *)"";
@@ -202,7 +222,34 @@ void sdl3vk_bind_clear(int a, int slot) {
     if (slot < 2) s_bind[a].key[slot] = SDL_SCANCODE_UNKNOWN; else s_bind[a].pad = PADB_NONE;
     bind_save();
 }
-void sdl3vk_bind_reset(void) { bind_defaults(); s_bump_too = 1; bind_save(); }
+void sdl3vk_bind_reset(void) {
+    bind_defaults(); s_bump_too = 1;
+    s_mouse_on = 1; s_mouse_sens = 1.0f; s_mouse_inv = 0; s_mouse_btn = 1; s_kbd_smooth = 1;
+    bind_save();
+}
+/* mouse / keyboard options under the bindings on the Controls page */
+int  sdl3vk_input_opt_count(void) { return 5; }
+void sdl3vk_input_opt_text(int i, char *out, int cap) {
+    switch (i) {
+    case 0: snprintf(out, (size_t)cap, "Mouse camera (click the window)\t%s", s_mouse_on ? "On" : "Off"); break;
+    case 1: snprintf(out, (size_t)cap, "Mouse sensitivity\t%.2f", s_mouse_sens); break;
+    case 2: snprintf(out, (size_t)cap, "Mouse invert up/down\t%s", s_mouse_inv ? "On" : "Off"); break;
+    case 3: snprintf(out, (size_t)cap, "Mouse buttons fire / aim\t%s", s_mouse_btn ? "On" : "Off"); break;
+    default: snprintf(out, (size_t)cap, "Smooth WASD turning\t%s", s_kbd_smooth ? "On" : "Off"); break;
+    }
+}
+void sdl3vk_input_opt_change(int i, int dir) {
+    switch (i) {
+    case 0: s_mouse_on = !s_mouse_on; if (!s_mouse_on) mouse_capture(0); break;
+    case 1: s_mouse_sens *= dir > 0 ? 1.15f : 1.0f / 1.15f;
+            if (s_mouse_sens < 0.1f) s_mouse_sens = 0.1f;
+            if (s_mouse_sens > 10.0f) s_mouse_sens = 10.0f; break;
+    case 2: s_mouse_inv = !s_mouse_inv; break;
+    case 3: s_mouse_btn = !s_mouse_btn; break;
+    default: s_kbd_smooth = !s_kbd_smooth; break;
+    }
+    bind_save();
+}
 /* a captured key / button moves away from whatever action had it */
 static void bind_assign_key(SDL_Scancode sc) {
     for (int a = 0; a < BA_COUNT; a++)
@@ -994,7 +1041,7 @@ static void poll_input(int *quit) {
             if (!ev.key.repeat && ev.key.key == SDLK_F12) s_shot_req = 1;
             /* settings menu: Esc opens/closes it; arrows, Enter/Space/X and Backspace drive it */
             switch (ev.key.key) {
-            case SDLK_ESCAPE:    if (!ev.key.repeat) { s_menu_ev |= SDL3VK_MENU_TOGGLE; fprintf(stderr, "input: Esc (settings menu)\n"); } break;
+            case SDLK_ESCAPE:    if (!ev.key.repeat) { mouse_capture(0); s_menu_ev |= SDL3VK_MENU_TOGGLE; fprintf(stderr, "input: Esc (settings menu)\n"); } break;
             case SDLK_UP:    case SDLK_KP_8: case SDLK_W: s_menu_ev |= SDL3VK_MENU_UP; break;
             case SDLK_DOWN:  case SDLK_KP_2: case SDLK_S: s_menu_ev |= SDL3VK_MENU_DOWN; break;
             case SDLK_LEFT:  case SDLK_KP_4: case SDLK_A: s_menu_ev |= SDL3VK_MENU_LEFT; break;
@@ -1031,6 +1078,18 @@ static void poll_input(int *quit) {
             default: break;
             }
             break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (s_mouse_on && !s_mouse_cap && s_menu_n == 0 && s_cap_act < 0) {
+                mouse_capture(1);                 /* this click only captures */
+                fprintf(stderr, "input: mouse captured (Esc releases)\n");
+            }
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if (s_mouse_cap) { s_mdx += ev.motion.xrel; s_mdy += ev.motion.yrel; }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            mouse_capture(0);
+            break;
         case SDL_EVENT_GAMEPAD_AXIS_MOTION:
             if (s_cap_act >= 0 && ev.gaxis.value > 16000) {
                 if (ev.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER) bind_assign_pad(PADB_LT);
@@ -1057,6 +1116,11 @@ static void poll_input(int *quit) {
     const bool *k = SDL_GetKeyboardState(NULL);
     for (int a = 0; a < BA_COUNT; a++)
         if (k_acts[a].bit && (bind_key_down(k, a) || bind_pad_down(s_pad, a))) b |= k_acts[a].bit;
+    if (s_mouse_cap && s_mouse_btn) {               /* captured mouse: left = R (fire), right = L (aim) */
+        const SDL_MouseButtonFlags mb = SDL_GetMouseState(NULL, NULL);
+        if (mb & SDL_BUTTON_LMASK) b |= 0x0200;
+        if (mb & SDL_BUTTON_RMASK) b |= 0x0100;
+    }
     if (s_cap_act >= 0) b = 0;                    /* binding a key: nothing reaches the game */
     if ((b & 0x0008u) && (SDL_GetModState() & SDL_KMOD_ALT)) b &= ~0x0008u;   /* Alt+Enter: fullscreen */
 
@@ -1065,10 +1129,28 @@ static void poll_input(int *quit) {
         #define BD(a) (bind_key_down(k, a) || bind_pad_down(s_pad, a))
         int kx = (BD(BA_MRIGHT) ? 1 : 0) - (BD(BA_MLEFT) ? 1 : 0);
         int ky = (BD(BA_MDOWN) ? 1 : 0) - (BD(BA_MUP) ? 1 : 0);
-        if (kx || ky) {
-            const int m = (kx && ky) ? 90 : 127;             /* keep diagonals at full length */
-            lx = (uint8_t)(128 + kx * m);
-            ly = (uint8_t)(128 + ky * m);
+        float tx = (float)kx, ty = (float)ky;
+        if (kx && ky) { tx *= 0.7071f; ty *= 0.7071f; }   /* diagonals at full length, not more */
+        static float sx = 0.0f, sy = 0.0f; static uint64_t last = 0;
+        const uint64_t now = SDL_GetTicksNS();
+        const float dt = last ? (float)(now - last) * 1e-9f : 0.0f;
+        last = now;
+        if (s_kbd_smooth && dt > 0.0f && dt < 0.25f) {
+            /* the direction swings round over ~60 ms; starting and stopping stay immediate */
+            const float k = 1.0f - expf(-dt / 0.06f);
+            if (!kx && !ky) { sx = sy = 0.0f; }
+            else if (sx == 0.0f && sy == 0.0f) { sx = tx; sy = ty; }
+            else {
+                sx += (tx - sx) * k; sy += (ty - sy) * k;
+                const float len = sqrtf(sx * sx + sy * sy);  /* keep full deflection while turning */
+                if (len > 1e-3f) { sx /= len; sy /= len; }
+            }
+        } else { sx = tx; sy = ty; }
+        if (sx != 0.0f || sy != 0.0f) {
+            lx = (uint8_t)(128.0f + sx * 127.0f + (sx < 0 ? -0.5f : 0.5f));
+            ly = (uint8_t)(128.0f + sy * 127.0f + (sy < 0 ? -0.5f : 0.5f));
+            if (lx < 1) lx = 1;
+            if (ly < 1) ly = 1;
         }
     }
     /* Right stick for the camera: I/J/K/L on the keyboard, the gamepad's right stick below. */
@@ -1131,6 +1213,14 @@ uint32_t sdl3vk_buttons(void) { return s_buttons; }
 void sdl3vk_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 int  sdl3vk_pad_present(void) { return s_pad_present; }
 void sdl3vk_rstick(float *rx, float *ry) { if (rx) *rx = s_rx; if (ry) *ry = s_ry; }
+/* Mouse camera: motion since the last call, already scaled to radians (yaw, pitch). */
+void sdl3vk_mouse_look(float *yaw, float *pitch) {
+    const float rad_per_px = 0.0022f * s_mouse_sens;
+    *yaw = s_mdx * rad_per_px;
+    *pitch = s_mdy * rad_per_px * (s_mouse_inv ? -1.0f : 1.0f);
+    s_mdx = s_mdy = 0.0f;
+}
+void sdl3vk_mouse_test(float dx, float dy) { s_mouse_cap = 1; s_mdx += dx; s_mdy += dy; }   /* ctrl "mouse" */
 int  sdl3vk_sens_steps(void) { int n = s_sens_steps; s_sens_steps = 0; return n; }
 int  sdl3vk_cam_reset(void) { int n = s_camreset; s_camreset = 0; return n; }
 
