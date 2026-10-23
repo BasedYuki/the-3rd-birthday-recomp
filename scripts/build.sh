@@ -83,7 +83,7 @@ done
 python "$ROOT/tools/toml_addrs.py" "$ROOT/versions/$GAME.toml" "$OUT/game_addrs.h"
 
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
-         savedata.c osk_win.c driver.c ctrl_server.c atrac_hle.c sas_hle.c twinstick.c mods.c update.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
+         savedata.c osk_win.c driver.c ctrl_server.c atrac_hle.c sas_hle.c twinstick.c mods.c cheats.c update.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
 # Code mods (mods/<name>/mod.toml + *.c, see mods/README.md): each mod's mod_hook gets its own name.
 python "$ROOT/tools/mods_gen.py" --gen "$OUT"
 MOD_OBJS=("$OUT/mods_gen.c")

@@ -690,9 +690,23 @@ def function_flow(elf, start, ranges, known):
     return insns, labels
 
 
-def normal_line(addr, w):
+def plain_line(addr, w):
     eff, saddr, ssize = effect(addr, w)
-    return f"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+    return f"sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+
+
+# Instruction patches (--hooks=...,p<index>@<addr>=<word>): both instructions are emitted and
+# sr_patch_on[index] picks one at run time (the Esc menu's Cheats page switches them).
+PATCHES = {}
+
+
+def normal_line(addr, w):
+    if addr in PATCHES:
+        idx, nw = PATCHES[addr]
+        if is_control(w) or is_control(nw):
+            raise SystemExit(f"patch at 0x{addr:08x}: only plain instructions can be patched")
+        return f"    if (sr_patch_on[{idx}]) {{ {plain_line(addr, nw)} }} else {{ {plain_line(addr, w)} }}"
+    return "    " + plain_line(addr, w)
 
 
 # Function entries that call the runtime's sr_func_hook(s, addr) first (--hooks=0x..,0x..):
@@ -830,7 +844,13 @@ def main(argv):
         elif o.startswith("--toml="):
             toml_path = o.split("=", 1)[1]
         elif o.startswith("--hooks="):
-            HOOKS.update(int(h, 16) for h in o.split("=", 1)[1].split(",") if h)
+            for h in o.split("=", 1)[1].split(","):
+                if h.startswith("p"):        # instruction patch p<index>@<addr>=<word>
+                    idx, aw = h[1:].split("@")
+                    addr, word = aw.split("=")
+                    PATCHES[int(addr, 16)] = (int(idx), int(word, 16))
+                elif h:
+                    HOOKS.add(int(h, 16))
 
     elf = Elf(args[0], base=base)
 

@@ -110,6 +110,9 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 - **Safe saves**: every save is written safely and the previous one is kept in `memstick/BACKUP/`
 - FPS counter and a glow (bloom) on/off switch in the settings menu
 - **Mods**: HD texture packs, memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
+- **Cheats** (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite
+  Liberation, max BP (999,999). Each can be switched on and off and stays as you leave it
+  (`cheats.cfg`). From the community CWCheat database
 - Data Install (Extra menu) works, and **Use Install Data** reads from it like on a PSP
 - Saves from a real PSP or PPSSPP can be imported (`tools/save_import.py`); the port's saves load in PPSSPP
 - Xbox, PlayStation and other controllers through SDL3, plus keyboard

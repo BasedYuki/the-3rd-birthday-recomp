@@ -53,6 +53,11 @@ static int load_game(void) {
         return 0;
     }
     reg();
+    {   /* cheats: the instruction-patch flags in game.dll (none in a DLL from before cheats) */
+        extern uint8_t *g_patch_flags;
+        uint8_t *(*pf)(void) = (uint8_t *(*)(void))(void *)GetProcAddress(m, "sr_game_patch_flags");
+        g_patch_flags = pf ? pf() : NULL;
+    }
     return 1;
 }
 

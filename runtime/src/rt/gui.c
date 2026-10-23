@@ -314,6 +314,7 @@ static void fi_show_held(void) {
 /* Called by the scheduler on every vblank. */
 void gui_vblank(void) {
     { extern void sr_mods_vblank(void); sr_mods_vblank(); }   /* data mods: memory patches */
+    { extern void sr_cheats_vblank(void); sr_cheats_vblank(); }   /* Esc menu > Cheats */
 #ifdef SR_SDL3VK
     if (!s_sdl3 || !s_fi_phase) return;
     { extern int sched_fast_forward(void); if (sched_fast_forward()) { s_fi_phase = 0; return; } }
@@ -417,8 +418,44 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
     (void)sdl3vk_menu_events();
 }
 
+/* Cheats page (cheats.c): each cheat on/off, saved in cheats.cfg. */
+static void cheats_run(uint32_t fbaddr, int fmt, uint32_t stride) {
+    extern int sr_cheat_count(void); extern void sr_cheat_text(int, char *, int);
+    extern void sr_cheat_toggle(int); extern void sr_cheats_all_off(void);
+    const int n = sr_cheat_count(), rows = n + 2;      /* cheats, "All off", "Back" */
+    int cur = 0;
+    for (;;) {
+        char buf[16][96]; const char *lines[16]; int k = 0, selline = 1;
+        snprintf(buf[k++], 96, "Cheats");
+        for (int r = 0; r < rows; r++) {
+            if (r == cur) selline = k;
+            if (r < n) sr_cheat_text(r, buf[k++], 96);
+            else snprintf(buf[k++], 96, r == n ? "All off" : "Back");
+        }
+        snprintf(buf[k++], 96, " ");
+        snprintf(buf[k++], 96, "They stay on until you switch them off (cheats.cfg).");
+        snprintf(buf[k++], 96, "Enter / A: on / off     Esc / B: back");
+        for (int i = 0; i < k; i++) lines[i] = buf[i];
+        sdl3vk_menu_show(lines, k, selline);
+        int shown = gegpu_present(fbaddr, fmt, stride);
+        if (shown < 0) shown = sdl3vk_present_rgba(s_px);
+        if (shown == 0) { sdl3vk_shutdown(); _Exit(0); }
+        const int ev = sdl3vk_menu_events();
+        if (ev & (SDL3VK_MENU_TOGGLE | SDL3VK_MENU_BACK)) break;
+        if (ev & SDL3VK_MENU_UP)   cur = cur > 0 ? cur - 1 : rows - 1;
+        if (ev & SDL3VK_MENU_DOWN) cur = cur < rows - 1 ? cur + 1 : 0;
+        if (ev & (SDL3VK_MENU_OK | SDL3VK_MENU_LEFT | SDL3VK_MENU_RIGHT)) {
+            if (cur < n) sr_cheat_toggle(cur);
+            else if (cur == n) { if (ev & SDL3VK_MENU_OK) sr_cheats_all_off(); }
+            else if (ev & SDL3VK_MENU_OK) break;
+        }
+        Sleep(15);
+    }
+    (void)sdl3vk_menu_events();
+}
+
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -433,6 +470,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             else snprintf(buf[0], 96, "Settings  (game paused)   v%s", sr_version()); }
         snprintf(buf[M_RESUME], 96, "Resume");
         snprintf(buf[M_CONTROLS], 96, "Controls...");
+        snprintf(buf[M_CHEATS], 96, "Cheats...");
         snprintf(buf[M_SPEED], 96, "Camera speed:  %.2f", sr_twinstick_setting(SR_TS_SENSITIVITY));
         snprintf(buf[M_INVX], 96, "Invert camera left/right:  %s", sr_twinstick_setting(SR_TS_INVERT_X) != 0.0f ? "On" : "Off");
         snprintf(buf[M_INVY], 96, "Invert camera up/down:  %s", sr_twinstick_setting(SR_TS_INVERT_Y) != 0.0f ? "On" : "Off");
@@ -470,6 +508,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             switch (sel) {
             case M_RESUME: if (ev & SDL3VK_MENU_OK) goto done; break;
             case M_CONTROLS: if (ev & SDL3VK_MENU_OK) controls_run(fbaddr, fmt, stride); break;
+            case M_CHEATS: if (ev & SDL3VK_MENU_OK) cheats_run(fbaddr, fmt, stride); break;
             case M_SPEED:
                 sr_twinstick_set(SR_TS_SENSITIVITY, sr_twinstick_setting(SR_TS_SENSITIVITY) * (dir > 0 ? 1.15f : 1.0f / 1.15f));
                 break;

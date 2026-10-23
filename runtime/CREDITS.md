@@ -92,6 +92,10 @@ a derivative work for licensing purposes.
 
 ## Other third-party components
 
+- **Cheat codes** (Esc menu > Cheats, `versions/ULUS10567.toml` [patches], `src/rt/cheats.c`) —
+  the addresses and patched instructions come from the community CWCheat database for the US
+  release ("The 3rd Birthday [US]" in PPSSPP's cheat.db,
+  https://github.com/Saramagrean/CWCheat-Database-Plus-); thanks to its contributors
 - **SDL3** (`SDL3.dll`, `src/rt/gpu_sdl3vk`) — zlib license — https://libsdl.org
 - **Vulkan loader / headers** — Apache-2.0 — https://github.com/KhronosGroup/Vulkan-Loader
 - **PSPSDK headers/defines/constants** — BSD-compatible (see top of

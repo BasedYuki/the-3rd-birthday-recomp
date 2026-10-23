@@ -3,6 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- Cheats (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite Liberation,
+  max BP. From the community CWCheat database; the code cheats are compiled into the game as
+  switchable instructions, so the game has to be prepared again once (the launcher says so)
+
 ## 0.9.0 — 2026-10-23
 
 First numbered version: everything up to now, plus a round of PC features.

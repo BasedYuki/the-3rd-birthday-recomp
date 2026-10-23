@@ -40,5 +40,8 @@ void  gui_toast(const char *msg)                              { sr_api.toast(msg
 __attribute__((weak)) int sr_mods_hook(CpuState *s, uint32_t addr) { (void)s; (void)addr; return 0; }
 __declspec(dllexport) int sr_game_mods_hook(CpuState *s, uint32_t addr) { return sr_mods_hook(s, addr); }
 
+uint8_t sr_patch_on[64];   /* cheats: switched by the runtime through the pointer below */
+__declspec(dllexport) uint8_t *sr_game_patch_flags(void) { return sr_patch_on; }
+
 void sr_register_all(void);
 __declspec(dllexport) void sr_game_register_all(void) { sr_register_all(); }
