@@ -21,6 +21,8 @@ is included in this repository or in the releases.
    [Releases](https://github.com/BasedYuki/the-3rd-birthday-recomp/releases) page and extract it.
 2. Start `The 3rd Birthday.exe` (the launcher) and choose your own disc image of the game
    (USA, ULUS10567, `.iso`).
+   Windows may show "Windows protected your PC" the first time, because the program isn't
+   signed: click **More info**, then **Run anyway**.
 3. Press **Prepare game**. The game is built once, on your PC, from your disc (3-10 minutes;
    nothing is downloaded). Then press **Play**.
 

@@ -20,7 +20,8 @@ $notes = Join-Path $root "dist\release-notes-$Version.md"
 New-Item -ItemType Directory -Force (Join-Path $root 'dist') | Out-Null
 $body = $m.Value.Trim() + "`n`n---`n**Download** ``The3rdBirthday-$Version.zip``, extract it, start ``The 3rd Birthday.exe``," +
         " choose your own disc image of the game (USA, ULUS10567) and press **Prepare game**: the game is built once" +
-        " on your PC (3-10 minutes). No game files are included.`n"
+        " on your PC (3-10 minutes). No game files are included.`n`n" +
+        "If Windows says ""Windows protected your PC"": click **More info**, then **Run anyway** (the program isn't signed).`n"
 Set-Content -Encoding utf8 $notes $body
 "notes: $notes"
 

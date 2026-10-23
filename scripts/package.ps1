@@ -48,6 +48,8 @@ Nothing from the game is included here.
 
 1. Extract this folder somewhere permanent (for example C:\Games\The3rdBirthday).
 2. Start "The 3rd Birthday.exe" (the launcher).
+   If Windows says "Windows protected your PC": click "More info", then "Run anyway"
+   (the program isn't signed).
 3. Choose your .iso if it was not found (it is looked for in this folder and up to three
    folders above).
 4. Press "Prepare game": the game is built once from your disc, on your PC (about 3-10
