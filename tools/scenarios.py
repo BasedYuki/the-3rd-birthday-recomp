@@ -228,3 +228,53 @@ def hub_mouse(g):
     for _ in range(10):
         g._cmd("mouse 0 -30"); g.wait(0.05)
     g.wait(0.5); g.shot("c_looked_up")
+
+
+def scene_check(g):
+    """Whole-game sweep: load the patched scene, press through dialogue (X now and then), move
+    and shoot a little, screenshots along the way (port only: 60 s)."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(4)
+    g.press("cross"); g.wait(3)
+    if g.name == "ppsspp":
+        g.press("cross"); g.wait(2)
+    for t in range(8):
+        g.wait(4); g.shot(f"s{t}")
+        if t in (2, 4, 6): g.press("cross")
+        if t == 3: g.stick(128, 20, 90)
+        if t == 5: g.press("r", 20)
+
+
+def scene_watch(g):
+    """Load the patched scene and only press X now and then (no movement): same camera on the
+    port and on PPSSPP, for comparing what appears."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(4)
+    g.press("cross"); g.wait(3)
+    if g.name == "ppsspp":
+        g.press("cross"); g.wait(2)
+    for t in range(12):
+        g.wait(2.5); g.shot(f"w{t:02d}")
+        if t % 4 == 1: g.press("cross")
+
+
+N_MSG = 5
+
+
+def briefing_gear(g):
+    """Scene 23 (briefing menu): open Protective Gear and Weapon Bank and screenshot the lists."""
+    to_title_menu(g)
+    g.press("cross"); g.wait(4)
+    g.press("cross"); g.wait(3)
+    if g.name == "ppsspp":
+        g.press("cross"); g.wait(2)
+    g.wait(6)
+    for i in range(N_MSG):                  # through the tutorial / unlock message pages
+        g.press("cross"); g.wait(1.2)
+        if i == 1: g.shot("a_msg")
+    g.shot("a_menu")
+    for i in range(3): g.press("down"); g.wait(0.6)
+    g.press("cross"); g.wait(2); g.shot("b_gear")
+    for i in range(6): g.press("down"); g.wait(0.4)
+    g.shot("c_gear_down")
+    g.press("circle"); g.wait(1.5); g.press("up"); g.wait(0.6); g.press("cross"); g.wait(2); g.shot("d_weapons")

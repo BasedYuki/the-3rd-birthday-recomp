@@ -2554,7 +2554,7 @@ static int ge_run_list_inner(GeListCtx *c) {
                 ge.stencil_enable = (int)(data & 1);
                 if (ge.stencil_enable) {
                     static int once = 0;
-                    if (!once++) fprintf(stderr, "GE: stencil test enabled - IN USE, stencil ops not emulated\n");
+                    if (!once++) fprintf(stderr, "GE: stencil test in use (its writes go to framebuffer alpha, as on the PSP)\n");
                 }
                 break;
             case GE_STENCILTEST: ge.stencil_test = data; break;

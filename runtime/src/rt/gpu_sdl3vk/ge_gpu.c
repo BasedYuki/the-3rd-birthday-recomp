@@ -497,8 +497,11 @@ static VkPipeline pipe_create(const PipeKey *k) {
     ba.srcColorBlendFactor = (VkBlendFactor)k->srcf;
     ba.dstColorBlendFactor = (VkBlendFactor)k->dstf;
     ba.colorBlendOp = (VkBlendOp)k->eq;
-    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;    /* PSP: dst alpha = clamp(sa + da) */
-    ba.dstAlphaBlendFactor = k->arepl ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;   /* stencil write */
+    /* PSP: dst alpha = clamp(sa + da); stencil writes: arepl 1 = the shader's alpha is the
+     * stencil value (blending off), 2 = a stencil value of 0 on a blended draw (the colour blend
+     * still needs the fragment's alpha, so the alpha result is forced to 0 by the factors) */
+    ba.srcAlphaBlendFactor = k->arepl == 2 ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
+    ba.dstAlphaBlendFactor = k->arepl ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
     ba.alphaBlendOp = VK_BLEND_OP_ADD;
     ba.colorWriteMask = k->cmask;
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
@@ -1308,14 +1311,20 @@ static void build_state(int persp, int sprite, Batch *b) {
          * restores the old behaviour (blended alpha written). */
         static int aw = -1;
         if (aw < 0) aw = getenv("SR_ALPHAWRITE") ? 1 : 0;
-        if (!g->stencil_enable && !aw) k->cmask &= (uint8_t)~VK_COLOR_COMPONENT_A_BIT;
+        static int am = -1;   /* SR_ALPHAMASK_MODE (bisecting): 0 all targets, 1 display only, 2 others only */
+        if (am < 0) { const char *e = getenv("SR_ALPHAMASK_MODE"); am = e ? atoi(e) : 0; }
+        const int disp = (g->fbp & 0xFFFFFF) < 0x110000;
+        if (!g->stencil_enable && !aw && (am == 0 || (am == 1 && disp) || (am == 2 && !disp)))
+            k->cmask &= (uint8_t)~VK_COLOR_COMPONENT_A_BIT;
         /* Stencil test on: the stencil value is the alpha channel. The op for passing pixels
          * decides what is written: REPLACE -> ref, ZERO -> 0 (the shader outputs it as alpha,
          * blending leaves alpha alone), KEEP -> nothing. This game only uses func ALWAYS with
          * REPLACE (ref 0) while drawing 3D. Not emulated: other test functions (there is no
          * stencil buffer to test against), INVERT/INCR/DECR (need the old value: kept as is),
          * and the zfail op (depth-failed pixels keep their alpha). */
-        if (g->stencil_enable && !aw) {
+        static int nsa = -1;  /* SR_NOSTENCILALPHA=1 (bisecting): stencil test on keeps blended alpha */
+        if (nsa < 0) nsa = getenv("SR_NOSTENCILALPHA") ? 1 : 0;
+        if (g->stencil_enable && !aw && !nsa) {
             const uint32_t func = g->stencil_test & 7, ref = (g->stencil_test >> 8) & 0xFF;
             const uint32_t zpass = (g->stencil_op >> 16) & 7;
             static int warned = 0;
@@ -1399,6 +1408,11 @@ static void build_state(int persp, int sprite, Batch *b) {
 
     /* fragment config */
     int textured = g->tex_enable && !clear && g->tex_addr;
+    if (k->arepl && k->blend_on) {          /* see pipe_create: the shader alpha feeds the blend */
+        if (b->pc.texenv[3] == 0.0f) k->arepl = 2;
+        else { k->arepl = 0; k->cmask &= (uint8_t)~VK_COLOR_COMPONENT_A_BIT; }   /* nonzero ref: not seen; keep */
+        stencil_flag = 0;
+    }
     int flags = premul | stencil_flag;
     if (clear) flags |= F_CLEAR;
     if (persp && !(clear && sprite)) flags |= F_PERSP;   /* minz/maxz discard */

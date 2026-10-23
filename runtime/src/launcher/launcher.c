@@ -231,7 +231,7 @@ enum {
     ID_MOUSE, ID_MOUSESENS, ID_MOUSEINV, ID_KBDSMOOTH,
     ID_SAVES, ID_SAVE_OPEN, ID_SAVE_BACKUP, ID_SAVE_RESTORE,
     ID_TEXPACKS, ID_TEXDUMP, ID_PATCHES, ID_PATCH_TOGGLE, ID_MODS_OPEN,
-    ID_RELEASES,
+    ID_RELEASES, ID_UNLOCK,
 };
 static HFONT s_font, s_bold;
 static float s_dpi = 1.0f;                 /* layout scale: the layout is in 96-DPI pixels */
@@ -362,6 +362,7 @@ static void build_ui(void) {
     mk("BUTTON", "Open folder", BS_PUSHBUTTON, W - 130, 382, 130, 28, ID_SAVE_OPEN);
     mk("BUTTON", "Back up all now", BS_PUSHBUTTON, W - 130, 416, 130, 28, ID_SAVE_BACKUP);
     mk("BUTTON", "Restore a backup...", BS_PUSHBUTTON, W - 130, 450, 130, 28, ID_SAVE_RESTORE);
+    mk("BUTTON", "Unlock all extras", BS_PUSHBUTTON, W - 130, 484, 130, 28, ID_UNLOCK);
 
     group("Mods  (see mods/README.md)", L - 6, 538, W + 12, 150);
     check("Use texture packs (textures/)", L + 6, 562, 300, ID_TEXPACKS, cfg_int(G, "texture_packs", 1));
@@ -462,6 +463,31 @@ static void restore_backup(void) {
     MessageBoxA(s_win, "Restored.", "Restore", MB_ICONINFORMATION);
 }
 
+/* The game has no DLC: costumes, weapons, DNA boards and cheat codes unlock through the system
+ * data (ULUS10567SYSDATA) by clearing the game. unlocks/ULUS10567SYSDATA holds system data with
+ * everything unlocked; installing it keeps the game saves (progress) and backs up the old one. */
+static void unlock_all(void) {
+    if (GetFileAttributesA("unlocks/ULUS10567SYSDATA/SYSDATA.BIN") == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxA(s_win, "The unlock data (unlocks\\ULUS10567SYSDATA) is not next to the launcher.", "Unlock all extras", MB_ICONWARNING);
+        return;
+    }
+    if (MessageBoxA(s_win, "Unlock every costume, weapon, DNA board and the cheat codes?\n\n"
+                    "This replaces the system data (your settings in the game's Config go back to\n"
+                    "defaults). Your game saves and progress are kept, and the current system data\n"
+                    "is backed up first.", "Unlock all extras", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    char safe[MAX_PATH];
+    snprintf(safe, sizeof(safe), MS "/BACKUP/ULUS10567SYSDATA/%04u%02u%02u-%02u%02u%02u-before-unlock", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+    CreateDirectoryA(MS, NULL); CreateDirectoryA(MS "/BACKUP", NULL); CreateDirectoryA(MS "/BACKUP/ULUS10567SYSDATA", NULL);
+    if (GetFileAttributesA(MS "/PSP/SAVEDATA/ULUS10567SYSDATA") != INVALID_FILE_ATTRIBUTES)
+        copy_dir_files(MS "/PSP/SAVEDATA/ULUS10567SYSDATA", safe);
+    CreateDirectoryA(MS "/PSP", NULL); CreateDirectoryA(MS "/PSP/SAVEDATA", NULL);
+    copy_dir_files("unlocks/ULUS10567SYSDATA", MS "/PSP/SAVEDATA/ULUS10567SYSDATA");
+    saves_fill();
+    MessageBoxA(s_win, "Done. Start the game and load your save: the briefing menu announces the unlocks.", "Unlock all extras", MB_ICONINFORMATION);
+}
+
 static void patch_toggle(void) {
     int sel = (int)SendMessageA(GetDlgItem(s_win, ID_PATCHES), LB_GETCURSEL, 0, 0);
     if (sel < 0) return;
@@ -513,6 +539,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         case ID_SAVE_RESTORE: restore_backup(); return 0;
         case ID_MODS_OPEN: CreateDirectoryA("patches", NULL); open_folder("textures"); open_folder("patches"); return 0;
         case ID_PATCH_TOGGLE: patch_toggle(); return 0;
+        case ID_UNLOCK: unlock_all(); return 0;
         }
         break;
     case WM_APP_UPDATE:

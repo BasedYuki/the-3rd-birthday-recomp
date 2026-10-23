@@ -20,6 +20,7 @@ foreach ($f in "$Game.exe", 'image.bin', 'init.trace', 'launch.cfg', 'SDL3.dll',
     Copy-Item (Join-Path $src $f) $dst
 }
 Copy-Item -Recurse (Join-Path $src 'font') $dst
+if (Test-Path (Join-Path $src 'unlocks')) { Copy-Item -Recurse (Join-Path $src 'unlocks') $dst }
 New-Item -ItemType Directory -Force (Join-Path $dst 'assets') | Out-Null
 Copy-Item -Recurse (Join-Path $root 'runtime\assets\vfpu') (Join-Path $dst 'assets')
 # launch.cfg: no machine-specific iso= path in a package
