@@ -653,7 +653,30 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             static uint64_t last_flip = 0;
             const uint64_t vb = sched_vblank_count();
             if (s_fi_phase) fi_show_held();              /* still holding the previous frame */
-            mid = gegpu_interp_frame(fbaddr, fmt, vb - last_flip == 2 ? 0.5f : -1.0f);
+            /* A PC that can't keep up with 60 fps here (vblanks keep arriving late) would slow
+             * the whole game down, sound included: show the game's own 30 fps for a while, then
+             * try 60 again (waiting longer each time it fails, up to a minute). */
+            static int drop = 0; static double retry_at = 0.0, hold = 4.0, calm_since = 0.0;
+            {
+                extern float sched_late_fraction(void);
+                LARGE_INTEGER c; QueryPerformanceCounter(&c);
+                const double now_s = (double)c.QuadPart / (double)s_freq.QuadPart;
+                static int adapt = -1;                     /* SR_INTERP_ADAPT=0: never drop (tests) */
+                if (adapt < 0) { const char *e = getenv("SR_INTERP_ADAPT"); adapt = !(e && e[0] == '0'); }
+                const float late = adapt ? sched_late_fraction() : 0.0f;
+                if (!drop && late > 0.3f) {
+                    drop = 1; retry_at = now_s + hold;
+                    fprintf(stderr, "interp: falling behind (%.0f%% of vblanks late), 30 fps for %.0f s\n", late * 100.0f, hold);
+                    if (hold < 60.0) hold *= 2.0;
+                } else if (drop && now_s >= retry_at && late < 0.05f) {
+                    drop = 0;
+                    fprintf(stderr, "interp: trying 60 fps again\n");
+                }
+                if (drop || late >= 0.02f) calm_since = 0.0;   /* 60 fps holding a minute: forget old failures */
+                else if (calm_since == 0.0) calm_since = now_s;
+                else if (now_s - calm_since > 60.0) hold = 4.0;
+            }
+            mid = gegpu_interp_frame(fbaddr, fmt, !drop && vb - last_flip == 2 ? 0.5f : -1.0f);
             { extern void ge_interp_frame(void); ge_interp_frame(); }   /* skinned-draw tables */
             last_flip = vb;
         }
@@ -681,7 +704,11 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 } else t0 = now;
                 prev = now;
                 if ((double)(now.QuadPart - t0.QuadPart) / (double)s_freq.QuadPart >= 5.0) {
-                    fprintf(stderr, "PACE 5s: presents %u, gaps >40ms %u, >70ms %u, max %.0f ms\n", n, slow, vslow, maxgap);
+                    extern uint64_t sched_vblank_count(void); extern float sched_late_fraction(void);
+                    static uint64_t vb0 = 0; const uint64_t vbn = sched_vblank_count();
+                    fprintf(stderr, "PACE 5s: presents %u, gaps >40ms %u, >70ms %u, max %.0f ms, vblanks %llu (300 = full speed), late %.0f%%\n",
+                            n, slow, vslow, maxgap, (unsigned long long)(vbn - vb0), sched_late_fraction() * 100.0f);
+                    vb0 = vbn;
                     n = slow = vslow = 0; maxgap = 0; t0 = now;
                 }
             }

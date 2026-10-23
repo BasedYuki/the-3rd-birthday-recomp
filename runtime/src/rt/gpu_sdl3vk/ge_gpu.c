@@ -2251,6 +2251,11 @@ void gegpu_interp_set(int on) {
 /* Hand a shadow image returned by gegpu_interp_frame to the presenter. */
 int gegpu_present_interp(void *img) {
     if (!img) return -1;
+    {   /* SR_SLOWINTERP=<ms>: every in-between frame costs this much more (a slow GPU, for tests) */
+        static int ms = -1;
+        if (ms < 0) { const char *e = getenv("SR_SLOWINTERP"); ms = e ? atoi(e) : 0; }
+        if (ms > 0) Sleep((DWORD)ms);
+    }
     return sdl3vk_present_image(img);
 }
 

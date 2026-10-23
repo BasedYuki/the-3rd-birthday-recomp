@@ -220,11 +220,21 @@ static void sleep_until_us(uint64_t target_us) {
  * vblanks per flip (30 fps games, some menus) ran at double speed once the GPU rasterizer
  * made the GE fast. Pacing the vblank itself makes every wait ratio correct.
  * SR_NOVBPACE=1 disables (turbo / old behaviour). */
+/* How often vblanks arrive late (the game thread was busy past the deadline, e.g. presenting
+ * 60 fps on a GPU that can't): a moving average of "more than 4 ms late", ~1 s memory. The
+ * frame interpolation drops its in-between frames while this is high (gui.c). */
+static float s_late_avg = 0.0f;
+float sched_late_fraction(void) { return s_late_avg; }
+
 static void vblank_pace(void) {
     pace_setup();
     if (!s_pace_on) { s_vtime_us += 16667; return; }   /* turbo: virtual frame per vblank */
     double period = (double)s_qfreq.QuadPart / 59.94;
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    {
+        const double late_ms = ((double)now.QuadPart - s_vbl_next) * 1000.0 / (double)s_qfreq.QuadPart;
+        s_late_avg += ((late_ms > 4.0 ? 1.0f : 0.0f) - s_late_avg) * (1.0f / 60.0f);
+    }
     if (s_vbl_next > (double)now.QuadPart) {
         const uint64_t t0 = qpc_us();
         double ms = (s_vbl_next - (double)now.QuadPart) * 1000.0 / (double)s_qfreq.QuadPart;
