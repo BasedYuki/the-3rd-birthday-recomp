@@ -48,6 +48,8 @@ int  sdl3vk_menu_events(void);
  * n = 0 hides it. */
 void sdl3vk_menu_show(const char *const *lines, int n, int sel);
 /* Remappable controls (controls.cfg): actions with two keys (slot 0, 1) and a pad button (slot 2). */
+float sdl3vk_widescreen_factor(void);   /* 1 = original 480:272, >1 = window is that much wider */
+void sdl3vk_set_widescreen(int on);
 int  sdl3vk_bind_count(void);
 const char *sdl3vk_bind_label(int action);
 void sdl3vk_bind_text(int action, int slot, char *out, int cap);

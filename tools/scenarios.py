@@ -158,3 +158,10 @@ def data_install_size(g):
     for root in (r"K:\The 3rd Birthday project\memstick", r"K:\The 3rd Birthday project\build\ULUS10567\memstick_drive"):
         p = os.path.join(root, "PSP", "SAVEDATA", "ULUS10567DATA", "3RDINS.BIN")
         if os.path.exists(p): print(g.name, p, os.path.getsize(p), flush=True)
+
+
+def scene_drawlog(g):
+    """scene_quick, then log every draw of one gameplay frame (DRAW lines in port.err)."""
+    scene_quick(g)
+    if g.name == "port":
+        g._cmd("drawlog"); g.wait(1); g.shot("drawlog_frame")

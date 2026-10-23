@@ -57,3 +57,8 @@ camera_derive = 0x08B219DC
 # Camera copy: copy(dst=a0, src=a1) of the camera fields from +0x10. The rendered view camera
 # (viewcam_ptr) is filled this way from another camera object every frame.
 camera_copy   = 0x08B20774
+# Widescreen: camera projection setup. a0 = camera; reads its aspect ratio from a0+0x264 (the
+# game stores 480/272 there just before the call) and builds the projection terms at +0xb0..
+cam_projection = 0x08BBB194
+# Widescreen: another camera setup, aspect ratio passed in $f13 (fov $f12, near $f14, far $f15).
+cam_setup      = 0x08B435B8

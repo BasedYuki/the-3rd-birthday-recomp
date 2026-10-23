@@ -226,6 +226,7 @@ static int bind_pad_down(SDL_Gamepad *pad, int a) {
     if (b == PADB_RT) return SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8192;
     return SDL_GetGamepadButton(pad, (SDL_GamepadButton)b);
 }
+static int      s_ws_dirty = 0;                      /* widescreen setting changed */
 static int      s_shot_req = 0;                      /* F12: save the next frame */
 static SDL_Joystick *s_vjoy = NULL;                  /* SR_VPAD test pad */
 int sdl3vk_dual_src = 0;                             /* device has dualSrcBlend enabled */
@@ -535,6 +536,22 @@ static void menu_record(VkImage dst) {
     vkCmdCopyBufferToImage(s_cmd, s_menu_buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
 }
 
+/* Widescreen (graphics.cfg widescreen=1, Esc menu "Aspect ratio"): how much wider than the
+ * PSP's 480:272 the window is. ge.c squeezes the 3D (wider field of view) and the HUD by this
+ * and the presenter stretches the picture back over the whole window. 1 = original. */
+float sdl3vk_widescreen_factor(void) {
+    static int on = -1;
+    if (on < 0 || s_ws_dirty) {
+        const char *e = getenv("SR_WIDESCREEN");   /* tests: override graphics.cfg */
+        on = e ? atoi(e) : sdl3vk_cfg_get("widescreen", 0);
+        s_ws_dirty = 0;
+    }
+    if (!on || !s_swap_ext.height) return 1.0f;
+    float f = ((float)s_swap_ext.width / (float)s_swap_ext.height) / ((float)PSP_W / (float)PSP_H);
+    return f < 1.0f ? 1.0f : f > 3.0f ? 3.0f : f;
+}
+void sdl3vk_set_widescreen(int on) { sdl3vk_cfg_set("widescreen", on); s_ws_dirty = 1; }
+
 int  sdl3vk_fullscreen(void) { return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN) != 0; }
 void sdl3vk_set_fullscreen(int on) { if (s_win) SDL_SetWindowFullscreen(s_win, on ? true : false); }
 void sdl3vk_request_screenshot(void) { s_shot_req = 1; }
@@ -635,7 +652,7 @@ static void shot_save(void) {
  *   render_scale=0   (0 = match the display: the smallest scale that covers its height)
  * A missing graphics.cfg is written with the default so it can be edited. */
 /* graphics.cfg: "key=integer" lines. */
-#define GCFG_MAX 8
+#define GCFG_MAX 16
 static int gcfg_load(char keys[GCFG_MAX][40], int *vals) {
     int n = 0;
     FILE *f = fopen("graphics.cfg", "r");
@@ -717,8 +734,11 @@ int sdl3vk_init(const char *title) {
         const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
         if (m && m->h > 0) { wk = (m->h * 3 / 4 + PSP_H / 2) / PSP_H; if (wk < 2) wk = 2; }
     }
+    int ww = PSP_W * wk, wh = PSP_H * wk;
+    { const char *e = getenv("SR_WINSIZE");   /* <w>x<h>: e.g. a 21:9 window for widescreen tests */
+      int a, b; if (e && sscanf(e, "%dx%d", &a, &b) == 2 && a > 0 && b > 0) { ww = a; wh = b; } }
     s_win = SDL_CreateWindow(title ? title : "PSP Recomp",
-                             PSP_W * wk, PSP_H * wk,
+                             ww, wh,
                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -1151,8 +1171,10 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
                                  &black, 1, &rng);
         }
         int dw = (int)s_swap_ext.width, dh = (int)s_swap_ext.height;
-        int vw = dw, vh = dw * PSP_H / PSP_W;
-        if (vh > dh) { vh = dh; vw = dh * PSP_W / PSP_H; }
+        /* widescreen: a GE frame is drawn squeezed; movies and CPU-written frames are not */
+        const float wsf = do_upload ? 1.0f : sdl3vk_widescreen_factor();
+        int vw = dw, vh = (int)(dw * PSP_H / (PSP_W * wsf));
+        if (vh > dh) { vh = dh; vw = (int)(dh * PSP_W * wsf / PSP_H); }
         int x0 = (dw - vw) / 2, y0 = (dh - vh) / 2;
         VkImageBlit blt = {0};
         blt.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;

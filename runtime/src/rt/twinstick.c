@@ -402,6 +402,21 @@ static void update_special(uint32_t src) {
 }
 
 void sr_func_hook(CpuState *s, uint32_t addr) {
+    /* Widescreen: give the game's cameras the window's aspect ratio, so it renders and culls
+     * a wider view itself (ge.c then only squeezes draws that still use the PSP's 480:272). */
+    if (addr == HOOK_CAM_PROJECTION || addr == HOOK_CAM_SETUP) {
+        extern float g_ge_ws;
+        const float psp = 480.0f / 272.0f, want = psp * (g_ge_ws > 1.0f ? g_ge_ws : 1.0f);
+        if (addr == HOOK_CAM_SETUP) {
+            if (fabsf(s->f[13] - psp) < 0.01f) s->f[13] = want;
+        } else {
+            uint32_t w = MEM_R32(s->r[4] + 0x264u); float a; memcpy(&a, &w, 4);
+            if (fabsf(a - psp) < 0.01f || a > psp) { memcpy(&w, &want, 4); MEM_W32(s->r[4] + 0x264u, w); }
+        }
+        if (getenv("SR_WSLOG")) fprintf(stderr, "widescreen: camera %s aspect -> %.4f\n",
+                                        addr == HOOK_CAM_SETUP ? "setup" : "projection", want);
+        return;
+    }
     init_once();
     if (!s_on) return;
     s_hook_tick = s_ticks;

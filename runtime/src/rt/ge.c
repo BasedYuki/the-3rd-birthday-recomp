@@ -790,8 +790,56 @@ static void put_px_rgba_z(int x, int y, uint16_t pz, int r, int g, int b, int a)
  * mode u/v are stored pre-multiplied by rw (texel coords over w). */
 typedef GeVtx Vtx;
 
+/* Widescreen. gui.c sets g_ge_ws (window aspect / 480:272) every frame; each draw into the
+ * display framebuffer is squeezed horizontally by 1/g_ge_ws around the screen centre and the
+ * presenter stretches the picture back over the wide window. Perspective 3D therefore gets a
+ * wider field of view, and flat draws (2D, and the HUD, which this game draws as ortho 3D)
+ * keep their shape in the middle. Flat draws that cover the whole screen (backgrounds, post
+ * effects) or the whole width without a texture (fades, cinema bars) are left to stretch. */
+float g_ge_ws = 1.0f;
+static uint32_t prim_vtx_addr(uint32_t vbase, uint32_t ibase, int idxfmt, int i, int stride);
+typedef struct CVtx CVtx;
+static void ws_clip_x(uint32_t addr, const VFmt *vf, float *x, float *y);
+static float s_draw_ws = 1.0f;   /* x scale for the current draw (1 = untouched) */
+static int   s_draw_ws_skip = 0; /* flat draw entirely off the PSP screen: squeezing would show it */
+static void ws_decide(const VFmt *vf, uint32_t vbase, uint32_t ibase, int idxfmt, int count) {
+    s_draw_ws = 1.0f; s_draw_ws_skip = 0;
+    if (g_ge_ws <= 1.001f || ge.fbw != 512 || (ge.fbp & 0xFFFFFF) >= 0x110000) return;
+    if (!vf->through && fabsf(ge.proj[15]) < 1e-6f) {   /* perspective */
+        extern volatile int g_drawlog_on;
+        if (g_drawlog_on == 1) fprintf(stderr, "WS persp p0 %.6g p5 %.6g aspect %.6g\n", ge.proj[0], ge.proj[5], ge.proj[5] / ge.proj[0]);
+        /* cameras the widescreen hook (twinstick.c) already widened need no squeeze: scale x by
+         * (this projection's aspect) / (the window's), at most 1 */
+        const float a = ge.proj[0] != 0.0f ? fabsf(ge.proj[5] / ge.proj[0]) : 480.0f / 272.0f;
+        const float k = a / (480.0f / 272.0f * g_ge_ws);
+        s_draw_ws = k > 1.0f ? 1.0f : k < 0.2f ? 0.2f : k;
+        return;
+    }
+    /* a texture inside the display buffers is a screen copy: its UVs must keep lining up */
+    if (ge.tex_enable && (ge.tex_addr >> 24) == 0x04 && (ge.tex_addr & 0xFFFFFF) < 0x110000) return;
+    float lx = 1e9f, hx = -1e9f, ly = 1e9f, hy = -1e9f;
+    for (int i = 0; i < count; i++) {
+        const uint32_t a = prim_vtx_addr(vbase, ibase, idxfmt, i, vf->stride);
+        float x, y, z;
+        if (vf->through) read_pos(a, vf, &x, &y, &z);
+        else { ws_clip_x(a, vf, &x, &y); x = (x + 1.0f) * 240.0f; y = (1.0f - y) * 136.0f; }   /* ortho: clip -> pixels */
+        if (x < lx) lx = x;
+        if (x > hx) hx = x;
+        if (y < ly) ly = y;
+        if (y > hy) hy = y;
+    }
+    const int wide = hx - lx >= 470.0f, tall = hy - ly >= 262.0f;
+    {   extern volatile int g_drawlog_on;
+        if (g_drawlog_on == 1) fprintf(stderr, "WS %s bbox x %.0f..%.0f y %.0f..%.0f tex=%d %08x -> %s\n", vf->through ? "2d" : "ortho",
+                                       lx, hx, ly, hy, ge.tex_enable, ge.tex_addr, wide && (tall || !ge.tex_enable) ? "stretch" : "squeeze"); }
+    if (wide && (tall || !ge.tex_enable)) return;
+    if (hx <= 0.0f || lx >= 480.0f) { s_draw_ws_skip = 1; return; }   /* parked off-screen (sliding HUD) */
+    s_draw_ws = 1.0f / g_ge_ws;
+}
+
 static void load_vtx(uint32_t addr, const VFmt *vf, Vtx *o) {
     float pz; read_pos(addr, vf, &o->x, &o->y, &pz);
+    if (s_draw_ws != 1.0f && vf->through) o->x = 240.0f + (o->x - 240.0f) * s_draw_ws;
     o->z = pz; o->rw = 1.0f; o->fog = 1.0f;
     read_tc(addr, vf, &o->u, &o->v);
     read_color(addr, vf, &o->r, &o->g, &o->b, &o->a);
@@ -1270,7 +1318,7 @@ static void light_vertex(float wx, float wy, float wz, float nx, float ny, float
  * linear interpolation and only then projected. The old pipeline rejected any vertex with
  * clipw <= 0, which discarded every triangle touching the camera plane — in close-up
  * scenes (the hangar floor/aircraft) that erased whole models. */
-typedef struct {
+struct CVtx {
     float cx, cy, cz, cw; float u, v; float fog; int r, g, b, a;
     /* PSP primitive-acceptance flags (PPSSPP Clipper::ProcessTriangle / ClipToScreenInternal):
      * oor = projected screen coords outside the GE's 4096-grid; ozp/ozn = z/w beyond +-1. */
@@ -1278,7 +1326,7 @@ typedef struct {
     /* Projected screen-grid coords (pre-offset) kept for SR_RTRACE decision logging; only
      * meaningful when cw != 0. */
     float sx, sy, sz;
-} CVtx;
+};
 
 /* read_nrm + skinning blend: normals rotate through the bone matrices' 3x3 parts with the
  * same weights as positions (PPSSPP TransformUnit / software skinning). */
@@ -1296,6 +1344,13 @@ static void read_nrm_skinned(uint32_t addr, const VFmt *vf, const float *w, int 
     *x = px; *y = py; *z = pz;
 }
 
+static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o);
+static void ws_clip_x(uint32_t addr, const VFmt *vf, float *x, float *y) {   /* ortho: cw = 1 */
+    CVtx c; const float keep = s_draw_ws; s_draw_ws = 1.0f;
+    transform_vtx_clip(addr, vf, &c);
+    s_draw_ws = keep;
+    *x = c.cw != 0.0f ? c.cx / c.cw : c.cx; *y = c.cw != 0.0f ? c.cy / c.cw : c.cy;
+}
 static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o) {
     float mx, my, mz;
     read_pos(addr, vf, &mx, &my, &mz);
@@ -1330,6 +1385,7 @@ static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o) {
      * clipw == -cz; orthographic matrices have W row (0,0,0,1), so clipw == 1 and view
      * depth must NOT divide (hangar/menu 3D and overlay quads use ortho). */
     mat44_mul(ge.proj, cx, cy, cz, &o->cx, &o->cy, &o->cz, &o->cw);
+    o->cx *= s_draw_ws;   /* widescreen */
 
     /* Fog factor from view-space depth: 1 = no fog, 0 = full fog (PPSSPP convention).
      * Linear in cz, so interpolating the factor across a clipped edge stays exact. */
@@ -1701,6 +1757,7 @@ static void draw_info_emit(uint32_t op, const VFmt *vf) {
         else memcpy(wb, w4, sizeof(wb));
         m44mul(v4, wb, vw);
         m44mul(ge.proj, vw, d.m);
+        for (int c = 0; c < 4; c++) { d.pv[c * 4] *= s_draw_ws; d.m[c * 4] *= s_draw_ws; }   /* widescreen */
         for (int i = 0; i < 6; i++) d.vp[i] = decode_float24(ge.viewport_raw[i]);
         d.off[0] = (float)(ge.offsetx & 0xFFFF) / 16.0f;
         d.off[1] = (float)(ge.offsety & 0xFFFF) / 16.0f;
@@ -1716,6 +1773,7 @@ static void draw_prim(uint32_t op) {
     int type = (op >> 16) & 7;
     int count = op & 0xFFFF;
     VFmt vf; decode_vtype(ge.vtype, &vf);
+    ws_decide(&vf, ge.vaddr, ge.iaddr, (ge.vtype >> 11) & 3, count);
     draw_info_emit(op, &vf);
     /* SR_DRAWLOG=<frame>[,<frame>...]: print the target/texture/blend state of every prim drawn
      * in those frames (same fields as tools/ge_listdump.py --draws, for diffing vs PPSSPP). */
@@ -1803,6 +1861,7 @@ static void draw_prim(uint32_t op) {
     /* Advance vertex/index pointer (PPSSPP GPUCommon::AdvanceVerts). */
     if (idxfmt) ge.iaddr += (uint32_t)(count << (idxfmt - 1));
     else        ge.vaddr += (uint32_t)(count * vf.stride);
+    if (s_draw_ws_skip) return;
 
     /* ---- THROUGH-MODE (2D, screen coords) ---- */
     if (vf.through) {

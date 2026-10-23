@@ -400,7 +400,7 @@ static void controls_run(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_FPS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_INTRO, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -421,6 +421,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             snprintf(buf[M_RES], 96, "Resolution:  Auto  (now %dx)%s", active_scale, restart);
         else
             snprintf(buf[M_RES], 96, "Resolution:  %dx  (%dx%d)%s", cfg_scale, 480 * cfg_scale, 272 * cfg_scale, restart);
+        snprintf(buf[M_WIDE], 96, "Aspect ratio:  %s", sdl3vk_cfg_get("widescreen", 0) ? "Fill the window (wider view)" : "Original");
         snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
         snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 0) ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
@@ -458,6 +459,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 sdl3vk_set_render_scale_cfg(v);
                 break;
             }
+            case M_WIDE: sdl3vk_set_widescreen(!sdl3vk_cfg_get("widescreen", 0)); break;
             case M_INTRO: sdl3vk_cfg_set("skip_intro", !sdl3vk_cfg_get("skip_intro", 0)); break;
             case M_FPS: {
                 const int on = !gegpu_interp_enabled();
@@ -552,6 +554,7 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     { extern volatile int g_drawlog_on; if (g_drawlog_on) g_drawlog_on--; }   /* 2: start at this frame, 1: log, 0: done */
 
 #ifdef SR_SDL3VK
+    { extern float g_ge_ws; if (s_sdl3) g_ge_ws = sdl3vk_widescreen_factor(); }   /* next frame's squeeze */
     if (s_sdl3) {
         /* GPU-resident framebuffer: blit straight from the GE's target image. Falls back
          * to the guest-VRAM convert for CPU-written frames (movies) or pure software GE.
