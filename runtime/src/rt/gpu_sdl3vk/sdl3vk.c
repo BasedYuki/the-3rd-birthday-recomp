@@ -575,6 +575,61 @@ int __stdcall GdiplusStartup(ULONG_PTR *token, const GpStartupIn *input, void *o
 int __stdcall GdipCreateBitmapFromScan0(INT w, INT h, INT stride, INT format, BYTE *scan0, void **bitmap);
 int __stdcall GdipSaveImageToFile(void *image, const WCHAR *filename, const CLSID *encoder, const void *params);
 int __stdcall GdipDisposeImage(void *image);
+int __stdcall GdipCreateBitmapFromFile(const WCHAR *filename, void **bitmap);
+int __stdcall GdipGetImageWidth(void *image, UINT *w);
+int __stdcall GdipGetImageHeight(void *image, UINT *h);
+typedef struct { INT X, Y, Width, Height; } GpRect;
+typedef struct { UINT Width, Height; INT Stride; INT PixelFormat; void *Scan0; UINT_PTR Reserved; } GpBitmapData;
+int __stdcall GdipBitmapLockBits(void *bitmap, const GpRect *rect, UINT flags, INT format, GpBitmapData *data);
+int __stdcall GdipBitmapUnlockBits(void *bitmap, GpBitmapData *data);
+static int gdip_ready(void) {
+    static ULONG_PTR token = 0;
+    if (!token) { GpStartupIn in = { 1, NULL, FALSE, FALSE }; if (GdiplusStartup(&token, &in, NULL) != 0) token = 0; }
+    return token != 0;
+}
+/* PNG files for texture packs (ge_gpu.c): RGBA8 with R in the low byte; GDI+ keeps BGRA. */
+static const CLSID k_png_clsid = { 0x557CF406, 0x1A04, 0x11D3, { 0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E } };
+int sdl3vk_png_save(const char *path, const uint32_t *rgba, int w, int h) {
+    if (!gdip_ready() || w <= 0 || h <= 0) return 0;
+    uint32_t *px = malloc((size_t)w * (size_t)h * 4);
+    if (!px) return 0;
+    for (int i = 0; i < w * h; i++) {
+        const uint32_t c = rgba[i];
+        px[i] = (c & 0xFF00FF00u) | ((c & 0xFFu) << 16) | ((c >> 16) & 0xFFu);
+    }
+    WCHAR name[MAX_PATH]; _snwprintf(name, MAX_PATH, L"%hs", path); name[MAX_PATH - 1] = 0;
+    void *bmp = NULL;
+    int ok = GdipCreateBitmapFromScan0(w, h, w * 4, 0x0026200A /* 32bppARGB */, (BYTE *)px, &bmp) == 0 && bmp &&
+             GdipSaveImageToFile(bmp, name, &k_png_clsid, NULL) == 0;
+    if (bmp) GdipDisposeImage(bmp);
+    free(px);
+    return ok;
+}
+uint32_t *sdl3vk_png_load(const char *path, int *w, int *h) {
+    if (!gdip_ready()) return NULL;
+    WCHAR name[MAX_PATH]; _snwprintf(name, MAX_PATH, L"%hs", path); name[MAX_PATH - 1] = 0;
+    void *bmp = NULL;
+    if (GdipCreateBitmapFromFile(name, &bmp) != 0 || !bmp) return NULL;
+    UINT iw = 0, ih = 0; GdipGetImageWidth(bmp, &iw); GdipGetImageHeight(bmp, &ih);
+    uint32_t *out = NULL;
+    GpRect r = { 0, 0, (INT)iw, (INT)ih };
+    GpBitmapData bd;
+    if (iw && ih && iw <= 4096 && ih <= 4096 && GdipBitmapLockBits(bmp, &r, 1 /* read */, 0x0026200A, &bd) == 0) {
+        out = malloc((size_t)iw * ih * 4);
+        if (out)
+            for (UINT y = 0; y < ih; y++) {
+                const uint32_t *row = (const uint32_t *)((const uint8_t *)bd.Scan0 + (ptrdiff_t)y * bd.Stride);
+                for (UINT x = 0; x < iw; x++) {
+                    const uint32_t c = row[x];
+                    out[y * iw + x] = (c & 0xFF00FF00u) | ((c & 0xFFu) << 16) | ((c >> 16) & 0xFFu);
+                }
+            }
+        GdipBitmapUnlockBits(bmp, &bd);
+    }
+    GdipDisposeImage(bmp);
+    if (out) { *w = (int)iw; *h = (int)ih; }
+    return out;
+}
 
 static VkBuffer s_shot_buf; static VkDeviceMemory s_shot_mem; static void *s_shot_map;
 static VkDeviceSize s_shot_cap = 0;

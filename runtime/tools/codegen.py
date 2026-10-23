@@ -696,7 +696,8 @@ def normal_line(addr, w):
 
 
 # Function entries that call the runtime's sr_func_hook(s, addr) first (--hooks=0x..,0x..):
-# lets the runtime adjust game state at a precise point in the game's own code.
+# lets the runtime adjust game state at a precise point in the game's own code, or (a mod)
+# replace the function: a non-zero return skips the original body.
 HOOKS = set()
 
 
@@ -706,7 +707,7 @@ def emit_function(elf, start, ranges, known):
     out.append(f"void f_{start:08x}(CpuState *s) {{")
     out.append("    SR_YIELD(s);")   # preemption point (no-op unless the scheduler is active)
     if start in HOOKS:
-        out.append(f"    sr_func_hook(s, 0x{start:08x}u);")
+        out.append(f"    if (sr_func_hook(s, 0x{start:08x}u)) return;")
     # Instructions are emitted in address order, but execution must begin at the entry. When the
     # entry is not the lowest address (the function contains code reached via a back-edge to a
     # lower address), jump to the entry's label first; otherwise control would start mid-body.

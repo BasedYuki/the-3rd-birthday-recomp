@@ -99,9 +99,70 @@ static void seed_from_init(const char *trace_path, CpuState *s) {
     if (!found) { fprintf(stderr, "no '# init' in %s\n", trace_path); exit(2); }
 }
 
+/* Started with no arguments (a double-click, a shortcut): run the game from the executable's
+ * folder. launch.cfg (written by scripts/build.sh) holds "image=", "base=", "entry=" and
+ * optionally "iso="; without iso= the first *.iso in the folder or up to three folders above
+ * is used. Logs go to run.err / run.out, and a console window opened only for us is closed. */
+static int launch_defaults(int *pargc, char ***pargv) {
+    static char exe[MAX_PATH], image[MAX_PATH] = "image.bin", base[32] = "08804000", entry[32] = "",
+                iso[MAX_PATH] = "";
+    static char *args[9];
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    char dir[MAX_PATH]; snprintf(dir, sizeof(dir), "%s", exe);
+    char *sl = strrchr(dir, '\\'); if (sl) *sl = 0;
+    SetCurrentDirectoryA(dir);
+    FILE *f = fopen("launch.cfg", "r");
+    if (!f) return 0;
+    char line[600];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!strncmp(line, "image=", 6)) snprintf(image, sizeof(image), "%s", line + 6);
+        else if (!strncmp(line, "base=", 5)) snprintf(base, sizeof(base), "%s", line + 5);
+        else if (!strncmp(line, "entry=", 6)) snprintf(entry, sizeof(entry), "%s", line + 6);
+        else if (!strncmp(line, "iso=", 4)) snprintf(iso, sizeof(iso), "%s", line + 4);
+    }
+    fclose(f);
+    if (!entry[0]) return 0;
+    if (!getenv("PSP_ISO")) {
+        if (!iso[0]) {
+            char pat[MAX_PATH + 16], up[MAX_PATH] = ".";
+            for (int depth = 0; depth < 4 && !iso[0]; depth++) {
+                WIN32_FIND_DATAA fd;
+                snprintf(pat, sizeof(pat), "%s/*.iso", up);
+                HANDLE h = FindFirstFileA(pat, &fd);
+                if (h != INVALID_HANDLE_VALUE) { snprintf(iso, sizeof(iso), "%s/%s", up, fd.cFileName); FindClose(h); }
+                snprintf(pat, sizeof(pat), "%s/..", up); snprintf(up, sizeof(up), "%s", pat);
+            }
+        }
+        if (iso[0]) { static char e[MAX_PATH + 16]; snprintf(e, sizeof(e), "PSP_ISO=%s", iso); _putenv(e); }
+    }
+    if (!getenv("PSP_VFPU_TABLES") && GetFileAttributesA("assets/vfpu") == INVALID_FILE_ATTRIBUTES) {
+        static const char *const cand[] = { "../../runtime/assets/vfpu", "../../assets/vfpu" };
+        for (unsigned i = 0; i < 2; i++)
+            if (GetFileAttributesA(cand[i]) != INVALID_FILE_ATTRIBUTES) {
+                static char e[96]; snprintf(e, sizeof(e), "PSP_VFPU_TABLES=%s", cand[i]); _putenv(e); break;
+            }
+    }
+    freopen("run.err", "w", stderr);
+    freopen("run.out", "w", stdout);
+    {   /* a console window that exists only for this process (double-click): close it */
+        DWORD pids[2];
+        if (GetConsoleProcessList(pids, 2) == 1) FreeConsole();
+    }
+    args[0] = exe; args[1] = "--image"; args[2] = image; args[3] = base; args[4] = entry;
+    args[5] = "init.trace"; args[6] = "none"; args[7] = "--gui"; args[8] = NULL;
+    *pargc = 8; *pargv = args;
+    return 1;
+}
+
 int main(int argc, char **argv) {
     uint32_t entry;
     const char *ref_trace, *out;
+    if (argc == 1 && !launch_defaults(&argc, &argv)) {
+        MessageBoxA(NULL, "launch.cfg is missing next to the game executable.\nBuild the game with scripts/build.ps1.",
+                    "The 3rd Birthday", MB_ICONERROR);
+        return 2;
+    }
 
     SetUnhandledExceptionFilter(sr_crash_filter);
     { extern void ctrlsrv_start(void); ctrlsrv_start(); }   /* SR_CTRL test channel */

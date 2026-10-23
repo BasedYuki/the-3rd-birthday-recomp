@@ -675,7 +675,10 @@ static uint32_t h_GetAllEnvelopeHeights(CpuState *s) {
 static uint32_t h_RevType(CpuState *s) {
     const int type = (int)A1;
     if (type < EFFECT_OFF || type > EFFECT_MAX) return SAS_ERR_REV_INVALID_TYPE;
-    if (type != s_fx.type) { s_fx.type = type; rev_set_preset(type); }
+    if (type != s_fx.type) {
+        if (getenv("SR_SASLOG")) fprintf(stderr, "sas: reverb type %d -> %d\n", s_fx.type, type);
+        s_fx.type = type; rev_set_preset(type);
+    }
     return 0;
 }
 
@@ -691,11 +694,17 @@ static uint32_t h_RevParam(CpuState *s) {
 
 static uint32_t h_RevEVOL(CpuState *s) {
     if (A1 > 0x1000 || A2 > 0x1000) return SAS_ERR_REV_INVALID_VOLUME;
+    if (getenv("SR_SASLOG") && ((int)A1 != s_fx.leftVol || (int)A2 != s_fx.rightVol))
+        fprintf(stderr, "sas: reverb volume %d,%d\n", (int)A1, (int)A2);
     s_fx.leftVol = (int)A1; s_fx.rightVol = (int)A2;
     return 0;
 }
 
-static uint32_t h_RevVON(CpuState *s) { s_fx.isDryOn = A1 != 0; s_fx.isWetOn = A2 != 0; return 0; }
+static uint32_t h_RevVON(CpuState *s) {
+    if (getenv("SR_SASLOG") && ((A1 != 0) != s_fx.isDryOn || (A2 != 0) != s_fx.isWetOn))
+        fprintf(stderr, "sas: dry %d wet %d\n", A1 != 0, A2 != 0);
+    s_fx.isDryOn = A1 != 0; s_fx.isWetOn = A2 != 0; return 0;
+}
 
 static uint32_t h_GetGrain(CpuState *s) { (void)s; return (uint32_t)s_grain; }
 static uint32_t h_SetGrain(CpuState *s) {

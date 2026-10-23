@@ -401,7 +401,9 @@ static void update_special(uint32_t src) {
     }
 }
 
-void sr_func_hook(CpuState *s, uint32_t addr) {
+int sr_func_hook(CpuState *s, uint32_t addr) {
+    /* code mods (mods/<name>/, compiled in by scripts/build.sh) come first and may replace */
+    { extern int sr_mods_hook(CpuState *s, uint32_t addr); if (sr_mods_hook(s, addr)) return 1; }
     /* Widescreen: give the game's cameras the window's aspect ratio, so it renders and culls
      * a wider view itself (ge.c then only squeezes draws that still use the PSP's 480:272). */
     if (addr == HOOK_CAM_PROJECTION || addr == HOOK_CAM_SETUP) {
@@ -415,10 +417,10 @@ void sr_func_hook(CpuState *s, uint32_t addr) {
         }
         if (getenv("SR_WSLOG")) fprintf(stderr, "widescreen: camera %s aspect -> %.4f\n",
                                         addr == HOOK_CAM_SETUP ? "setup" : "projection", want);
-        return;
+        return 0;
     }
     init_once();
-    if (!s_on) return;
+    if (!s_on) return 0;
     s_hook_tick = s_ticks;
     switch (addr) {
     case HOOK_CAMERA_DERIVE:   /* a0 = camera object base (logic camera) */
@@ -434,4 +436,5 @@ void sr_func_hook(CpuState *s, uint32_t addr) {
         break;
     default: break;
     }
+    return 0;
 }

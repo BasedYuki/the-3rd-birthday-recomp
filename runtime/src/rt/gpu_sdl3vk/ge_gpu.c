@@ -43,6 +43,8 @@
 #include "../recomp.h"
 #include "../ge_shared.h"
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>   /* texture packs: FindFirstFileA, CreateDirectoryA */
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1022,6 +1024,68 @@ static int clut_row_get(void) {
     return row;
 }
 
+/* ---- texture packs ------------------------------------------------------------------------
+ * textures/<hash>.png (next to the executable) replaces a game texture; the image may be any
+ * size (higher resolution for HD packs): it is sampled with the game's own UVs. <hash> is 16 hex
+ * digits of a hash of the texture as decoded (its RGBA pixels and size), so it does not depend
+ * on where the game keeps it. graphics.cfg texture_dump=1 (or SR_TEXDUMP=1) writes every texture
+ * the game uses to textures/dump/<hash>.png: edit a copy, put it in textures/, restart. */
+static int       s_tp_init = 0, s_tp_dump = 0, s_tp_n = 0;
+static uint64_t *s_tp_have = NULL;          /* sorted hashes of textures/*.png */
+static uint64_t  s_tp_dumped[8192]; static int s_tp_ndumped = 0;
+static int u64cmp(const void *a, const void *b) {
+    const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+static void tp_init(void) {
+    s_tp_init = 1;
+    const char *e = getenv("SR_TEXDUMP");
+    s_tp_dump = e ? atoi(e) != 0 : sdl3vk_cfg_get("texture_dump", 0) != 0;
+    if (s_tp_dump) { CreateDirectoryA("textures", NULL); CreateDirectoryA("textures/dump", NULL); }
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA("textures/*.png", &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    int cap = 0;
+    do {
+        unsigned long long v; char tail[8];
+        if (sscanf(fd.cFileName, "%16llx%7s", &v, tail) != 2 || _stricmp(tail, ".png")) continue;
+        if (s_tp_n == cap) { cap = cap ? cap * 2 : 256; s_tp_have = realloc(s_tp_have, (size_t)cap * sizeof(uint64_t)); }
+        s_tp_have[s_tp_n++] = v;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    qsort(s_tp_have, (size_t)s_tp_n, sizeof(uint64_t), u64cmp);
+    fprintf(stderr, "texture pack: %d replacement textures in textures/\n", s_tp_n);
+}
+/* The replacement for the texture just decoded into px (w x h), or NULL. Dumps it if asked. */
+static uint32_t *tp_replace(const uint32_t *px, int w, int h, int *rw, int *rh) {
+    if (!s_tp_init) tp_init();
+    if (!s_tp_n && !s_tp_dump) return NULL;
+    uint64_t th = 1469598103934665603ull;
+    th = fnv64(th, &w, sizeof(w)); th = fnv64(th, &h, sizeof(h));
+    th = fnv64(th, px, (size_t)w * (size_t)h * 4);
+    char path[64];
+    if (s_tp_dump) {
+        int seen = 0;
+        for (int i = 0; i < s_tp_ndumped; i++) if (s_tp_dumped[i] == th) { seen = 1; break; }
+        if (!seen && s_tp_ndumped < 8192) {
+            s_tp_dumped[s_tp_ndumped++] = th;
+            snprintf(path, sizeof(path), "textures/dump/%016llx.png", (unsigned long long)th);
+            if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) sdl3vk_png_save(path, px, w, h);
+        }
+    }
+    if (!s_tp_n || !bsearch(&th, s_tp_have, (size_t)s_tp_n, sizeof(uint64_t), u64cmp)) return NULL;
+    snprintf(path, sizeof(path), "textures/%016llx.png", (unsigned long long)th);
+    return sdl3vk_png_load(path, rw, rh);
+}
+
+static void tex_free(TexEnt *e) {
+    vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->set);
+    vkDestroySampler(s_dev, e->smp, NULL);
+    vkDestroyImageView(s_dev, e->view, NULL);
+    vkDestroyImage(s_dev, e->img, NULL);
+    vkFreeMemory(s_dev, e->mem, NULL);
+}
+
 static uint64_t s_texlru = 1;
 
 /* Evict the least-recently-used quarter of the cache (the working set survives; the
@@ -1035,11 +1099,7 @@ static void tex_evict_lru(void) {
         for (int i = 1; i < s_tex_n; i++)
             if (s_tex[i].lru < s_tex[v].lru) v = i;
         TexEnt *e = &s_tex[v];
-        vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->set);
-        vkDestroySampler(s_dev, e->smp, NULL);
-        vkDestroyImageView(s_dev, e->view, NULL);
-        vkDestroyImage(s_dev, e->img, NULL);
-        vkFreeMemory(s_dev, e->mem, NULL);
+        tex_free(e);
         *e = s_tex[--s_tex_n];
     }
 }
@@ -1099,7 +1159,20 @@ static VkDescriptorSet tex_get(void) {
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
         { const uint64_t t0 = now_us(); ge_decode_tex_rgba(s_texscratch); s_t_texdec += now_us() - t0; }
-        if (!tex_upload(e->img, s_texscratch, e->w, e->h)) return s_white_set;
+        int rw = w, rh = h;
+        uint32_t *rep = tp_replace(s_texscratch, w, h, &rw, &rh);
+        if (rep || e->w != w || e->h != h) {   /* a replacement (or back from one): new image size */
+            vkDeviceWaitIdle(s_dev);
+            fi_invalidate();
+            tex_free(e);
+            const int ok = tex_make(rep ? rep : s_texscratch, rep ? rw : w, rep ? rh : h, linear, clamp_u, clamp_v,
+                                    &e->img, &e->mem, &e->view, &e->smp);
+            const int has = rep != NULL;
+            free(rep);
+            e->set = ok ? make_descriptor(e->view, e->smp, s_dpool_tex) : VK_NULL_HANDLE;
+            if (!e->set) { *e = s_tex[--s_tex_n]; return s_white_set; }
+            e->w = has ? rw : w; e->h = has ? rh : h;
+        } else if (!tex_upload(e->img, s_texscratch, e->w, e->h)) return s_white_set;
         e->hash = hash;
         e->pending = 1;
         s_cnt_texup++;
@@ -1113,12 +1186,17 @@ static VkDescriptorSet tex_get(void) {
     { const uint64_t t0 = now_us(); ge_decode_tex_rgba(s_texscratch); s_t_texdec += now_us() - t0; }
     TexEnt *e = &s_tex[s_tex_n];
     memset(e, 0, sizeof(*e));
-    if (!tex_make(s_texscratch, w, h, linear, clamp_u, clamp_v, &e->img, &e->mem, &e->view, &e->smp))
-        return s_white_set;
+    int rw = w, rh = h;
+    uint32_t *rep = tp_replace(s_texscratch, w, h, &rw, &rh);
+    const int ok = tex_make(rep ? rep : s_texscratch, rep ? rw : w, rep ? rh : h, linear, clamp_u, clamp_v,
+                            &e->img, &e->mem, &e->view, &e->smp);
+    const int has = rep != NULL;
+    free(rep);
+    if (!ok) return s_white_set;
     e->set = make_descriptor(e->view, e->smp, s_dpool_tex);
     if (!e->set) return s_white_set;
     e->key = key; e->hash = hash;
-    e->w = w; e->h = h;
+    e->w = has ? rw : w; e->h = has ? rh : h;
     e->pending = 1;
     e->lru = s_texlru++;
     s_cnt_texup++;
@@ -1206,6 +1284,13 @@ static void build_state(int persp, int sprite, Batch *b) {
         uint32_t ma = (uint32_t)g->mask_alpha & 0xFF;
         k->cmask = (mr >= 0x80 ? 0 : VK_COLOR_COMPONENT_R_BIT) | (mg >= 0x80 ? 0 : VK_COLOR_COMPONENT_G_BIT)
                  | (mb >= 0x80 ? 0 : VK_COLOR_COMPONENT_B_BIT) | (ma >= 0x80 ? 0 : VK_COLOR_COMPONENT_A_BIT);
+        /* Framebuffer alpha is the stencil buffer: outside clear mode only stencil ops change
+         * it (PPSSPP's software renderer: new_color |= stencil << 24), never the fragment's
+         * alpha or blending. With the stencil test off it stays as it was. SR_ALPHAWRITE=1
+         * restores the old behaviour (blended alpha written). */
+        static int aw = -1;
+        if (aw < 0) aw = getenv("SR_ALPHAWRITE") ? 1 : 0;
+        if (!g->stencil_enable && !aw) k->cmask &= (uint8_t)~VK_COLOR_COMPONENT_A_BIT;
     }
 
     /* blending */
@@ -1226,7 +1311,8 @@ static void build_state(int persp, int sprite, Batch *b) {
             static int bl = -1; static uint32_t seen[64]; static int nseen = 0;
             if (bl < 0) bl = getenv("SR_BLENDLOG") ? 1 : 0;
             const uint32_t fa = g->blend_mode & 0xF, fb = (g->blend_mode >> 4) & 0xF;
-            const char *why = eq >= 3 ? "min/max/absdiff equation" : (fb == 6 || fb == 7 || fa == 8 || fa == 9 || fb == 8 || fb == 9)
+            extern int sdl3vk_dual_src;   /* doubled SRC alpha on the dst side is exact with dual-source blending */
+            const char *why = eq >= 3 ? "min/max/absdiff equation" : (((fb == 6 || fb == 7) && !sdl3vk_dual_src) || fa == 8 || fa == 9 || fb == 8 || fb == 9)
                               ? "doubled alpha factor" : (fa >= 10 && fb >= 10 && (g->blend_fixa & 0xFFFFFF) != (g->blend_fixb & 0xFFFFFF)
                                  && (g->blend_fixb & 0xFFFFFF) != 0 && (g->blend_fixb & 0xFFFFFF) != 0xFFFFFF) ? "two FIX constants" : NULL;
             const uint32_t key = g->blend_mode ^ (g->blend_fixa * 31) ^ (g->blend_fixb * 131);

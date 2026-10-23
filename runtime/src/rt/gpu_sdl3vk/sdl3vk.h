@@ -48,6 +48,9 @@ int  sdl3vk_menu_events(void);
  * n = 0 hides it. */
 void sdl3vk_menu_show(const char *const *lines, int n, int sel);
 /* Remappable controls (controls.cfg): actions with two keys (slot 0, 1) and a pad button (slot 2). */
+/* PNG load/save, RGBA8 with R in the low byte (texture packs). load returns malloc'd pixels. */
+int sdl3vk_png_save(const char *path, const unsigned int *rgba, int w, int h);
+unsigned int *sdl3vk_png_load(const char *path, int *w, int *h);
 float sdl3vk_widescreen_factor(void);   /* 1 = original 480:272, >1 = window is that much wider */
 void sdl3vk_set_widescreen(int on);
 int  sdl3vk_bind_count(void);

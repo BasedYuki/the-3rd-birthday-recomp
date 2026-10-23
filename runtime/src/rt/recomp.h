@@ -192,7 +192,9 @@ float    sr_twinstick_setting(int id);
 void     sr_twinstick_set(int id, float v);
 void     gui_toast(const char *msg);              /* short on-screen status message ("Game saved") */
 /* Called at the entry of game functions listed in versions/<game>.toml [hooks] (codegen --hooks). */
-void     sr_func_hook(CpuState *s, uint32_t addr);
+/* Called at the entry of hooked functions (versions/<game>.toml [hooks], mods/<name>/mod.toml).
+ * Non-zero: the function was replaced (the hook set v0/v1 and anything else it returns). */
+int      sr_func_hook(CpuState *s, uint32_t addr);
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 void     gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
 

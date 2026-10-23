@@ -2536,7 +2536,14 @@ static int ge_run_list_inner(GeListCtx *c) {
             case GE_MASKALPHA: ge.mask_alpha = (int)(data & 0xFF); break;
             /* Stencil lives in destination alpha on the PSP; not emulated. Logic ops and
              * colour test are rare and also skipped (state consumed so lists stay quiet). */
-            case GE_STENCILTESTENABLE: case GE_STENCILTEST: case GE_STENCILOP: break;
+            case GE_STENCILTESTENABLE:
+                ge.stencil_enable = (int)(data & 1);
+                if (ge.stencil_enable) {
+                    static int once = 0;
+                    if (!once++) fprintf(stderr, "GE: stencil test enabled - IN USE, stencil ops not emulated\n");
+                }
+                break;
+            case GE_STENCILTEST: case GE_STENCILOP: break;
             case GE_ANTIALIASENABLE: case GE_PATCHCULLENABLE: break;
             case GE_COLORTESTENABLE: case GE_LOGICOPENABLE: break;
             case GE_PATCHDIVISION: case GE_PATCHPRIMITIVE: case GE_PATCHFACING: break;

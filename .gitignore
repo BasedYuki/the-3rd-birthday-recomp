@@ -45,3 +45,6 @@ bakeoff/
 
 # Local toolchains (MSYS2 etc.)
 /Vs assets/
+
+# Packaged builds (contain code derived from the game)
+dist/

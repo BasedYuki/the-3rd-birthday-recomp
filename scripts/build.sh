@@ -24,12 +24,13 @@ mkdir -p "$OUT" "$GEN"
 
 # 1. Relocate, map imports, discover functions, generate C.
 if [ $REGEN = 1 ] || [ ! -f "$OUT/recomp.c" ] || [ "$ELF" -nt "$OUT/recomp.c" ] \
-   || [ "$RT/tools/codegen.py" -nt "$OUT/recomp.c" ] || [ "$ROOT/versions/$GAME.toml" -nt "$OUT/recomp.c" ]; then
+   || [ "$RT/tools/codegen.py" -nt "$OUT/recomp.c" ] || [ "$ROOT/versions/$GAME.toml" -nt "$OUT/recomp.c" ] \
+   || [ -n "$(find "$ROOT/mods" -name mod.toml -newer "$OUT/recomp.c" 2>/dev/null)" ]; then
   python "$RT/tools/prxload.py"  "$ELF" $BASE --out="$OUT/image.bin"
   python "$RT/tools/imports.py"  "$ELF" $BASE --toml="$OUT/imports.toml" > /dev/null
   python "$RT/tools/analyze.py"  "$ELF" --base=$BASE --toml="$OUT/functions.toml" --quiet
   python "$RT/tools/codegen.py"  "$ELF" "$OUT/recomp.c" --base=$BASE --toml="$OUT/functions.toml" \
-    --hooks="$(python "$ROOT/tools/toml_addrs.py" --hooks "$ROOT/versions/$GAME.toml")" \
+    --hooks="$(python "$ROOT/tools/toml_addrs.py" --hooks "$ROOT/versions/$GAME.toml"),$(python "$ROOT/tools/mods_gen.py" --hooks)" \
     | grep -v '^DEBUG'
   rm -rf "$GEN"
   python "$ROOT/tools/split_recomp.py" "$OUT/recomp.c" "$GEN"
@@ -75,15 +76,29 @@ done
 python "$ROOT/tools/toml_addrs.py" "$ROOT/versions/$GAME.toml" "$OUT/game_addrs.h"
 
 RT_SRCS=(recomp.c vfpu_interp.c hle.c hle_ext.c sched.c iso.c mpeg.c pgf.c gui.c audio.c h264_mf.c
-         savedata.c osk_win.c driver.c ctrl_server.c atrac_hle.c sas_hle.c twinstick.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
+         savedata.c osk_win.c driver.c ctrl_server.c atrac_hle.c sas_hle.c twinstick.c mods.c gpu_sdl3vk/sdl3vk.c gpu_sdl3vk/ge_gpu.c)
+# Code mods (mods/<name>/mod.toml + *.c, see mods/README.md): each mod's mod_hook gets its own name.
+python "$ROOT/tools/mods_gen.py" --gen "$OUT"
+MOD_OBJS=("$OUT/mods_gen.c")
+mkdir -p "$OUT/mods_obj"
+while read -r id src; do
+  [ -n "$id" ] || continue
+  o="$OUT/mods_obj/${id}_$(basename "$src" .c).o"
+  gcc -O2 -g -I"$RT/src/rt" -I"$OUT" -include "$OUT/mods_hooks.h" -Dmod_hook="mod_${id}_hook" -c "$src" -o "$o"
+  MOD_OBJS+=("$o")
+done < "$OUT/mods_srcs.txt"
 # The runtime (GE backend, HLE, scheduler) at -O2; the later flag overrides CFLAGS' -O1, which
 # is only there for the huge generated chunks.
 gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$GEN"/*.o "$OUT/ge.o" "$OUT"/at3/*.o \
-  "${RT_SRCS[@]/#/$RT/src/rt/}" \
+  "${RT_SRCS[@]/#/$RT/src/rt/}" "${MOD_OBJS[@]}" \
   -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -lws2_32 -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic
 
 cp /ucrt64/bin/SDL3.dll "$OUT/" 2>/dev/null || echo "note: SDL3.dll in use (game running), kept the existing copy"
 cp -r "$RT/font" "$OUT/"
 echo "# init r28=0 r4=0 r5=0" > "$OUT/init.trace"
+# Double-click launch (driver.c launch_defaults): the image, its base and entry point; the
+# VFPU tables next to the executable.
+python "$ROOT/tools/write_launch_cfg.py" "$ELF" "$BASE" "$OUT/launch.cfg"
+mkdir -p "$OUT/assets" && cp -r "$RT/assets/vfpu" "$OUT/assets/"
 echo "built $OUT/${EXE_NAME:-$GAME}.exe"

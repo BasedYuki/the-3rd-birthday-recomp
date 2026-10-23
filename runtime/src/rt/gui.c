@@ -305,6 +305,7 @@ static void fi_show_held(void) {
 
 /* Called by the scheduler on every vblank. */
 void gui_vblank(void) {
+    { extern void sr_mods_vblank(void); sr_mods_vblank(); }   /* data mods: memory patches */
 #ifdef SR_SDL3VK
     if (!s_sdl3 || !s_fi_phase) return;
     { extern int sched_fast_forward(void); if (sched_fast_forward()) { s_fi_phase = 0; return; } }

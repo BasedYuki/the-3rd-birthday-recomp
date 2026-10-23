@@ -1,0 +1,7 @@
+# Example code mod (off: set enabled = true and rebuild with scripts/build.ps1 to try it).
+name = "Wider field of view"
+enabled = false
+
+[hooks]
+# camera setup; fov in $f12, aspect ratio $f13, near $f14, far $f15
+cam_setup = 0x08B435B8
