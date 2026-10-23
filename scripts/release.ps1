@@ -13,7 +13,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') { Write-Error "version must look like 
 
 # 1. version + changelog section
 Set-Content -NoNewline -Encoding ascii (Join-Path $root 'VERSION') $Version
-$log = Get-Content -Raw (Join-Path $root 'docs\CHANGELOG.md')
+$log = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'docs\CHANGELOG.md')   # PS 5.1 reads ANSI otherwise
 $m = [regex]::Match($log, "(?ms)^## $([regex]::Escape($Version))\b.*?(?=^## |\z)")
 if (-not $m.Success) { Write-Error "docs/CHANGELOG.md has no '## $Version' section yet - write it first" }
 $notes = Join-Path $root "dist\release-notes-$Version.md"
@@ -22,7 +22,7 @@ $body = $m.Value.Trim() + "`n`n---`n**how to play:** download ``The3rdBirthday-$
         " pick your own iso of the game (US version, ULUS10567) and press **Prepare game**. it builds the game on your pc" +
         " once, takes a few minutes. no game files are included, you need your own copy.`n`n" +
         "if windows says ""Windows protected your PC"" just click **More info** then **Run anyway** (the exe isn't signed).`n"
-Set-Content -Encoding utf8 $notes $body
+[IO.File]::WriteAllText($notes, $body, (New-Object Text.UTF8Encoding $false))   # UTF-8 without a BOM
 "notes: $notes"
 
 # 2. build + local package
