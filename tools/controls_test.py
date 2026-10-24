@@ -118,6 +118,15 @@ def main():
             g._cmd(f"vaxis {ax} 0"); time.sleep(0.3); _, pos = log_since(errp, pos)
             ok = any(abs(int(x) - exp[0]) <= 2 and abs(int(y) - exp[1]) <= 2 for x, y in st)
             check(f"pad left stick axis{ax}={val} -> {exp}", ok, f"seen {st[-3:]}")
+        # -- stick deadzone (left_stick_deadzone, default 0.20): radial, rescaled past it
+        for val, exp, label in ((5000, 128, "inside the deadzone -> centre"), (9000, 139, "just past it -> small, no jump")):
+            g._cmd(f"vaxis 0 {val}"); time.sleep(0.3)
+            t, pos = log_since(errp, pos)
+            st = [int(x) for x, _ in re.findall(r"stick (\d+),(\d+)", t)] or [128]
+            g._cmd("vaxis 0 0"); time.sleep(0.3); _, pos = log_since(errp, pos)
+            check(f"pad left stick {val} {label}", abs(st[-1] - exp) <= 2, f"seen x {st[-3:]}")
+        txt = open(os.path.join(OUT, "controls.cfg")).read()
+        check("deadzones saved in controls.cfg", "left_stick_deadzone = 0.20" in txt and "right_stick_deadzone = 0.20" in txt)
         # -- settings menu: Esc, and Guide on the pad
         kb.tap("esc"); time.sleep(1); g.shot("menu_esc")
         t, pos = log_since(errp, pos)

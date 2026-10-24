@@ -137,6 +137,17 @@ static int s_bump_too = 1;   /* bumpers also give L / R (as before remapping exi
  * it); its movement turns the twin-stick camera, the left button is R (fire), the right L (aim).
  * Keyboard smoothing eases WASD direction changes instead of jumping between the 8 directions. */
 static int   s_mouse_on = 1, s_mouse_btn = 1, s_mouse_inv = 0, s_kbd_smooth = 1;
+/* Controller stick deadzones (controls.cfg, Controls page): radial, and the stick's travel past
+ * it is rescaled to the full range, so movement starts smoothly from zero. Worn or noisy sticks
+ * (drift) need more, precise ones can use less. */
+#define DZ_DEFAULT 0.20f
+static float s_dz_l = DZ_DEFAULT, s_dz_r = DZ_DEFAULT;
+static void stick_deadzone(float *x, float *y, float dz) {
+    const float mag = sqrtf(*x * *x + *y * *y);
+    if (mag <= dz) { *x = *y = 0.0f; return; }
+    const float sc = (mag >= 1.0f ? 1.0f : (mag - dz) / (1.0f - dz)) / mag;
+    *x *= sc; *y *= sc;
+}
 static float s_mouse_sens = 1.0f;
 static int   s_mouse_cap = 0;                   /* captured (relative mode) */
 static float s_mdx = 0.0f, s_mdy = 0.0f;        /* motion since the camera last read it */
@@ -183,6 +194,7 @@ static void bind_save(void) {
     fprintf(f, "bumpers_are_l_r = %d\n", s_bump_too);
     fprintf(f, "mouse_camera = %d\nmouse_sensitivity = %.2f\nmouse_invert_y = %d\nmouse_buttons_fire_aim = %d\n"
                "keyboard_smoothing = %d\n", s_mouse_on, s_mouse_sens, s_mouse_inv, s_mouse_btn, s_kbd_smooth);
+    fprintf(f, "left_stick_deadzone = %.2f\nright_stick_deadzone = %.2f\n", s_dz_l, s_dz_r);
     fclose(f);
 }
 static void bind_load(void) {
@@ -201,6 +213,12 @@ static void bind_load(void) {
         if (!SDL_strcasecmp(id, "mouse_invert_y")) { s_mouse_inv = atoi(eq + 1) != 0; continue; }
         if (!SDL_strcasecmp(id, "mouse_buttons_fire_aim")) { s_mouse_btn = atoi(eq + 1) != 0; continue; }
         if (!SDL_strcasecmp(id, "keyboard_smoothing")) { s_kbd_smooth = atoi(eq + 1) != 0; continue; }
+        if (!SDL_strcasecmp(id, "left_stick_deadzone") || !SDL_strcasecmp(id, "right_stick_deadzone")) {
+            float v = (float)atof(eq + 1);
+            v = v < 0.0f ? 0.0f : v > 0.6f ? 0.6f : v;
+            if (id[0] == 'l' || id[0] == 'L') s_dz_l = v; else s_dz_r = v;
+            continue;
+        }
         int a = -1; for (int i = 0; i < BA_COUNT; i++) if (!SDL_strcasecmp(id, k_acts[i].id)) a = i;
         if (a < 0) continue;
         char *keys = eq + 1, *bar = strchr(keys, '|'), *pad = (char *)"";
@@ -248,16 +266,19 @@ void sdl3vk_bind_clear(int a, int slot) {
 void sdl3vk_bind_reset(void) {
     bind_defaults(); s_bump_too = 1;
     s_mouse_on = 1; s_mouse_sens = 1.0f; s_mouse_inv = 0; s_mouse_btn = 1; s_kbd_smooth = 1;
+    s_dz_l = s_dz_r = DZ_DEFAULT;
     bind_save();
 }
 /* mouse / keyboard options under the bindings on the Controls page */
-int  sdl3vk_input_opt_count(void) { return 5; }
+int  sdl3vk_input_opt_count(void) { return 7; }
 void sdl3vk_input_opt_text(int i, char *out, int cap) {
     switch (i) {
     case 0: snprintf(out, (size_t)cap, "Mouse camera (click the window)\t%s", s_mouse_on ? "On" : "Off"); break;
     case 1: snprintf(out, (size_t)cap, "Mouse sensitivity\t%.2f", s_mouse_sens); break;
     case 2: snprintf(out, (size_t)cap, "Mouse invert up/down\t%s", s_mouse_inv ? "On" : "Off"); break;
     case 3: snprintf(out, (size_t)cap, "Mouse buttons (as bound above)\t%s", s_mouse_btn ? "On" : "Off"); break;
+    case 4: snprintf(out, (size_t)cap, "Left stick deadzone\t%d%%", (int)lrintf(s_dz_l * 100.0f)); break;
+    case 5: snprintf(out, (size_t)cap, "Right stick deadzone\t%d%%", (int)lrintf(s_dz_r * 100.0f)); break;
     default: snprintf(out, (size_t)cap, "Smooth WASD turning\t%s", s_kbd_smooth ? "On" : "Off"); break;
     }
 }
@@ -269,6 +290,13 @@ void sdl3vk_input_opt_change(int i, int dir) {
             if (s_mouse_sens > 10.0f) s_mouse_sens = 10.0f; break;
     case 2: s_mouse_inv = !s_mouse_inv; break;
     case 3: s_mouse_btn = !s_mouse_btn; break;
+    case 4: case 5: {                                   /* 0..60% in steps of 2 (Enter = up) */
+        float *dz = i == 4 ? &s_dz_l : &s_dz_r;
+        *dz += dir > 0 ? 0.02f : -0.02f;
+        *dz = *dz < 0.0f ? 0.0f : *dz > 0.6f ? 0.6f : *dz;
+        *dz = roundf(*dz * 50.0f) / 50.0f;
+        break;
+    }
     default: s_kbd_smooth = !s_kbd_smooth; break;
     }
     bind_save();
@@ -1249,19 +1277,19 @@ static void poll_input(int *quit) {
             if (SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))  b |= 0x0100;
             if (SDL_GetGamepadButton(s_pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) b |= 0x0200;
         }
-        int ax = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTX);
-        int ay = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTY);
-        if (ax < -7849 || ax > 7849) lx = (uint8_t)((ax + 32768) * 255 / 65535);
-        if (ay < -7849 || ay > 7849) ly = (uint8_t)((ay + 32768) * 255 / 65535);
-        /* Right stick with a radial deadzone, rescaled so movement starts at 0 past it. */
+        /* both sticks: radial deadzone (left_stick_deadzone / right_stick_deadzone), rescaled */
+        float px = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
+        float py = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
+        stick_deadzone(&px, &py, s_dz_l);
+        if (px != 0.0f || py != 0.0f) {                  /* the pad's stick wins over the keys */
+            const int ix = (int)lrintf(128.0f + px * 127.0f), iy = (int)lrintf(128.0f + py * 127.0f);
+            lx = (uint8_t)(ix < 0 ? 0 : ix > 255 ? 255 : ix);
+            ly = (uint8_t)(iy < 0 ? 0 : iy > 255 ? 255 : iy);
+        }
         float gx = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f;
         float gy = SDL_GetGamepadAxis(s_pad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f;
-        float mag = sqrtf(gx * gx + gy * gy);
-        const float dz = 0.2f;
-        if (mag > dz) {
-            float sc = (mag > 1.0f ? 1.0f : (mag - dz) / (1.0f - dz)) / mag;
-            rx += gx * sc; ry += gy * sc;
-        }
+        stick_deadzone(&gx, &gy, s_dz_r);
+        rx += gx; ry += gy;
     }
     s_rx = rx < -1.0f ? -1.0f : rx > 1.0f ? 1.0f : rx;
     s_ry = ry < -1.0f ? -1.0f : ry > 1.0f ? 1.0f : ry;

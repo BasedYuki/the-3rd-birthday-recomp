@@ -8,6 +8,9 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - 60 fps on slower PCs: if your PC can't keep up, the game now drops to 30 fps for a bit instead
   of slowing down (that's what made the sound slow and crackly). it tries 60 again after a few
   seconds
+- stick deadzone setting for each stick (Esc > Controls, or left_stick_deadzone /
+  right_stick_deadzone in controls.cfg). the left stick also feels a lot smoother near the
+  middle now, it used to snap
 
 ## 0.9.1 — 2026-10-24
 
