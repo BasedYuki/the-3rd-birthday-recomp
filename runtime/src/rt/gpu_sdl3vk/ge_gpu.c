@@ -1042,6 +1042,10 @@ static int u64cmp(const void *a, const void *b) {
     const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
 }
+/* PPSSPP texture packs (textures.ini in textures/ or textures/ULUS10567/), texpack_ppsspp.c */
+int ppx_init(const char *texdir);
+const char *ppx_lookup(const GeState *ge);
+static int s_ppx_n = 0;
 static void tp_init(void) {
     s_tp_init = 1;
     const char *e = getenv("SR_TEXDUMP");
@@ -1054,6 +1058,7 @@ static void tp_init(void) {
         snprintf(pat, sizeof(pat), "%s/dump", s_tp_dir); CreateDirectoryA(pat, NULL);
     }
     if (!sdl3vk_cfg_get("texture_packs", 1)) return;   /* launcher / graphics.cfg: packs off */
+    s_ppx_n = ppx_init(s_tp_dir);
     WIN32_FIND_DATAA fd;
     snprintf(pat, sizeof(pat), "%s/*.png", s_tp_dir);
     HANDLE h = FindFirstFileA(pat, &fd);
@@ -1072,6 +1077,10 @@ static void tp_init(void) {
 /* The replacement for the texture just decoded into px (w x h), or NULL. Dumps it if asked. */
 static uint32_t *tp_replace(const uint32_t *px, int w, int h, int *rw, int *rh) {
     if (!s_tp_init) tp_init();
+    if (s_ppx_n) {                                      /* a PPSSPP pack: its key first */
+        const char *pp = ppx_lookup(s_ge);
+        if (pp) { uint32_t *img = sdl3vk_png_load(pp, rw, rh); if (img) return img; }
+    }
     if (!s_tp_n && !s_tp_dump) return NULL;
     uint64_t th = 1469598103934665603ull;
     th = fnv64(th, &w, sizeof(w)); th = fnv64(th, &h, sizeof(h));

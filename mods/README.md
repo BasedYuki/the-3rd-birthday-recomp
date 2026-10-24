@@ -18,6 +18,20 @@ The name is a hash of the texture's decoded pixels and size, so a replacement ap
 the game uses that image. Textures the game changes every frame (render targets, effects drawn
 by the game) are not files and cannot be replaced.
 
+### PPSSPP texture packs
+
+Packs made for PPSSPP work as they are. Copy the pack's folder contents (its `textures.ini`
+and images, keeping any subfolders) into `textures/` or `textures/ULUS10567/`. PPSSPP's own
+"Save new textures" output (`TEXTURES/ULUS10567/new/`) works too, with or without a
+`textures.ini`. The log says `PPSSPP pack in ... (N entries, hash ...)` when it is found.
+
+Supported from `textures.ini`: `hash` (quick, xxh32, xxh64), `ignoreAddress`, `reduceHash`,
+`[hashes]`, `[hashranges]`, `[reducehashranges]`, and hash-named files in the pack's root. Not
+supported yet: `.dds` / `.ktx2` images (PNG only), mipmap levels and `[filtering]`. Textures the
+game keeps in its heap sit at slightly different addresses than in PPSSPP, so those are matched
+by size, palette and contents instead of the full PPSSPP name; in tests 131 of 138 textures of a
+scene matched (the rest were animated textures and ones PPSSPP hadn't saved).
+
 ## 2. Memory patches (no rebuild)
 
 Text files in `patches/` next to the executable change game data in memory:

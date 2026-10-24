@@ -112,7 +112,7 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 - **Update notice**: the game and the launcher tell you when a newer release is out
 - **Safe saves**: every save is written safely and the previous one is kept in `memstick/BACKUP/`
 - FPS counter and a glow (bloom) on/off switch in the settings menu
-- **Mods**: HD texture packs, memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
+- **Mods**: HD texture packs (PPSSPP packs work too), memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
 - **Cheats** (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite
   Liberation, max BP (999,999). Each can be switched on and off and stays as you leave it
   (`cheats.cfg`). From the community CWCheat database

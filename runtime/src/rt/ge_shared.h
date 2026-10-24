@@ -46,6 +46,7 @@ typedef struct {
     /* Internal CLUT RAM, captured at GE_LOADCLUT like the hardware. Games reuse the staging
      * buffer right after LOADCLUT, so sampling the palette live from memory reads garbage. */
     uint8_t clutram[2048];
+    uint32_t clut_load_bytes, clut_max_bytes;   /* last / largest LOADCLUT (PPSSPP pack palette hash) */
     /* Texture coordinate transform (transform-mode only; through-mode UV are raw texels). */
     float tex_scale_u, tex_scale_v, tex_off_u, tex_off_v;
     uint32_t tex_map_mode;                   /* bits0-1: 0=UV 1=tex matrix 2=envmap; bits8-9: proj source */

@@ -96,6 +96,10 @@ a derivative work for licensing purposes.
   the addresses and patched instructions come from the community CWCheat database for the US
   release ("The 3rd Birthday [US]" in PPSSPP's cheat.db,
   https://github.com/Saramagrean/CWCheat-Database-Plus-); thanks to its contributors
+- **xxHash** (Yann Collet, BSD-2-Clause, the MSYS2 `xxhash.h` header) and PPSSPP's texture
+  replacement naming (`src/rt/gpu_sdl3vk/texpack_ppsspp.c`: cache key, quick / XXH32 / XXH64
+  hashes and lookup order ported from PPSSPP's TextureReplacer, GPL-2.0-or-later) so PPSSPP
+  texture packs work unchanged
 - **SDL3** (`SDL3.dll`, `src/rt/gpu_sdl3vk`) — zlib license — https://libsdl.org
 - **Vulkan loader / headers** — Apache-2.0 — https://github.com/KhronosGroup/Vulkan-Loader
 - **PSPSDK headers/defines/constants** — BSD-compatible (see top of

@@ -11,6 +11,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - stick deadzone setting for each stick (Esc > Controls, or left_stick_deadzone /
   right_stick_deadzone in controls.cfg). the left stick also feels a lot smoother near the
   middle now, it used to snap
+- texture packs made for PPSSPP work now, just copy the pack into the textures folder (see
+  mods/README.md)
 
 ## 0.9.1 — 2026-10-24
 
