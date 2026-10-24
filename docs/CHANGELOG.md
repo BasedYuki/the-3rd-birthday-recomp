@@ -3,7 +3,9 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.2 - 2026-10-24
+
+fixes for the stuff you reported, thanks for all the reports!
 
 - 60 fps on slower PCs: if your PC can't keep up, the game now drops to 30 fps for a bit instead
   of slowing down (that's what made the sound slow and crackly). it tries 60 again after a few
@@ -13,6 +15,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
   middle now, it used to snap
 - texture packs made for PPSSPP work now, just copy the pack into the textures folder (see
   mods/README.md)
+
+you'll need to press "Prepare game" once more after updating, same as last time
 
 ## 0.9.1 — 2026-10-24
 
