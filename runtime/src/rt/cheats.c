@@ -3,9 +3,9 @@
  * Two kinds, both from the community CWCheat database for the US release (PPSSPP's cheat.db):
  *  - instruction patches (versions/<game>.toml [patches]): the recompiled code holds the original
  *    and the patched instruction and checks a flag in game.dll (sr_game_patch_flags) each time;
- *  - data cheats: a value written into the game's own memory every vblank (only addresses inside
- *    the game module's data, which sit at the same place as on a PSP; heap addresses can differ
- *    in the port, so cheats on those are left out). */
+ *  - data cheats: a value written into the game's memory every vblank. Their addresses are in the
+ *    game's heap, which in the port sits 0x600 higher than on a PSP (versions/<game>.toml says
+ *    how they were found); each was checked against what the game itself shows. */
 
 #include "recomp.h"
 #include "game_addrs.h"

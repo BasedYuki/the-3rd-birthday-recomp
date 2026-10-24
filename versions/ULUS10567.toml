@@ -51,10 +51,13 @@ camera_fov_off    = 0x60   # float radians (0.6981 = 40 deg)
 # A second camera object with the same layout starting 0x10 earlier (eye at +0x10): the one
 # the rendered view follows (changing only the camera above moves the logic, not the picture).
 viewcam_ptr       = 0x08C3C58C
-# Cheats (runtime/src/rt/cheats.c), from the CWCheat database; both inside the game module's
-# data (0x08804000..0x08CB39C0), so at the same address as on a PSP.
-liberation_gauge  = 0x08CAAB0C   # float, 1000 = full
-bp                = 0x08CAB904   # u32, BP (points to buy weapons)
+# Cheats (runtime/src/rt/cheats.c), from the CWCheat database (offsets from 0x08800000: the
+# codes' 0x014AAB0C / 0x014AB904 are PSP 0x09CAAB0C / 0x09CAB904). These sit in the game's heap,
+# which in this port starts 0x600 higher than on a PSP / in PPSSPP (its kernel allocates a little
+# differently; texture keys show the same shift), so the port's addresses are PSP + 0x600.
+# Found by searching RAM for the save's BP (5880) in the CTI hub: 0x09CABF04.
+liberation_gauge  = 0x09CAB10C   # float, 1000 = full   (PSP 0x09CAAB0C)
+bp                = 0x09CABF04   # u32, BP (points to buy weapons)   (PSP 0x09CAB904)
 
 [hooks]
 # Functions whose entry calls sr_func_hook(s, addr) (codegen --hooks); emitted as HOOK_<NAME>.

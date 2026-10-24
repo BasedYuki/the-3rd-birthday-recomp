@@ -669,8 +669,15 @@ static int menu_render(int px) {
 static void menu_record(VkImage dst) {
     if (s_menu_n <= 0) return;
     int dh = (int)s_swap_ext.height, dw = (int)s_swap_ext.width;
-    int px = dh / 30; if (px < 13) px = 13; if (px > 48) px = 48;
+    /* Text size from the window height, but small enough that every line fits: the panel is
+     * about (1.6 * lines + 3) text heights tall, and a panel taller than the window is not
+     * drawn at all (the 20-line settings menu vanished at any resolution: issue #6). */
+    int px = dh / 30;
+    const int fit = (int)((float)dh * 0.92f / (1.6f * (float)s_menu_n + 3.0f));
+    if (px > fit) px = fit;
+    if (px < 9) px = 9; if (px > 48) px = 48;
     if (!menu_render(px)) return;
+    while ((s_menu_w > dw || s_menu_h > dh) && px > 9) { px--; s_menu_dirty = 1; if (!menu_render(px)) return; }
     if (s_menu_w > dw || s_menu_h > dh) return;
     VkBufferImageCopy c = {0};
     c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;

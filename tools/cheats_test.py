@@ -16,7 +16,7 @@ import drive
 from controls_test import Keys, hwnd_of, log_since
 
 OUT = os.path.join(drive.SCRATCH, "cheats")
-LIBERATION, BP = 0x08CAAB0C, 0x08CAB904
+LIBERATION, BP = 0x09CAB10C, 0x09CABF04   # versions/ULUS10567.toml
 
 
 def main():

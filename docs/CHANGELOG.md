@@ -3,6 +3,13 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- the Esc menu shows up again. it got too tall for the screen after the last few options were
+  added, so it just didn't draw (the game was paused with nothing on screen)
+- fixed the Max BP and Infinite Liberation cheats, they were writing to the wrong place in
+  memory. if you had them on, turn them off and on again after updating
+
 ## 0.9.2 - 2026-10-24
 
 fixes for the stuff you reported, thanks for all the reports!
