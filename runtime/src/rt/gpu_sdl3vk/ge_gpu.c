@@ -1174,10 +1174,24 @@ static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, i
     return 1;
 }
 
+/* Texture filtering (issue #13; Esc menu, graphics.cfg tex_filter / ui_filter): 0 = as the game
+ * asks, 1 = sharp (nearest), 2 = smooth (bilinear). "ui" are 2D screen-space draws (through-mode
+ * vertices: HUD, menus, text), the rest is the 3D world. Only textures from main memory follow
+ * the setting; framebuffer effects (glow, Overdive) keep the game's own filtering. */
+static int s_filt[2] = { -1, -1 };
+void gegpu_set_filter(int ui, int v) { s_filt[ui ? 1 : 0] = v; }
+static int tex_linear(const GeState *g) {
+    const int game = (g->tex_filter & 1) || ((g->tex_filter >> 8) & 1);
+    if ((g->tex_addr & 0x0F000000u) == 0x04000000u) return game;      /* VRAM: maybe a render target */
+    if (s_filt[0] < 0) { s_filt[0] = sdl3vk_cfg_get("tex_filter", 0); s_filt[1] = sdl3vk_cfg_get("ui_filter", 0); }
+    const int o = s_filt[(g->vtype >> 23) & 1];
+    return o == 1 ? 0 : o == 2 ? 1 : game;
+}
+
 static VkDescriptorSet tex_get(void) {
     int w = s_ge->tex_w, h = s_ge->tex_h;
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return s_white_set;
-    int linear  = (s_ge->tex_filter & 1) || ((s_ge->tex_filter >> 8) & 1);
+    int linear  = tex_linear(s_ge);
     int clamp_u = s_ge->tex_wrap & 1, clamp_v = (s_ge->tex_wrap >> 8) & 1;
     uint64_t key = (uint64_t)s_ge->tex_addr | ((uint64_t)s_ge->tex_fmt << 32)
                  | ((uint64_t)(uint32_t)w << 36) | ((uint64_t)(uint32_t)h << 46)
@@ -1445,8 +1459,7 @@ static void build_state(int persp, int sprite, Batch *b) {
         flags |= F_TEX;
         if (g->tex_func & 0x100)   flags |= F_RGBA;
         if (g->tex_func & 0x10000) flags |= F_DBL;
-        int linear = (g->tex_filter & 1) || ((g->tex_filter >> 8) & 1);
-        if (!linear) flags |= F_NEAREST;
+        if (!tex_linear(g)) flags |= F_NEAREST;
         b->pc.texsize[0] = (float)g->tex_w;
         b->pc.texsize[1] = (float)g->tex_h;
     }

@@ -421,7 +421,10 @@ static void save_settings(void) {
     cfg_set_int(C, "mouse_invert_y", checked(ID_MOUSEINV), 1);
     cfg_set_int(C, "keyboard_smoothing", checked(ID_KBDSMOOTH), 1);
     cfg_set_int(C, "mouse_buttons_fire_aim", checked(ID_MOUSEBTN), 1);
-    cfg_set_int("twinstick.cfg", "style", checked(ID_CAMSTYLE), 0);
+    {   /* the checkbox is Modern on/off; keep the Centred style (2, set in the game's menu) when ticked */
+        const int cur = cfg_int("twinstick.cfg", "style", 0);
+        cfg_set_int("twinstick.cfg", "style", checked(ID_CAMSTYLE) ? (cur ? cur : 1) : 0, 0);
+    }
     char t[32]; GetDlgItemTextA(s_win, ID_MOUSESENS, t, sizeof(t));
     double v = atof(t); if (v < 0.1) v = 0.1; if (v > 10) v = 10;
     snprintf(t, sizeof(t), "%.2f", v); cfg_write(C, "mouse_sensitivity", t, 1);

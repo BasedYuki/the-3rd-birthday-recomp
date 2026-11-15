@@ -43,6 +43,10 @@ run at full speed. Not tested yet, so these may give you trouble:
 - **Other PCs.** So far it has only run on one PC: Windows 11 with an NVIDIA RTX 3050 laptop
   GPU. Other graphics cards (AMD, Intel), Windows 10 and older drivers haven't been tried. You
   need a graphics card with Vulkan support and up-to-date drivers.
+- **Overlays (RivaTuner / MSI Afterburner).** RivaTuner's on-screen display makes the game close
+  a second after it starts. Turn RivaTuner's overlay off for `ULUS10567.exe` (in RivaTuner, add
+  the exe with the + button and set "Show On-Screen Display" to Off). The game's own FPS counter
+  is in the Esc menu.
 - **Antivirus.** **Prepare game** runs a compiler and creates a new `game.dll`, which some
   antivirus programs block, quarantine or slow down a lot. If preparing fails or `game.dll`
   disappears, allow the game's folder in your antivirus.
@@ -107,9 +111,10 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
 - **Remappable controls**, in the game (Esc > Controls) or in the launcher (Change buttons...):
   every action gets two keys, which can also be mouse buttons (left, right, middle, side buttons
   4 and 5), and a controller button. Only the two sticks are fixed (left = move, right = camera).
-- **Two camera styles** (Esc menu > Camera style, or the launcher): *Classic* orbits around Aya
-  and returns behind her like the original; *Modern* is an over-the-shoulder camera that stays
-  where you point it, and Aya walks where you look
+- **Three camera styles** (Esc menu > Camera style; the launcher has Modern): *Classic* orbits
+  around Aya and returns behind her like the original; *Modern* is an over-the-shoulder camera
+  that stays where you point it, and Aya walks where you look; *Centred* is the same with Aya in
+  the middle of the screen
 - **Free aim** (Esc menu > Free aim, on by default): hold L / right mouse and the aim starts
   where the camera looks; the mouse or the right stick then moves it left, right, up and down,
   with the crosshair staying in the middle and the shots going where it points. If the game
@@ -121,7 +126,8 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
   unlock all extras, mods, update status, Play (see [The launcher](#the-launcher))
 - **Update notice**: the game and the launcher tell you when a newer release is out
 - **Safe saves**: every save is written safely and the previous one is kept in `memstick/BACKUP/`
-- FPS counter and a glow (bloom) on/off switch in the settings menu
+- FPS counter, a glow (bloom) on/off switch and texture filtering (sharp or smooth, separately
+  for the 3D and the HUD) in the settings menu
 - **Mods**: HD texture packs (PPSSPP packs work too), memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
 - **Cheats** (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite
   Liberation, max BP (999,999). Each can be switched on and off and stays as you leave it

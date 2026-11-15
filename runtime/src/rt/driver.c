@@ -141,13 +141,49 @@ static void seed_from_init(const char *trace_path, CpuState *s) {
     if (!found) { fprintf(stderr, "no '# init' in %s\n", trace_path); exit(2); }
 }
 
+/* The game program prepared from the player's disc (image.bin) must be the one the port was made
+ * for: the US release ULUS10567, version 1.00. Another release or a modified program builds
+ * fine but crashes at once (issue #10), so say so instead. "Start anyway" is remembered in
+ * launch.cfg for this image (Prepare rewrites launch.cfg). */
+#define IMAGE_SIZE 4913600L
+#define IMAGE_FNV  "c598c561ba3bd1f2"   /* FNV-1a 64 of image.bin from that release */
+static int image_id(const char *path, char hex[17]) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint64_t h = 0xcbf29ce484222325ull;
+    static unsigned char buf[1 << 16]; size_t n; long total = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        for (size_t i = 0; i < n; i++) h = (h ^ buf[i]) * 0x100000001b3ull;
+        total += (long)n;
+    }
+    fclose(f);
+    snprintf(hex, 17, "%016llx", (unsigned long long)h);
+    if (total != IMAGE_SIZE) hex[0] = 'x';             /* another size: never the expected id */
+    return 1;
+}
+
+static void image_check(const char *image, const char *accepted) {
+    char hex[17] = "";
+    if (!image_id(image, hex) || !strcmp(hex, IMAGE_FNV) || !strcmp(hex, accepted)) return;
+    fprintf(stderr, "image: %s (id %s) is not the ULUS10567 v1.00 program\n", image, hex);
+    if (getenv("SR_OFFSCREEN")) return;                  /* tests: no dialog */
+    if (MessageBoxA(NULL, "This game was prepared from a disc image that is not the US release of\n"
+                    "The 3rd Birthday (ULUS10567, version 1.00), or the game program in it was changed.\n\n"
+                    "The port is made for that release only: it will most likely close right away.\n"
+                    "Use the launcher to choose your USA disc image and press Prepare game again.\n\n"
+                    "Start anyway?", "The 3rd Birthday", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        exit(1);
+    FILE *f = fopen("launch.cfg", "a");
+    if (f) { fprintf(f, "image_accepted=%s\n", hex); fclose(f); }
+}
+
 /* Started with no arguments (a double-click, a shortcut): run the game from the executable's
  * folder. launch.cfg (written by scripts/build.sh) holds "image=", "base=", "entry=" and
  * optionally "iso="; without iso= the first *.iso in the folder or up to three folders above
  * is used. Logs go to run.err / run.out, and a console window opened only for us is closed. */
 static int launch_defaults(int *pargc, char ***pargv) {
     static char exe[MAX_PATH], image[MAX_PATH] = "image.bin", base[32] = "08804000", entry[32] = "",
-                iso[MAX_PATH] = "";
+                iso[MAX_PATH] = "", accepted[24] = "";
     static char *args[9];
     GetModuleFileNameA(NULL, exe, sizeof(exe));
     char dir[MAX_PATH]; snprintf(dir, sizeof(dir), "%s", exe);
@@ -162,6 +198,7 @@ static int launch_defaults(int *pargc, char ***pargv) {
         else if (!strncmp(line, "base=", 5)) snprintf(base, sizeof(base), "%s", line + 5);
         else if (!strncmp(line, "entry=", 6)) snprintf(entry, sizeof(entry), "%s", line + 6);
         else if (!strncmp(line, "iso=", 4)) snprintf(iso, sizeof(iso), "%s", line + 4);
+        else if (!strncmp(line, "image_accepted=", 15)) snprintf(accepted, sizeof(accepted), "%s", line + 15);
     }
     fclose(f);
     if (!entry[0]) return 0;
@@ -196,6 +233,7 @@ static int launch_defaults(int *pargc, char ***pargv) {
             }
     }
     freopen("run.err", "w", stderr);
+    image_check(image, accepted);
     freopen("run.out", "w", stdout);
     setvbuf(stderr, NULL, _IONBF, 0);   /* the log is complete even after a crash */
     {   /* a console window that exists only for this process (double-click): close it */
@@ -218,6 +256,9 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    if (GetModuleHandleA("RTSSHooks64.dll"))   /* issue #10: its overlay closes the game at start */
+        fprintf(stderr, "RivaTuner (RTSS) overlay is active. If the game closes right after starting, "
+                        "turn RivaTuner's on-screen display off for ULUS10567.exe.\n");
     SetUnhandledExceptionFilter(sr_crash_filter);
     { extern void ctrlsrv_start(void); ctrlsrv_start(); }   /* SR_CTRL test channel */
 

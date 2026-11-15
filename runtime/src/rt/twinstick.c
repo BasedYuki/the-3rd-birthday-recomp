@@ -88,7 +88,7 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
 #define MODERN_AIM_GAIN 9.0f  /* mouse radians per pad sample -> aim stick deflection (x4 when steady) */
 
 static int s_on = -1;
-static int s_style = 0;                              /* 0 classic orbit, 1 modern */
+static int s_style = 0;                              /* 0 classic orbit, 1 modern (over the shoulder), 2 centred */
 static int s_abs_valid = 0;                          /* modern: direction taken from the game yet */
 static float s_abs_yaw = 0.0f, s_abs_elev = 0.0f;    /* modern: where the camera looks from */
 static float s_speed = 1.0f;
@@ -144,7 +144,7 @@ static void init_once(void) {
             else if (sscanf(line, "recenter_delay_still=%f", &v) == 1) s_recenter_delay_still = v;
             else if (sscanf(line, "recenter_delay=%f", &v) == 1) s_recenter_delay = v;
             else if (sscanf(line, "recenter=%f", &v) == 1) s_recenter = v != 0.0f;
-            else if (sscanf(line, "style=%f", &v) == 1) s_style = v != 0.0f;
+            else if (sscanf(line, "style=%f", &v) == 1) s_style = v >= 2.0f ? 2 : v != 0.0f;
             else if (sscanf(line, "free_aim=%f", &v) == 1) s_free_aim = v != 0.0f;
         }
         fclose(f);
@@ -152,7 +152,7 @@ static void init_once(void) {
     } else {
         cfg_save();                                  /* write the defaults so they can be edited */
     }
-    { const char *st = getenv("SR_CAMSTYLE"); if (st) s_style = atoi(st) != 0; }   /* tests */
+    { const char *st = getenv("SR_CAMSTYLE"); if (st) { s_style = atoi(st); if (s_style < 0 || s_style > 2) s_style = 1; } }   /* tests */
     { const char *fa = getenv("SR_FREEAIM"); if (fa) s_free_aim = atoi(fa) != 0; }
     const char *sp = getenv("SR_TWINSTICK_SPEED");
     if (sp) s_speed = (float)atof(sp);
@@ -182,7 +182,7 @@ void sr_twinstick_set(int id, float v) {
     case SR_TS_INVERT_X:    s_inv_x = v != 0.0f; break;
     case SR_TS_INVERT_Y:    s_inv_y = v != 0.0f; break;
     case SR_TS_RECENTER:    s_recenter = v != 0.0f; break;
-    case SR_TS_STYLE:       s_style = v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
+    case SR_TS_STYLE:       s_style = v >= 2.0f ? 2 : v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
     case SR_TS_FREE_AIM:    s_free_aim = v != 0.0f; break;
     default: return;
     }
@@ -418,6 +418,12 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
 /* Modern style: the view camera's target we shifted, in case the game doesn't rewrite it every
  * frame like the eye (then the shift is taken off before it is applied again). */
 static uint32_t s_tgt_obj; static float s_tgt_written[3], s_tgt_orig[3];
+/* Modern / centred: when a special camera (aim, Overdive) ends, the view eases from where that
+ * camera looked to the follow view over BLEND_S instead of jumping (issue #12). */
+#define BLEND_S 0.35
+static int s_blend_on = 0; static double s_blend_t0;
+static float s_bl_eye[3], s_bl_tgt[3], s_sp_eye[3], s_sp_tgt[3];
+static int s_sp_ok = 0;
 
 static void rotate_camera(uint32_t base, const char *why) {
     const int view = why[0] == 'v';                  /* the view camera's source (else the logic camera) */
@@ -466,17 +472,28 @@ static void rotate_camera(uint32_t base, const char *why) {
     if (elev < ELEV_MIN) elev = ELEV_MIN;
     if (elev > ELEV_MAX) elev = ELEV_MAX;
     float tw[3] = { t[0], t[1], t[2] };              /* the target written back */
-    if (s_style && view) {                           /* over the shoulder: closer, to the side */
+    if (s_style && view) memcpy(s_tgt_orig, t, sizeof(t));
+    if (s_style == 1 && view) {                      /* over the shoulder: closer, to the side */
         const float side = MODERN_SIDE * dist;
         dist *= MODERN_DOLLY;
         const float rx = cosf(yaw), rz = -sinf(yaw);   /* horizontal, perpendicular to the view */
         tw[0] += rx * side; tw[2] += rz * side; tw[1] += MODERN_RAISE * dist;
-        memcpy(s_tgt_orig, t, sizeof(t));
     }
     const float ch = cosf(elev) * dist;
     e[0] = tw[0] + sinf(yaw) * ch;
     e[1] = tw[1] + sinf(elev) * dist;
     e[2] = tw[2] + cosf(yaw) * ch;
+    if (s_style && view && s_blend_on) {             /* back from aiming / Overdive: ease, don't snap */
+        float k = (float)((now_s() - s_blend_t0) / BLEND_S);
+        if (k >= 1.0f || k < 0.0f) s_blend_on = 0;
+        else {
+            k = k * k * (3.0f - 2.0f * k);
+            for (int i = 0; i < 3; i++) {
+                e[i] = s_bl_eye[i] + (e[i] - s_bl_eye[i]) * k;
+                tw[i] = s_bl_tgt[i] + (tw[i] - s_bl_tgt[i]) * k;
+            }
+        }
+    }
     wrf(eye, e[0]); wrf(eye + 4, e[1]); wrf(eye + 8, e[2]);
     if (s_style && view) {
         wrf(tgt, tw[0]); wrf(tgt + 4, tw[1]); wrf(tgt + 8, tw[2]);
@@ -566,6 +583,11 @@ static void update_special(uint32_t src) {
     const int by_fov = fov_ok && std > 0.0f && fabsf(fov - std) > 0.02f * std;
     const int special = s_btn_special || by_fov;
     if (special != s_suspended) {
+        if (!special && s_style && s_sp_ok) {        /* the ease starts at the special camera's view */
+            memcpy(s_bl_eye, s_sp_eye, sizeof(s_bl_eye)); memcpy(s_bl_tgt, s_sp_tgt, sizeof(s_bl_tgt));
+            s_blend_on = 1; s_blend_t0 = now_s();
+        }
+        s_sp_ok = 0;
         static int n = 0;
         if (n++ < 400)
             fprintf(stderr, "twinstick: %s camera (fov %.3f, follow fov %.3f, %s)\n",
@@ -636,7 +658,12 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
                 const uint32_t src = s->r[5];       /* where the picture looks: the free aim's start */
                 const float dx = rdf(src + 0x20) - rdf(src + 0x10), dz = rdf(src + 0x28) - rdf(src + 0x18);
                 if (dx * dx + dz * dz > 1.0f) { s_view_look = atan2f(dx, dz); s_view_look_ok = 1; }
-            } else aim_check(s->r[5]);
+            } else {
+                const uint32_t src = s->r[5];       /* the special camera's view, for the ease back */
+                for (int i = 0; i < 3; i++) { s_sp_eye[i] = rdf(src + 0x10 + 4 * i); s_sp_tgt[i] = rdf(src + 0x20 + 4 * i); }
+                s_sp_ok = 1;
+                aim_check(src);
+            }
         }
         break;
     case HOOK_PLAYER_POSE:     /* a0 = Aya's object */

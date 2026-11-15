@@ -572,7 +572,7 @@ static void toast_record(VkImage dst) {
 /* ---- settings menu panel ----------------------------------------------------------------
  * Same technique as the toast: GDI text into a bitmap, copied onto the swapchain image after
  * the frame blit, centred. Line 0 is the title; the selected line gets an orange marker. */
-#define MENU_MAX_LINES 20
+#define MENU_MAX_LINES 32
 #define MENU_MAX_W 1600
 #define MENU_MAX_H 1400
 static char     s_menu_lines[MENU_MAX_LINES][96];
@@ -673,7 +673,8 @@ static void menu_record(VkImage dst) {
      * about (1.6 * lines + 3) text heights tall, and a panel taller than the window is not
      * drawn at all (the 20-line settings menu vanished at any resolution: issue #6). */
     int px = dh / 30;
-    const int fit = (int)((float)dh * 0.92f / (1.6f * (float)s_menu_n + 3.0f));
+    const int room = dh < MENU_MAX_H ? dh : MENU_MAX_H;   /* the panel buffer's height limit too */
+    const int fit = (int)((float)room * 0.92f / (1.6f * (float)s_menu_n + 3.0f));
     if (px > fit) px = fit;
     if (px < 9) px = 9; if (px > 48) px = 48;
     if (!menu_render(px)) return;

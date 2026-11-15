@@ -455,7 +455,7 @@ static void cheats_run(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_TEXFILT, M_UIFILT, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -471,8 +471,9 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_RESUME], 96, "Resume");
         snprintf(buf[M_CONTROLS], 96, "Controls...");
         snprintf(buf[M_CHEATS], 96, "Cheats...");
-        snprintf(buf[M_CAMSTYLE], 96, "Camera style:  %s", sr_twinstick_setting(SR_TS_STYLE) != 0.0f
-                 ? "Modern (over the shoulder, free look)" : "Classic (orbit, returns behind Aya)");
+        {   static const char *const cs[3] = { "Classic (orbit, returns behind Aya)", "Modern (over the shoulder, free look)",
+                                               "Centred (Aya in the middle, free look)" };
+            snprintf(buf[M_CAMSTYLE], 96, "Camera style:  %s", cs[(int)sr_twinstick_setting(SR_TS_STYLE) % 3]); }
         snprintf(buf[M_FREEAIM], 96, "Free aim (mouse / right stick while aiming):  %s", sr_twinstick_setting(SR_TS_FREE_AIM) != 0.0f ? "On" : "Off");
         snprintf(buf[M_SPEED], 96, "Camera speed:  %.2f", sr_twinstick_setting(SR_TS_SENSITIVITY));
         snprintf(buf[M_INVX], 96, "Invert camera left/right:  %s", sr_twinstick_setting(SR_TS_INVERT_X) != 0.0f ? "On" : "Off");
@@ -487,6 +488,9 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
         snprintf(buf[M_FPS], 96, "Frame rate:  %s", gegpu_interp_enabled() ? "60 (smooth)" : "30 (original)");
         snprintf(buf[M_INTRO], 96, "Skip intro at start:  %s", sdl3vk_cfg_get("skip_intro", 0) ? "On" : "Off");
         snprintf(buf[M_GLOW], 96, "Glow effect (bloom):  %s", sdl3vk_glow() ? "On (original)" : "Off");
+        {   static const char *const fn[3] = { "As the game sets it", "Sharp (nearest)", "Smooth (bilinear)" };
+            snprintf(buf[M_TEXFILT], 96, "Texture filtering (3D):  %s", fn[sdl3vk_cfg_get("tex_filter", 0) % 3]);
+            snprintf(buf[M_UIFILT], 96, "Texture filtering (HUD / menus):  %s", fn[sdl3vk_cfg_get("ui_filter", 0) % 3]); }
         snprintf(buf[M_SHOWFPS], 96, "Show FPS counter:  %s", sdl3vk_show_fps() ? "On" : "Off");
         snprintf(buf[M_UPDATE], 96, "Check for updates at start:  %s", sdl3vk_cfg_get("update_check", 1) ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
@@ -512,7 +516,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             case M_RESUME: if (ev & SDL3VK_MENU_OK) goto done; break;
             case M_CONTROLS: if (ev & SDL3VK_MENU_OK) controls_run(fbaddr, fmt, stride); break;
             case M_CHEATS: if (ev & SDL3VK_MENU_OK) cheats_run(fbaddr, fmt, stride); break;
-            case M_CAMSTYLE: sr_twinstick_set(SR_TS_STYLE, sr_twinstick_setting(SR_TS_STYLE) == 0.0f); break;
+            case M_CAMSTYLE: sr_twinstick_set(SR_TS_STYLE, (float)(((int)sr_twinstick_setting(SR_TS_STYLE) + (dir > 0 ? 1 : 2)) % 3)); break;
             case M_FREEAIM: sr_twinstick_set(SR_TS_FREE_AIM, sr_twinstick_setting(SR_TS_FREE_AIM) == 0.0f); break;
             case M_SPEED:
                 sr_twinstick_set(SR_TS_SENSITIVITY, sr_twinstick_setting(SR_TS_SENSITIVITY) * (dir > 0 ? 1.15f : 1.0f / 1.15f));
@@ -528,6 +532,13 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 break;
             }
             case M_GLOW: sdl3vk_set_glow(!sdl3vk_glow()); break;
+            case M_TEXFILT: case M_UIFILT: {
+                extern void gegpu_set_filter(int ui, int v);
+                const char *k = sel == M_UIFILT ? "ui_filter" : "tex_filter";
+                const int v = (sdl3vk_cfg_get(k, 0) + (dir > 0 ? 1 : 2)) % 3;
+                sdl3vk_cfg_set(k, v); gegpu_set_filter(sel == M_UIFILT, v);
+                break;
+            }
             case M_SHOWFPS: sdl3vk_set_show_fps(!sdl3vk_show_fps()); break;
             case M_UPDATE: sdl3vk_cfg_set("update_check", !sdl3vk_cfg_get("update_check", 1)); break;
             case M_WIDE: sdl3vk_set_widescreen(!sdl3vk_cfg_get("widescreen", 0)); break;
