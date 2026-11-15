@@ -3,6 +3,11 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- AMD cards at 60 fps: barricades (and other things the game draws twice on top of each other)
+  were flashing white. the in-between frames now put both layers at exactly the same depth
+
 ## 0.9.7 - 2026-11-15
 
 - new camera style "Centred": the camera stays where you point it like the modern one, but Aya

@@ -11,6 +11,13 @@ layout(location = 2) in float in_fog;   /* per-vertex fog factor, 1 = no fog */
 layout(location = 3) in vec4 in_color;  /* UNORM8 RGBA */
 layout(location = 4) in vec4 in_prev;   /* skinned: clip position in the previous frame (w 0: none) */
 
+/* The same geometry is often drawn twice with depth test EQUAL (a base pass, then a lit or
+ * decal pass over it). Every pipeline must then compute bit-identical positions, which only
+ * `invariant` guarantees: AMD's compiler otherwise optimises the vertex math differently per
+ * pipeline, and in the frame-interpolation path (more math) the second pass failed the
+ * depth test in patches: barricades flashing at 60 fps (issue #11). */
+invariant gl_Position;
+
 layout(location = 0) noperspective out vec2  v_uv;
 layout(location = 1) noperspective out float v_rw;
 layout(location = 2) noperspective out float v_fog;
