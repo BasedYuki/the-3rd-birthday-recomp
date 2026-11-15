@@ -3,7 +3,7 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.7 - 2026-11-15
 
 - new camera style "Centred": the camera stays where you point it like the modern one, but Aya
   stays in the middle of the screen instead of over the shoulder. Esc > Camera style
@@ -16,6 +16,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - RivaTuner's overlay makes the game close right at the start. if it's running the game now
   says so in run.err, and the readme says how to turn it off for the game
 - the Esc menu got too long again and the last lines were cut off, fixed
+
+no need to press "Prepare game" again, just update and play
 
 ## 0.9.6 - 2026-11-03
 
