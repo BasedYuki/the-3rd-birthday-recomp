@@ -1174,6 +1174,23 @@ static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, i
     return 1;
 }
 
+/* A texture decoded from VRAM (the slow path) may reach past the target it starts in, or start
+ * in plain VRAM and run into one: the Overdive Kill effect reads 256x256 8888 at 0x156000, which
+ * starts inside the 128-wide 4444 target at 0x154000 and covers 256 KB behind it. Every live
+ * target under those bytes is written back first; before, only the first one was, and the rest
+ * of the texture showed stale VRAM (issue #11: noise at the screen edge during Overdive). */
+static void readback_under_texture(const GeState *g, const Target *done) {
+    static const uint8_t bpp2[11] = { 4, 4, 4, 8, 1, 2, 4, 8, 2, 2, 2 };   /* half-bytes per texel */
+    const uint32_t ta = g->tex_addr & 0x001FFFFFu;
+    const uint32_t bw = g->tex_bufw ? g->tex_bufw : (uint32_t)g->tex_w;
+    const uint32_t len = bw * (uint32_t)g->tex_h * bpp2[g->tex_fmt < 11 ? g->tex_fmt : 3] / 2u;
+    for (int i = 0; i < MAX_TGT; i++) {
+        Target *ti = &s_tgts[i];
+        if (ti == done || !tgt_live(ti)) continue;
+        if (ti->fba < ta + len && ta < ti->fba + tgt_len(ti)) target_readback(ti);
+    }
+}
+
 /* Texture filtering (issue #13; Esc menu, graphics.cfg tex_filter / ui_filter): 0 = as the game
  * asks, 1 = sharp (nearest), 2 = smooth (bilinear). "ui" are 2D screen-space draws (through-mode
  * vertices: HUD, menus, text), the rest is the 3D world. Only textures from main memory follow
@@ -1480,10 +1497,15 @@ static void build_state(int persp, int sprite, Batch *b) {
         Target *src = NULL;
         if ((g->tex_addr & 0x0F000000u) == 0x04000000u) {
             uint32_t ta = g->tex_addr & 0x001FFFFFu;
-            for (int i = 0; i < MAX_TGT; i++) {
+            /* A target starting exactly at the texture wins over one whose rows merely run over
+             * that address: the Overdive effects read the 8888 target at 0x156000, which lies in
+             * the range of the 4444 target at 0x154000; taking that one sent the draw down the
+             * slow path to stale VRAM (issue #11: pink scanlines, noise at the screen edge). */
+            for (int i = 0; i < MAX_TGT && !src; i++)
+                if (tgt_live(&s_tgts[i]) && s_tgts[i].fba == ta) src = &s_tgts[i];
+            for (int i = 0; i < MAX_TGT && !src; i++) {
                 Target *ti = &s_tgts[i];
-                if (!tgt_live(ti)) continue;
-                if (ta >= ti->fba && ta < ti->fba + tgt_len(ti)) { src = ti; break; }
+                if (tgt_live(ti) && ta >= ti->fba && ta < ti->fba + tgt_len(ti)) src = ti;
             }
         }
         if (src) {
@@ -1580,9 +1602,11 @@ static void build_state(int persp, int sprite, Batch *b) {
                             (unsigned)src->fba, (unsigned)src->fmt, (unsigned)src->stride, src == s_cur);
                 }
                 target_readback(src);
+                readback_under_texture(g, src);
                 b->dset = tex_get();
             }
         } else {
+            if ((g->tex_addr & 0x0F000000u) == 0x04000000u) readback_under_texture(g, NULL);
             b->dset = tex_get();
         }
     }

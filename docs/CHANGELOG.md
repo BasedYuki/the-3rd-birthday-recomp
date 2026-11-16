@@ -3,6 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- Overdive effects: the pink lines over the top of the screen and the noise on the right edge
+  are gone. the effect was reading the wrong image (an old copy instead of what was just drawn).
+  this was on every graphics card, not just AMD. thanks ijezabella for the run.err!
+
 ## 0.9.8 - 2026-11-15
 
 - AMD cards at 60 fps: barricades (and other things the game draws twice on top of each other)
