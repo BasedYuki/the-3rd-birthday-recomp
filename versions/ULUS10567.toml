@@ -80,6 +80,10 @@ cam_setup      = 0x08B435B8
 # reads that matrix back each frame: it tells which object is Aya.
 mat_from_yaw   = 0x088338F8
 player_pose    = 0x08975CC8
+# The follow camera's wall sweep setup (a0 = query, a1 = start point, a2 = offset from it to the
+# eye, $f12 = radius); called from 0x08AC1544, then run by 0x08B150AC, the hit distance limits the
+# camera. Modern / centred camera styles give it their own line (twinstick.c cam_collide).
+cam_collide    = 0x08B133D8
 
 [patches]
 # Instruction patches the Esc menu's Cheats page switches on and off (codegen emits both the

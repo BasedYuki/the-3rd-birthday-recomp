@@ -425,6 +425,39 @@ static int s_blend_on = 0; static double s_blend_t0;
 static float s_bl_eye[3], s_bl_tgt[3], s_sp_eye[3], s_sp_tgt[3];
 static int s_sp_ok = 0;
 
+/* Walls (issue #11 "seeing through walls"). The game keeps its follow camera out of walls by
+ * sweeping the line from Aya to the camera (cam_collide, called from the follow camera at
+ * 0x08AC1544 with a1 = start point, a2 = offset to the eye) and shortening the distance where it
+ * hits. Our modern / centred camera looks along another line (its own direction, over the
+ * shoulder), so the game's sweep missed the walls ours ran into. The sweep is given our line
+ * instead; how far the game then lets its eye go (s_col_*) shortens our camera the same way. */
+#define COLLIDE_RA 0x08AC1548u
+static float s_col_start[3], s_col_len = 0.0f, s_col_nominal = 0.0f;
+static unsigned s_col_tick = 0;
+
+static void cam_collide(CpuState *s) {
+    if (!s_style || !s_abs_valid || s_suspended || s->r[31] != COLLIDE_RA) return;
+    const uint32_t pa = s->r[5], va = s->r[6];
+    if (pa < 0x08800000u || pa >= 0x0A000000u - 16u || va < 0x08800000u || va >= 0x0A000000u - 16u) return;
+    float p[3] = { rdf(pa), rdf(pa + 4), rdf(pa + 8) };
+    const float v[3] = { rdf(va), rdf(va + 4), rdf(va + 8) };
+    const float len = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(len > 1.0f && len < 100000.0f)) return;
+    const float yaw = s_abs_yaw, elev = s_abs_elev;
+    float want = len;
+    if (s_style == 1) {                              /* the same framing as rotate_camera */
+        const float side = MODERN_SIDE * len;
+        want = len * MODERN_DOLLY;
+        p[0] += cosf(yaw) * side; p[2] += -sinf(yaw) * side; p[1] += MODERN_RAISE * want;
+    }
+    const float ch = cosf(elev) * want;
+    wrf(pa, p[0]); wrf(pa + 4, p[1]); wrf(pa + 8, p[2]);
+    wrf(va, sinf(yaw) * ch); wrf(va + 4, sinf(elev) * want); wrf(va + 8, cosf(yaw) * ch);
+    memcpy(s_col_start, p, sizeof(p));
+    s_col_len = want; s_col_nominal = len;
+    s_col_tick = s_ticks;
+}
+
 static void rotate_camera(uint32_t base, const char *why) {
     const int view = why[0] == 'v';                  /* the view camera's source (else the logic camera) */
     if (!s_style && s_yaw_off == 0.0f && s_pitch_off == 0.0f) return;
@@ -471,14 +504,25 @@ static void rotate_camera(uint32_t base, const char *why) {
     }
     if (elev < ELEV_MIN) elev = ELEV_MIN;
     if (elev > ELEV_MAX) elev = ELEV_MAX;
+    /* how far the game let its eye go along our line (cam_collide): a wall shortens ours too */
+    float wall = 1.0f;
+    if (s_style && view && s_col_len > 1.0f && s_ticks - s_col_tick <= 4) {
+        const float dx = e[0] - s_col_start[0], dy = e[1] - s_col_start[1], dz = e[2] - s_col_start[2];
+        wall = sqrtf(dx * dx + dy * dy + dz * dz) / s_col_len;
+        if (wall > 1.0f) wall = 1.0f;
+        if (wall < 0.05f) wall = 0.05f;
+        dist = s_col_nominal;                        /* the game's eye is on our line now: its own distance */
+        { static int n = 0; static float last = 1.0f; if (getenv("SR_WALLLOG") && fabsf(wall - last) > 0.05f && n++ < 200) { last = wall; fprintf(stderr, "WALL %.2f\n", wall); } }
+    }
     float tw[3] = { t[0], t[1], t[2] };              /* the target written back */
     if (s_style && view) memcpy(s_tgt_orig, t, sizeof(t));
     if (s_style == 1 && view) {                      /* over the shoulder: closer, to the side */
-        const float side = MODERN_SIDE * dist;
+        const float side = MODERN_SIDE * dist * wall;   /* pulled in by a wall: back towards the middle */
         dist *= MODERN_DOLLY;
         const float rx = cosf(yaw), rz = -sinf(yaw);   /* horizontal, perpendicular to the view */
         tw[0] += rx * side; tw[2] += rz * side; tw[1] += MODERN_RAISE * dist;
     }
+    dist *= wall;
     const float ch = cosf(elev) * dist;
     e[0] = tw[0] + sinf(yaw) * ch;
     e[1] = tw[1] + sinf(elev) * dist;
@@ -538,7 +582,8 @@ static void check_cut(uint32_t src) {
             reset_offset("new camera source");
         }
         else if (dt > fmaxf(0.3f * dist, 60.0f)) reset_offset("target jump");
-        else if (de > fmaxf(0.5f * dist, 100.0f)) reset_offset("eye jump");
+        /* with cam_collide the game's eye follows our turns, so only its target tells a cut */
+        else if (de > fmaxf(0.5f * dist, 100.0f) && s_ticks - s_col_tick > 4) reset_offset("eye jump");
     }
     s_cut_src = src;
     memcpy(s_cut_tgt, t, sizeof(t));
@@ -665,6 +710,9 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
                 aim_check(src);
             }
         }
+        break;
+    case HOOK_CAM_COLLIDE:     /* a1 = start, a2 = offset to the eye (follow camera's wall sweep) */
+        cam_collide(s);
         break;
     case HOOK_PLAYER_POSE:     /* a0 = Aya's object */
         s_aya = s->r[4];

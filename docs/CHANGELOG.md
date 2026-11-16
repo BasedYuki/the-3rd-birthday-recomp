@@ -3,6 +3,14 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## 0.9.10 - 2026-11-16
+
+- modern / centred camera: no more seeing through walls. the camera now gets pushed in by walls
+  the same way the original camera does, and moves back towards the middle when it's tight.
+  thanks ijezabella for pointing it out
+
+you'll need to press "Prepare game" once more after updating
+
 ## 0.9.9 - 2026-11-16
 
 - Overdive effects: the pink lines over the top of the screen and the noise on the right edge
