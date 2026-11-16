@@ -180,6 +180,8 @@ Kill rule: the framework that gets closest to showing anything wins. If none get
 
 - **#11 Overdive garbage found (2026-11-16):** the reporter's run.err (30 fps, chapter 1) had 30x "RTT slow: tex=156000 fmt=3 bufw=256 256x256 | tgt fba=154000 fmt=2 stride=128". A live 8888 256-wide target sits exactly at 0x156000, but the RTT lookup took the first target whose range covers the address (the 4444 glow target at 0x154000), found the format incompatible and decoded VRAM there, which the GPU-only 0x156000 target never wrote: stale data, pink scanlines and noise. The lookup now prefers a target starting exactly at the texture address (scenes 73/82: 24-25 slow draws -> 0); as a backstop the slow path reads back every target under the texture's bytes (readback_under_texture). Same bug on every GPU; plausibly also the 60 fps barricade flashing (glow chain decoded from VRAM between the real and the in-between frame).
 
+- **Texture upscaling (2026-11-16, user request):** xBRZ from PPSSPP's ext/xbrz (runtime/third_party/xbrz, GPL v3 + MAME exception, platform include removed) behind xbrz_c.cpp (RGBA <-> ARGB swap); build.sh compiles it with g++ into the runtime. ge_gpu.c tex_upscale(): graphics.cfg tex_upscale (1 off, 2..4), main-memory textures only (VRAM effects and texture-pack replacements untouched), factor in the cache key; in-place updates of an upscaled texture re-upload at the same size instead of re-creating the image. Scene 25 at 4x: 300 frames / 5 s, tex decode 14 ms in the first 5 s. Esc menu "Texture upscaling". CREDITS: the runtime exe is GPL-3.0 as distributed because of xBRZ.
+
 ## Open, not blocking
 - Controller remapping and config UI
 - Mod/patch format for other people's function replacements

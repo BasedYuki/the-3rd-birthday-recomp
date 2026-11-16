@@ -1205,6 +1205,25 @@ static int tex_linear(const GeState *g) {
     return o == 1 ? 0 : o == 2 ? 1 : game;
 }
 
+/* Texture upscaling (Esc menu, graphics.cfg tex_upscale = 1 off, 2..4 = xBRZ factor), like
+ * PPSSPP's: each texture from main memory is scaled once when it is decoded and kept in the cache.
+ * Textures in VRAM (framebuffer effects) and texture-pack replacements are left as they are. */
+static int s_upscale = -1;
+void gegpu_set_upscale(int f) { s_upscale = f; }
+extern void xbrz_scale_rgba(int factor, const uint32_t *src, uint32_t *dst, int w, int h);
+static uint32_t *tex_upscale(const uint32_t *px, int w, int h, int *rw, int *rh) {
+    if (s_upscale < 0) s_upscale = sdl3vk_cfg_get("tex_upscale", 1);
+    const int f = s_upscale;
+    if (f < 2 || f > 4 || (s_ge->tex_addr & 0x0F000000u) == 0x04000000u) return NULL;
+    uint32_t *out = (uint32_t *)malloc((size_t)w * h * f * f * 4);
+    if (!out) return NULL;
+    const uint64_t t0 = now_us();
+    xbrz_scale_rgba(f, px, out, w, h);
+    s_t_texdec += now_us() - t0;
+    *rw = w * f; *rh = h * f;
+    return out;
+}
+
 static VkDescriptorSet tex_get(void) {
     int w = s_ge->tex_w, h = s_ge->tex_h;
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return s_white_set;
@@ -1215,6 +1234,8 @@ static VkDescriptorSet tex_get(void) {
                  | ((uint64_t)s_ge->tex_swizzle << 56) | ((uint64_t)(unsigned)linear << 57)
                  | ((uint64_t)(unsigned)clamp_u << 58) | ((uint64_t)(unsigned)clamp_v << 59);
     key ^= (uint64_t)s_ge->tex_bufw << 16;
+    if (s_upscale < 0) s_upscale = sdl3vk_cfg_get("tex_upscale", 1);
+    key ^= (uint64_t)(s_upscale > 1 ? s_upscale : 0) << 60;   /* a new factor makes new entries */
     if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7)
         key ^= clut_hash() | 1;        /* distinct entry per (texture, palette) pair */
     uint64_t hash = tex_hash();
@@ -1228,7 +1249,12 @@ static VkDescriptorSet tex_get(void) {
         { const uint64_t t0 = now_us(); ge_decode_tex_rgba(s_texscratch); s_t_texdec += now_us() - t0; }
         int rw = w, rh = h;
         uint32_t *rep = tp_replace(s_texscratch, w, h, &rw, &rh);
-        if (rep || e->w != w || e->h != h) {   /* a replacement (or back from one): new image size */
+        if (!rep) rep = tex_upscale(s_texscratch, w, h, &rw, &rh);
+        if (rep && rw == e->w && rh == e->h) {  /* same size as before: just new pixels */
+            const int ok = tex_upload(e->img, rep, rw, rh);
+            free(rep);
+            if (!ok) return s_white_set;
+        } else if (rep || e->w != w || e->h != h) {   /* a replacement (or back from one): new image size */
             vkDeviceWaitIdle(s_dev);
             fi_invalidate();
             tex_free(e);
@@ -1255,6 +1281,7 @@ static VkDescriptorSet tex_get(void) {
     memset(e, 0, sizeof(*e));
     int rw = w, rh = h;
     uint32_t *rep = tp_replace(s_texscratch, w, h, &rw, &rh);
+    if (!rep) rep = tex_upscale(s_texscratch, w, h, &rw, &rh);
     const int ok = tex_make(rep ? rep : s_texscratch, rep ? rw : w, rep ? rh : h, linear, clamp_u, clamp_v,
                             &e->img, &e->mem, &e->view, &e->smp);
     const int has = rep != NULL;

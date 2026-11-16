@@ -8,7 +8,9 @@ redistribute this project or anything built with it.
 ## License of this project
 
 Because this project links against and incorporates PPSSPP (GPL-2.0-or-later),
-the combined work is licensed **GPL-2.0-or-later**. See [LICENSE](LICENSE).
+the combined work is licensed **GPL-2.0-or-later**. See [LICENSE](LICENSE). The runtime executable also
+links xBRZ (GPL version 3, see below), so the executable as distributed is under
+GPL-3.0 (which "or later" allows); the source files keep their own licenses.
 
 If you distribute binaries built with this toolkit (for example a recompiled
 game `.exe` plus `SDL3.dll`), the GPL requires that you also make the **complete
@@ -96,6 +98,10 @@ a derivative work for licensing purposes.
   the addresses and patched instructions come from the community CWCheat database for the US
   release ("The 3rd Birthday [US]" in PPSSPP's cheat.db,
   https://github.com/Saramagrean/CWCheat-Database-Plus-); thanks to its contributors
+- **xBRZ** (Zenju, from the HqMAME project, GPL version 3 with an exception for MAME),
+  `third_party/xbrz/`, taken from PPSSPP's `ext/xbrz` (only PPSSPP's platform include removed),
+  plus a small C entry `xbrz_c.cpp`: the "Texture upscaling" option scales textures with it, like
+  PPSSPP does.
 - **xxHash** (Yann Collet, BSD-2-Clause, the MSYS2 `xxhash.h` header) and PPSSPP's texture
   replacement naming (`src/rt/gpu_sdl3vk/texpack_ppsspp.c`: cache key, quick / XXH32 / XXH64
   hashes and lookup order ported from PPSSPP's TextureReplacer, GPL-2.0-or-later) so PPSSPP

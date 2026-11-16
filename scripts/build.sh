@@ -97,7 +97,10 @@ done < "$OUT/mods_srcs.txt"
 # The runtime (GE backend, HLE, scheduler) at -O2; the later flag overrides CFLAGS' -O1, which
 # is only there for the huge generated chunks.
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"   # release version (window title, update check)
-gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -DSR_VERSION="\"$VERSION\"" -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$OUT/ge.o" "$OUT"/at3/*.o \
+# xBRZ texture upscaling (Esc menu "Texture upscaling"; runtime/third_party/xbrz, GPL, from PPSSPP)
+g++ -O2 -std=c++17 -w -c "$RT/third_party/xbrz/xbrz.cpp" -o "$OUT/xbrz.o"
+g++ -O2 -std=c++17 -w -c "$RT/third_party/xbrz/xbrz_c.cpp" -o "$OUT/xbrz_c.o"
+gcc "${CFLAGS[@]}" -O2 -g -fno-math-errno -DSR_VERSION="\"$VERSION\"" -I"$OUT" -fuse-ld=lld -o "$OUT/${EXE_NAME:-$GAME}.exe" "$OUT/ge.o" "$OUT"/at3/*.o "$OUT/xbrz.o" "$OUT/xbrz_c.o" \
   "${RT_SRCS[@]/#/$RT/src/rt/}" \
   -lSDL3 -lvulkan-1 -lmfplat -lgdi32 -lgdiplus -lws2_32 -lwinhttp -ldinput8 -ldxguid -lole32 -lwinmm \
   -static-libgcc -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic

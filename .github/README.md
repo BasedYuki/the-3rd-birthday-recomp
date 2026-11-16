@@ -126,8 +126,8 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
   unlock all extras, mods, update status, Play (see [The launcher](#the-launcher))
 - **Update notice**: the game and the launcher tell you when a newer release is out
 - **Safe saves**: every save is written safely and the previous one is kept in `memstick/BACKUP/`
-- FPS counter, a glow (bloom) on/off switch and texture filtering (sharp or smooth, separately
-  for the 3D and the HUD) in the settings menu
+- FPS counter, a glow (bloom) on/off switch, texture filtering (sharp or smooth, separately
+  for the 3D and the HUD) and **texture upscaling** (2x-4x xBRZ, like PPSSPP) in the settings menu
 - **Mods**: HD texture packs (PPSSPP packs work too), memory patches and compiled code mods, see [`mods/README.md`](../mods/README.md)
 - **Cheats** (Esc menu > Cheats): no damage, infinite ammo, infinite grenades, infinite
   Liberation, max BP (999,999). Each can be switched on and off and stays as you leave it

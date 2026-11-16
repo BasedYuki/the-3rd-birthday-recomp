@@ -8,6 +8,9 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - Overdive effects: the pink lines over the top of the screen and the noise on the right edge
   are gone. the effect was reading the wrong image (an old copy instead of what was just drawn).
   this was on every graphics card, not just AMD. thanks ijezabella for the run.err!
+- texture upscaling like in ppsspp! Esc > Texture upscaling: 2x, 3x or 4x (xBRZ). every texture
+  gets scaled once when it loads, so it doesn't slow the game down, maybe a tiny hitch the first
+  time you see something new. off by default
 
 ## 0.9.8 - 2026-11-15
 
