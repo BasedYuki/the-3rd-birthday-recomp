@@ -3,7 +3,7 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.9 - 2026-11-16
 
 - Overdive effects: the pink lines over the top of the screen and the noise on the right edge
   are gone. the effect was reading the wrong image (an old copy instead of what was just drawn).
@@ -11,6 +11,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - texture upscaling like in ppsspp! Esc > Texture upscaling: 2x, 3x or 4x (xBRZ). every texture
   gets scaled once when it loads, so it doesn't slow the game down, maybe a tiny hitch the first
   time you see something new. off by default
+
+no need to press "Prepare game" again, just update and play
 
 ## 0.9.8 - 2026-11-15
 
