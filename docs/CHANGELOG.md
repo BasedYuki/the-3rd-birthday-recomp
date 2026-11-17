@@ -3,7 +3,7 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.11 - 2026-11-17
 
 - xbox button prompts! Esc > Button prompts: Xbox. the game's PSP buttons in menus and text
   turn into A / B / X / Y, LT / RT, VIEW and MENU. the icons are drawn by the port, nothing new
@@ -13,6 +13,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
   same for some menu rows going dark. thanks ijezabella for the videos!
 - 60 fps on some AMD integrated graphics: the game sent the gpu more settings per draw than
   those cards allow, now it fits
+
+no need to press "Prepare game" again this time
 
 ## 0.9.10 - 2026-11-16
 
