@@ -3,6 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- xbox button prompts! Esc > Button prompts: Xbox. the game's PSP buttons in menus and text
+  turn into A / B / X / Y, LT / RT, VIEW and MENU. the icons are drawn by the port, nothing new
+  to download. thanks for the idea in #15
+
 ## 0.9.10 - 2026-11-16
 
 - modern / centred camera: no more seeing through walls. the camera now gets pushed in by walls

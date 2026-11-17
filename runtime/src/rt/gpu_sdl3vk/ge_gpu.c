@@ -1224,6 +1224,27 @@ static uint32_t *tex_upscale(const uint32_t *px, int w, int h, int *rw, int *rh)
     return out;
 }
 
+/* Button prompts (Esc menu, graphics.cfg button_prompts=1): the PSP buttons in the game's font
+ * texture (square, triangle, circle, cross, L, R, SELECT, START) are drawn over with Xbox-style
+ * ones (X, Y, B, A, LT, RT, VIEW, MENU) from prompts_xbox.h, which tools/gen_xbox_prompts.py draws
+ * from scratch. The font is found by the hash of its decoded pixels (as in textures/dump/). */
+#include "prompts_xbox.h"
+#define FONT_TEX_HASH 0x63ae467143862b79ull
+static int s_prompts = -1;
+void gegpu_set_prompts(int v) { s_prompts = v; }
+static void prompts_patch(uint32_t *px, int w, int h) {
+    if (s_prompts != 1 || w != 512 || h != 256) return;
+    uint64_t th = 1469598103934665603ull;
+    th = fnv64(th, &w, sizeof(w)); th = fnv64(th, &h, sizeof(h));
+    th = fnv64(th, px, (size_t)w * (size_t)h * 4);
+    if (th != FONT_TEX_HASH) return;
+    for (unsigned i = 0; i < sizeof(s_xbox_patch) / sizeof(s_xbox_patch[0]); i++) {
+        const XboxPatch *p = &s_xbox_patch[i];
+        for (int y = 0; y < p->h; y++)
+            memcpy(px + (size_t)(p->y + y) * (size_t)w + p->x, p->px + y * p->w, (size_t)p->w * 4);
+    }
+}
+
 static VkDescriptorSet tex_get(void) {
     int w = s_ge->tex_w, h = s_ge->tex_h;
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return s_white_set;
@@ -1236,6 +1257,8 @@ static VkDescriptorSet tex_get(void) {
     key ^= (uint64_t)s_ge->tex_bufw << 16;
     if (s_upscale < 0) s_upscale = sdl3vk_cfg_get("tex_upscale", 1);
     key ^= (uint64_t)(s_upscale > 1 ? s_upscale : 0) << 60;   /* a new factor makes new entries */
+    if (s_prompts < 0) s_prompts = sdl3vk_cfg_get("button_prompts", 0) != 0;
+    key ^= (uint64_t)s_prompts << 63;                          /* and so do other prompts */
     if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7)
         key ^= clut_hash() | 1;        /* distinct entry per (texture, palette) pair */
     uint64_t hash = tex_hash();
@@ -1249,7 +1272,7 @@ static VkDescriptorSet tex_get(void) {
         { const uint64_t t0 = now_us(); ge_decode_tex_rgba(s_texscratch); s_t_texdec += now_us() - t0; }
         int rw = w, rh = h;
         uint32_t *rep = tp_replace(s_texscratch, w, h, &rw, &rh);
-        if (!rep) rep = tex_upscale(s_texscratch, w, h, &rw, &rh);
+        if (!rep) { prompts_patch(s_texscratch, w, h); rep = tex_upscale(s_texscratch, w, h, &rw, &rh); }
         if (rep && rw == e->w && rh == e->h) {  /* same size as before: just new pixels */
             const int ok = tex_upload(e->img, rep, rw, rh);
             free(rep);
@@ -1281,7 +1304,7 @@ static VkDescriptorSet tex_get(void) {
     memset(e, 0, sizeof(*e));
     int rw = w, rh = h;
     uint32_t *rep = tp_replace(s_texscratch, w, h, &rw, &rh);
-    if (!rep) rep = tex_upscale(s_texscratch, w, h, &rw, &rh);
+    if (!rep) { prompts_patch(s_texscratch, w, h); rep = tex_upscale(s_texscratch, w, h, &rw, &rh); }
     const int ok = tex_make(rep ? rep : s_texscratch, rep ? rw : w, rep ? rh : h, linear, clamp_u, clamp_v,
                             &e->img, &e->mem, &e->view, &e->smp);
     const int has = rep != NULL;

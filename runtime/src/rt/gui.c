@@ -455,7 +455,7 @@ static void cheats_run(uint32_t fbaddr, int fmt, uint32_t stride) {
 }
 
 static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
-    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_TEXFILT, M_UIFILT, M_UPSCALE, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
+    enum { M_RESUME = 1, M_CONTROLS, M_CHEATS, M_CAMSTYLE, M_FREEAIM, M_SPEED, M_INVX, M_INVY, M_RECENTER, M_RES, M_WIDE, M_FPS, M_SHOWFPS, M_GLOW, M_TEXFILT, M_UIFILT, M_UPSCALE, M_PROMPTS, M_INTRO, M_UPDATE, M_FULL, M_SHOT, M_QUIT, M_COUNT };
     int sel = M_RESUME;
     const int active_scale = sdl3vk_render_scale();
     static int boot_cfg = -1;                      /* render_scale setting the game started with */
@@ -494,6 +494,7 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
             const int up = sdl3vk_cfg_get("tex_upscale", 1);
             if (up >= 2 && up <= 4) snprintf(buf[M_UPSCALE], 96, "Texture upscaling:  %dx (xBRZ)", up);
             else snprintf(buf[M_UPSCALE], 96, "Texture upscaling:  Off"); }
+        snprintf(buf[M_PROMPTS], 96, "Button prompts:  %s", sdl3vk_cfg_get("button_prompts", 0) ? "Xbox" : "PSP (original)");
         snprintf(buf[M_SHOWFPS], 96, "Show FPS counter:  %s", sdl3vk_show_fps() ? "On" : "Off");
         snprintf(buf[M_UPDATE], 96, "Check for updates at start:  %s", sdl3vk_cfg_get("update_check", 1) ? "On" : "Off");
         snprintf(buf[M_FULL], 96, "Fullscreen:  %s", sdl3vk_fullscreen() ? "On" : "Off");
@@ -541,6 +542,12 @@ static void menu_run(uint32_t fbaddr, int fmt, uint32_t stride) {
                 if (up < 2 || up > 4) up = 1;
                 up = dir > 0 ? (up >= 4 ? 1 : up + 1) : (up <= 1 ? 4 : up - 1);
                 sdl3vk_cfg_set("tex_upscale", up); gegpu_set_upscale(up);
+                break;
+            }
+            case M_PROMPTS: {
+                extern void gegpu_set_prompts(int v);
+                const int v = !sdl3vk_cfg_get("button_prompts", 0);
+                sdl3vk_cfg_set("button_prompts", v); gegpu_set_prompts(v);
                 break;
             }
             case M_TEXFILT: case M_UIFILT: {
