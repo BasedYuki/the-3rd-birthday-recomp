@@ -8,6 +8,11 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - xbox button prompts! Esc > Button prompts: Xbox. the game's PSP buttons in menus and text
   turn into A / B / X / Y, LT / RT, VIEW and MENU. the icons are drawn by the port, nothing new
   to download. thanks for the idea in #15
+- 60 fps: the "NEW" tags in the mission menu don't jump around anymore. when one of them
+  blinked the in-between frame paired it with the wrong one and drew it halfway between them,
+  same for some menu rows going dark. thanks ijezabella for the videos!
+- 60 fps on some AMD integrated graphics: the game sent the gpu more settings per draw than
+  those cards allow, now it fits
 
 ## 0.9.10 - 2026-11-16
 

@@ -105,8 +105,11 @@ typedef struct {
     int32_t draw;                          /* frame-interpolation draw id (-1: 2D / none) */
 } Batch;
 
-/* vertex-stage push constants (frame interpolation reprojection, psp.vert), after PushPC */
+/* per-draw frame interpolation reprojection (psp.vert, instance-rate vertex attributes 5-10) */
 typedef struct { float R[16]; float vs[4]; float vc[4]; } PushVS;
+static VkBuffer s_fivs_buf; static VkDeviceMemory s_fivs_m;
+static PushVS  *s_fivs_map;                /* instance buffer: 2 x (entry 0 = none, one per draw) */
+static int      s_fivs_slot = 0, s_fivs_ci[2] = { -1, -1 };
 
 typedef struct {
     uint64_t key, hash;                    /* state key + content hash; 0,0 = empty */
@@ -471,17 +474,21 @@ static VkPipeline pipe_create(const PipeKey *k) {
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   st[0].module = s_vs; st[0].pName = "main";
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = s_fs; st[1].pName = "main";
 
-    VkVertexInputBindingDescription bind = { 0, sizeof(GpuVert), VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription at[5] = {
+    VkVertexInputBindingDescription bind[2] = { { 0, sizeof(GpuVert), VK_VERTEX_INPUT_RATE_VERTEX },
+                                                { 1, sizeof(PushVS), VK_VERTEX_INPUT_RATE_INSTANCE } };
+    VkVertexInputAttributeDescription at[11] = {
         { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
         { 1, 0, VK_FORMAT_R32G32_SFLOAT,       16 },
         { 2, 0, VK_FORMAT_R32_SFLOAT,          24 },
         { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,      28 },
         { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32 },
+        { 5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },  { 6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16 },
+        { 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32 }, { 8, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 48 },
+        { 9, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 64 }, { 10, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 80 },
     };
     VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-    vi.vertexBindingDescriptionCount = 1;   vi.pVertexBindingDescriptions = &bind;
-    vi.vertexAttributeDescriptionCount = 5; vi.pVertexAttributeDescriptions = at;
+    vi.vertexBindingDescriptionCount = 2;    vi.pVertexBindingDescriptions = bind;
+    vi.vertexAttributeDescriptionCount = 11; vi.pVertexAttributeDescriptions = at;
 
     VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -600,12 +607,9 @@ static int submit_pending(void) {
     vkCmdSetViewport(s_cmd, 0, 1, &vp);
     VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_vbuf, &zero);
+    vkCmdBindVertexBuffers(s_cmd, 1, 1, &s_fivs_buf, &zero);   /* entry 0: no reprojection */
 
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 1, 1, &s_clut_set, 0, NULL);
-    {   /* live rendering: no reprojection */
-        static const PushVS none = { { 0 }, { 0, 0, 0, 0 }, { 0 } };
-        vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushPC), sizeof(PushVS), &none);
-    }
     if (s_fi_on && s_fi_ok) {              /* log this submission for the interpolated replay */
         if (s_fi_nops < FI_MAX_OPS && s_fi_nb + s_nbatch <= FI_MAX_BATCH) {
             FiOp *op = &s_fi_ops[s_fi_nops++];
@@ -2062,6 +2066,50 @@ static int fi_find(const FiFrame *f, const FiDraw *x) {
     }
 }
 
+/* How many draws with this key the frame has. */
+static uint32_t fi_count(const FiFrame *f, const uint32_t *key) {
+    for (uint32_t i = fi_hash(key, 5) & (FI_HASH - 1);; i = (i + 1) & (FI_HASH - 1)) {
+        const FiOcc *o = &f->o[i];
+        if (!o->n) return 0;
+        if (!memcmp(o->k, key, sizeof(o->k))) return o->n;
+    }
+}
+static int fi_origin(const float *m, float *o) {       /* where a draw's own origin lands (NDC) */
+    if (fabsf(m[15]) < 1e-6f) return 0;
+    o[0] = m[12] / m[15]; o[1] = m[13] / m[15];
+    return 1;
+}
+/* The previous frame's draw for x. Draws with the same key are told apart by their order in the
+ * frame, but when one of them comes or goes (a blinking "NEW" tag in a menu, issue #11) the
+ * order shifts and each gets paired with its neighbour, so the in-between frame drew it halfway
+ * to the other's place. With a few same-key draws, take the nearest one on screen instead, each
+ * previous draw at most once; a draw with no free partner is not interpolated. */
+static uint8_t s_fi_used[FI_MAX_DRAWS];
+static int fi_match(const FiFrame *f, const FiDraw *x) {
+    const uint32_t n = fi_count(f, x->key);
+    if (n <= 1 || n > 32) {
+        const int j = fi_find(f, x);
+        if (j < 0 || s_fi_used[j]) return -1;
+        s_fi_used[j] = 1;
+        return j;
+    }
+    float ox[2];
+    if (!fi_origin(x->m, ox)) return -1;
+    FiDraw q = *x;
+    int best = -1; float bd = 1e30f;
+    for (uint32_t k = 0; k < n; k++) {
+        q.occ = k;
+        const int j = fi_find(f, &q);
+        if (j < 0 || s_fi_used[j]) continue;
+        float oj[2];
+        if (!fi_origin(f->d[j].m, oj)) continue;
+        const float d = (oj[0] - ox[0]) * (oj[0] - ox[0]) + (oj[1] - ox[1]) * (oj[1] - ox[1]);
+        if (d < bd) { bd = d; best = j; }
+    }
+    if (best >= 0) s_fi_used[best] = 1;
+    return best;
+}
+
 static void fi_frame_clear(FiFrame *f) {
     f->nd = 0;
     for (int i = 0; i < FI_HASH; i++) { f->h[i].idx = -1; f->o[i].n = 0; }
@@ -2197,11 +2245,12 @@ static int fi_replay(Target *disp, float t) {
         if (!inv44(pvc, inv)) return -1;
         mul44(mid, inv, cam);
     }
+    memset(s_fi_used, 0, (size_t)prev->nd);
     for (int i = 0; i < cur->nd; i++) {
         const FiDraw *x = &cur->d[i];
         PushVS *v = &s_fi_vs[i];
         memset(v, 0, sizeof(*v));
-        const int j = fi_find(prev, x);
+        const int j = fi_match(prev, x);
         float R[16];
         int have = 0;
         {   /* SR_FIDBG=1: why draws do (not) match the previous frame */
@@ -2238,7 +2287,15 @@ static int fi_replay(Target *disp, float t) {
      * (fi_seed): the replay starts from exactly what the real frame started from */
     for (int o = 0; o < s_fi_nops; o++)
         if (s_fi_ops[o].type == FI_OP_RENDER && !s_fi_seeded[s_fi_ops[o].tgt]) return -1;
+    /* the draws' reprojections go to one half of the instance buffer (entry 0 of each half stays
+     * zero); wait if the replay that last used this half may still be running */
+    const int slot = s_fivs_slot; s_fivs_slot ^= 1;
+    if (s_fivs_ci[slot] >= 0 && s_inflight[s_fivs_ci[slot]])
+        VKC(vkWaitForFences(s_dev, 1, &s_fences[s_fivs_ci[slot]], VK_TRUE, UINT64_MAX));
+    memcpy(s_fivs_map + (size_t)slot * (FI_MAX_DRAWS + 1) + 1, s_fi_vs, (size_t)cur->nd * sizeof(PushVS));
+    const VkDeviceSize vs_off = (VkDeviceSize)slot * (FI_MAX_DRAWS + 1) * sizeof(PushVS);
     if (!cmd_begin()) return -1;
+    s_fivs_ci[slot] = s_ci;
     VkDeviceSize zero = 0;
     for (int o = 0; o < s_fi_nops; o++) {
         const FiOp *op = &s_fi_ops[o];
@@ -2271,9 +2328,9 @@ static int fi_replay(Target *disp, float t) {
         VkViewport vp = { 0, 0, (float)SW, (float)SH, 0.0f, 1.0f };
         vkCmdSetViewport(s_cmd, 0, 1, &vp);
         vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_vbuf, &zero);
+        vkCmdBindVertexBuffers(s_cmd, 1, 1, &s_fivs_buf, &vs_off);
         vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 1, 1, &s_clut_set, 0, NULL);
         VkPipeline curp = VK_NULL_HANDLE;
-        int last_draw = -2;
         for (uint32_t k = 0; k < op->nb; k++) {
             const Batch *b = &s_fi_b[op->b0 + k];
             VkPipeline p = pipe_get(&b->key);
@@ -2283,12 +2340,6 @@ static int fi_replay(Target *disp, float t) {
             vkCmdSetScissor(s_cmd, 0, 1, &sc);
             vkCmdSetBlendConstants(s_cmd, b->bconst);
             vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(b->pc), &b->pc);
-            if (b->draw != last_draw) {
-                static const PushVS none = { { 0 }, { 0, 0, 0, 0 }, { 0 } };
-                const PushVS *v = (b->draw >= 0 && b->draw < cur->nd) ? &s_fi_vs[b->draw] : &none;
-                vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushPC), sizeof(PushVS), v);
-                last_draw = b->draw;
-            }
             /* render-to-texture sources become their shadows */
             VkDescriptorSet ds = b->dset;
             for (int q = 0; q < MAX_TGT; q++) {
@@ -2297,7 +2348,7 @@ static int fi_replay(Target *disp, float t) {
                 if (ds == s_tgts[q].set_l) { ds = s_shadow[q].set_l; break; }
             }
             vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &ds, 0, NULL);
-            vkCmdDraw(s_cmd, b->count, 1, b->first, 0);
+            vkCmdDraw(s_cmd, b->count, 1, b->first, (b->draw >= 0 && b->draw < cur->nd) ? (uint32_t)b->draw + 1 : 0);
         }
         vkCmdEndRenderPass(s_cmd);
         sh->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2455,6 +2506,9 @@ int gegpu_init(void) {
 
     if (!make_buffer(MAX_VERTS * sizeof(GpuVert), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                      &s_vbuf, &s_vbuf_m, (void **)&s_vmap)) return 0;
+    if (!make_buffer(2 * (FI_MAX_DRAWS + 1) * sizeof(PushVS), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                     &s_fivs_buf, &s_fivs_m, (void **)&s_fivs_map)) return 0;
+    memset(s_fivs_map, 0, 2 * (FI_MAX_DRAWS + 1) * sizeof(PushVS));
     if (!make_buffer(1u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &s_xfer, &s_xfer_m, &s_xfer_map)) return 0;
     if (!make_buffer(UP_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -2477,22 +2531,20 @@ int gegpu_init(void) {
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_fix));
 
-    /* push constants: fragment state, then the vertex-stage reprojection (frame interpolation) */
+    /* push constants: fragment state only (80 bytes; the frame-interpolation reprojection is an
+     * instance-rate vertex buffer, since 128 bytes is all some GPUs allow) */
     {
         VkPhysicalDeviceProperties pp;
         vkGetPhysicalDeviceProperties(s_pdev, &pp);
-        if (pp.limits.maxPushConstantsSize < sizeof(PushPC) + sizeof(PushVS))
+        if (pp.limits.maxPushConstantsSize < sizeof(PushPC))
             fprintf(stderr, "gegpu: maxPushConstantsSize %u < %u: renderer unavailable\n",
-                    pp.limits.maxPushConstantsSize, (unsigned)(sizeof(PushPC) + sizeof(PushVS)));
+                    pp.limits.maxPushConstantsSize, (unsigned)sizeof(PushPC));
     }
-    VkPushConstantRange pcr[2] = {
-        { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) },
-        { VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushPC), sizeof(PushVS) },
-    };
+    VkPushConstantRange pcr[1] = { { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) } };
     VkPipelineLayoutCreateInfo plc = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorSetLayout sets[2] = { s_dlayout, s_dlayout };   /* texture, depal palettes */
     plc.setLayoutCount = 2; plc.pSetLayouts = sets;
-    plc.pushConstantRangeCount = 2; plc.pPushConstantRanges = pcr;
+    plc.pushConstantRangeCount = 1; plc.pPushConstantRanges = pcr;
     VKC(vkCreatePipelineLayout(s_dev, &plc, NULL, &s_playout));
 
     VkShaderModuleCreateInfo smc = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };

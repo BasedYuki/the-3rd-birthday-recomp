@@ -25,27 +25,31 @@ layout(location = 3) noperspective out vec4  v_color;
 
 /* Frame interpolation (ge_gpu.c fi_replay): R moves this draw's clip-space positions from the
  * frame being replayed to the in-between time. vs = viewport scale (x, y, z) and an enable
- * flag, vc = viewport centre minus the screen offset. Live rendering pushes vs.w = 0.
- * vs.w = 2: skinned draw, each vertex goes to mix(previous clip position, this one, vc.w). */
-layout(push_constant) uniform PCV {
-    layout(offset = 80) mat4 R;
-    vec4 vs;
-    vec4 vc;
-} pcv;
+ * flag, vc = viewport centre minus the screen offset. Live rendering reads entry 0 (all zero).
+ * vs.w = 2: skinned draw, each vertex goes to mix(previous clip position, this one, vc.w).
+ * One entry per draw in an instance-rate buffer (first instance = draw), not push constants:
+ * those are only 128 bytes on some GPUs (an AMD iGPU in issue #11), the fragment stage uses 80. */
+layout(location = 5) in vec4 in_r0;
+layout(location = 6) in vec4 in_r1;
+layout(location = 7) in vec4 in_r2;
+layout(location = 8) in vec4 in_r3;
+layout(location = 9) in vec4 in_vs;
+layout(location = 10) in vec4 in_vc;
 
 void main() {
     vec4 p = in_pos;
     vec2 uv = in_uv;
-    if (pcv.vs.w != 0.0 && p.w > 0.0) {
+    const mat4 R = mat4(in_r0, in_r1, in_r2, in_r3);
+    if (in_vs.w != 0.0 && p.w > 0.0) {
         /* screen -> clip (undo the divide and the viewport), move, project again */
         float w = 1.0 / p.w;
-        vec3 ndc = (p.xyz - pcv.vc.xyz) / pcv.vs.xyz;
+        vec3 ndc = (p.xyz - in_vc.xyz) / in_vs.xyz;
         vec4 cc = vec4(ndc * w, w);
-        vec4 c = (pcv.vs.w > 1.5 && in_prev.w != 0.0) ? mix(in_prev, cc, pcv.vc.w) : pcv.R * cc;
+        vec4 c = (in_vs.w > 1.5 && in_prev.w != 0.0) ? mix(in_prev, cc, in_vc.w) : R * cc;
         if (c.w > 1e-3) {
             float rw = 1.0 / c.w;
             uv *= rw / p.w;                  /* the varying carries u*rw */
-            p.xyz = c.xyz * rw * pcv.vs.xyz + pcv.vc.xyz;
+            p.xyz = c.xyz * rw * in_vs.xyz + in_vc.xyz;
             p.w = rw;
         }
     }
