@@ -3,11 +3,16 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.12 - 2026-11-18
 
 - 60 fps: scrolling the pause menu doesn't make the rows go dark anymore. the menu draws a lot
   of the same thing (46 rows of text) and the fix from 0.9.11 only looked at up to 32, so the
   rows still got paired with the wrong ones. thanks ijezabella!
+- free aim: no more camera jolt when you start aiming. the game showed a few frames looking
+  where aya was facing before, then jumped to where you aim. now she turns first and the camera
+  goes into the aim smoothly. thanks for reporting it in #15
+
+no need to press "Prepare game" again this time
 
 ## 0.9.11 - 2026-11-17
 

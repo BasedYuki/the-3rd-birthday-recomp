@@ -356,6 +356,12 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     init_once();
     if (on < 0) { const char *e = getenv("SR_TWINSTICK_AIMTURN"); on = s_on && !(e && e[0] == '0'); }
     s_moving = abs((int)*lx - 128) >= 40 || abs((int)*ly - 128) >= 40;   /* recentre input */
+    {   /* SR_FACELOG=1: the stick and Aya's facing, twice a second (movement checks) */
+        static int fl = -1; if (fl < 0) fl = getenv("SR_FACELOG") ? 1 : 0;
+        if (fl && s_aya && (s_ticks % 30) == 0)
+            fprintf(stderr, "face: stick %d,%d (angle %.2f) facing %.3f\n", *lx - 128, *ly - 128,
+                    atan2f((float)(*lx - 128), (float)(128 - *ly)), rdf(s_aya + 0x4c4));
+    }
     if (!on) return;
     const int l = (*btn & 0x0100u) != 0;
     const int stick_idle = abs((int)*lx - 128) < 40 && abs((int)*ly - 128) < 40;
@@ -740,6 +746,12 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
         break;
     case HOOK_PLAYER_POSE:     /* a0 = Aya's object */
         s_aya = s->r[4];
+        {   /* SR_FACEWATCH=1: report the code that writes her facing (debugging movement) */
+            static int fw = -1; if (fw < 0) fw = getenv("SR_FACEWATCH") ? 1 : 0;
+            if (fw == 1 && s_aya) { extern void sr_watch_set(uint32_t); sr_watch_set(s_aya + 0x4c6); fw = 2; }
+            static int rw = -1; if (rw < 0) rw = getenv("SR_READWATCH") ? 1 : 0;   /* readers of her stick copy */
+            if (rw == 1 && s_aya) { extern void sr_readwatch_set(uint32_t, uint32_t); extern int g_sr_dbg; sr_readwatch_set(s_aya + 0xe88, 0x10); g_sr_dbg = 1; rw = 2; }
+        }
         break;
     case HOOK_MAT_FROM_YAW:    /* a0 = object, $f13 = its facing */
         if (s->r[4] != s_aya || !s_aya) break;

@@ -301,3 +301,13 @@ def load_slot1(g):
     g.press("cross")
     for i in range(8):
         g.wait(1.5); g.shot(f"c{i}")
+
+
+def stick_diag(g):
+    """Scene load, then walk with the left stick 25 degrees right of forward (issue #15: does
+    the game run straight for small stick angles?). Screenshots before and after."""
+    scene_quick(g)
+    g.wait(4); g.shot("a_start")
+    fy = (lambda y: 256 - y) if g.name == "ppsspp" else (lambda y: y)   # PPSSPP's analog y points up
+    g.stick(150, fy(2), 150); g.wait(0.5); g.shot("b_after10")
+    g.stick(237, fy(64), 90); g.wait(0.5); g.shot("c_after60")
