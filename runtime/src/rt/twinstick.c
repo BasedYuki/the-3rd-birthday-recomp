@@ -424,6 +424,8 @@ static uint32_t s_tgt_obj; static float s_tgt_written[3], s_tgt_orig[3];
 static int s_blend_on = 0; static double s_blend_t0;
 static float s_bl_eye[3], s_bl_tgt[3], s_sp_eye[3], s_sp_tgt[3];
 static int s_sp_ok = 0;
+static float s_view_eye[3], s_view_tgt[3];           /* the last follow view we showed */
+static int s_view_ok = 0;
 
 /* Walls (issue #11 "seeing through walls"). The game keeps its follow camera out of walls by
  * sweeping the line from Aya to the camera (cam_collide, called from the follow camera at
@@ -542,6 +544,7 @@ static void rotate_camera(uint32_t base, const char *why) {
     if (s_style && view) {
         wrf(tgt, tw[0]); wrf(tgt + 4, tw[1]); wrf(tgt + 8, tw[2]);
         s_tgt_obj = base; memcpy(s_tgt_written, tw, sizeof(tw));
+        memcpy(s_view_eye, e, sizeof(e)); memcpy(s_view_tgt, tw, sizeof(tw)); s_view_ok = 1;
     }
     memcpy(s_last[slot].eye, e, sizeof(e));
 }
@@ -707,6 +710,27 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
                 const uint32_t src = s->r[5];       /* the special camera's view, for the ease back */
                 for (int i = 0; i < 3; i++) { s_sp_eye[i] = rdf(src + 0x10 + 4 * i); s_sp_tgt[i] = rdf(src + 0x20 + 4 * i); }
                 s_sp_ok = 1;
+                /* Free aim, before the game first builds Aya's aim pose: it aims (and its aim
+                 * camera looks) along the direction it latched from her old facing when it saw
+                 * L, for about three frames, then the free aim takes over and the camera jumped
+                 * (issue #15: a jolt when aiming starts). Latch our direction from the start. */
+                if (s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && s_aya &&
+                    MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu) {
+                    const float y = s_aim_look - AIM_CAM_OFF;
+                    static int n = 0;
+                    if (getenv("SR_AIMLOG") && n++ < 30)
+                        fprintf(stderr, "twinstick: early aim latch %.2f (was %.2f) eye-target yaw %.2f\n", y,
+                                atan2f(rdf(s_aya + 0x13a0), rdf(s_aya + 0x13a8)),
+                                atan2f(rdf(src + 0x20) - rdf(src + 0x10), rdf(src + 0x28) - rdf(src + 0x18)));
+                    for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(y)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(y)); }
+                    wrf(s_aya + 0x4c4, y);         /* her facing, and her root matrix it is read back from */
+                    wrf(s_aya + 0x20, cosf(y)); wrf(s_aya + 0x24, 0.0f); wrf(s_aya + 0x28, -sinf(y));
+                    wrf(s_aya + 0x40, sinf(y)); wrf(s_aya + 0x44, 0.0f); wrf(s_aya + 0x48, cosf(y));
+                    /* the aim camera holds a view along the game's own (unturned) follow camera
+                     * until the aim pose starts: show ours until then */
+                    if (s_style && s_view_ok)
+                        for (int i = 0; i < 3; i++) { wrf(src + 0x10 + 4 * i, s_view_eye[i]); wrf(src + 0x20 + 4 * i, s_view_tgt[i]); }
+                }
                 aim_check(src);
             }
         }
