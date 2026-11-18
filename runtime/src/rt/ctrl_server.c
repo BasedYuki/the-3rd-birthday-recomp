@@ -5,6 +5,7 @@
  *   btn <hexmask> <frames>     hold PSP buttons for that many vblanks (OR'd with other input)
  *   stick <x> <y> <frames>     hold the left stick (0..255, 128 = centre)
  *   shot <path>                save the next presented frame as PNG at <path>
+ *   shotseq <dir> <n>          save the next n presented frames (60 fps: real and in-between)
  *   read <hexaddr> <len>       guest memory as hex
  *   dump <hexaddr> <hexlen> <path>  guest memory as a raw file
  *   vcount                     vblanks so far
@@ -51,6 +52,10 @@ static void handle(SOCKET c, char *line) {
     } else if (!strcmp(cmd, "stick") && sscanf(line, "%*s %lu %lu %lu", &a, &b, &f) == 3) {
         InterlockedExchange(&s_stick_xy, (LONG)(((a & 0xFF) << 8) | (b & 0xFF)));
         InterlockedExchange(&s_stick_left, (LONG)f);
+        reply(c, "ok\n");
+    } else if (!strcmp(cmd, "shotseq") && sscanf(line, "%*s %299s %lu", arg, &a) == 2) {   /* test: every presented frame */
+        extern void sdl3vk_shot_sequence(const char *, int);
+        sdl3vk_shot_sequence(arg, (int)a);
         reply(c, "ok\n");
     } else if (!strcmp(cmd, "shot") && sscanf(line, "%*s %299[^\r\n]", arg) == 1) {
         extern void sdl3vk_request_screenshot_path(const char *);

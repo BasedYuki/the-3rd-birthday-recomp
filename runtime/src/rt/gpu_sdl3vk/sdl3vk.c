@@ -716,6 +716,15 @@ void sdl3vk_request_screenshot_path(const char *path) {
     snprintf(s_shot_path, sizeof(s_shot_path), "%s", path);
     s_shot_req = 1;
 }
+/* ctrl_server.c "shotseq <dir> <n>": save each of the next n presented frames (real and
+ * in-between) as <dir>/sNNNN.png, for frame-by-frame checks of the interpolation */
+static char s_seq_dir[260]; static int s_seq_left = 0, s_seq_n = 0;
+int g_sdl3vk_mid = 0;                    /* the frame being presented is an in-between one */
+void sdl3vk_shot_sequence(const char *dir, int n) {
+    snprintf(s_seq_dir, sizeof(s_seq_dir), "%s", dir);
+    CreateDirectoryA(dir, NULL);
+    s_seq_n = 0; s_seq_left = n;
+}
 void sdl3vk_request_screenshot_named(const char *name) {
     snprintf(s_shot_name, sizeof(s_shot_name), "%s", name);
     s_shot_req = 1;
@@ -1415,6 +1424,10 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
             src = s_visimg;
         }
 
+        if (!s_shot_req && s_seq_left > 0) {
+            snprintf(s_shot_path, sizeof(s_shot_path), "%s/s%04d%s.png", s_seq_dir, s_seq_n++, g_sdl3vk_mid ? "m" : "");
+            s_seq_left--; s_shot_req = 1;
+        }
         if (s_shot_req) { shot_record(src, srcw, srch); s_shot_req = 0; }
 
         /* fb image -> swapchain, aspect-correct letterbox blit. The layout change must come

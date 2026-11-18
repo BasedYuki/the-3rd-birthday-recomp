@@ -278,3 +278,26 @@ def briefing_gear(g):
     for i in range(6): g.press("down"); g.wait(0.4)
     g.shot("c_gear_down")
     g.press("circle"); g.wait(1.5); g.press("up"); g.wait(0.6); g.press("cross"); g.wait(2); g.shot("d_weapons")
+
+
+def load_nosave(g):
+    """Title menu -> Load Game with no saves (issue #16): what follows, every 2 s."""
+    to_title_menu(g); g.wait(30); g.press("cross"); g.wait(8); g.shot("a_menu")
+    g.press("down"); g.wait(1); g.shot("b_sel")
+    g.press("cross")
+    for i in range(8):
+        g.wait(1.5); g.shot(f"c{i}")
+    g.press("cross")
+    for i in range(4):
+        g.wait(1.5); g.shot(f"d{i}")
+
+
+def load_slot1(g):
+    """Title menu -> Load Game -> first slot (issue #16: a save that sends the game back to the logos)."""
+    to_title_menu(g); g.wait(30); g.press("cross"); g.wait(8); g.shot("a_menu")
+    g.press("cross")
+    for i in range(6):
+        g.wait(1.5); g.shot(f"b{i}")
+    g.press("cross")
+    for i in range(8):
+        g.wait(1.5); g.shot(f"c{i}")

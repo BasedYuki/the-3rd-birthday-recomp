@@ -2082,12 +2082,14 @@ static int fi_origin(const float *m, float *o) {       /* where a draw's own ori
 /* The previous frame's draw for x. Draws with the same key are told apart by their order in the
  * frame, but when one of them comes or goes (a blinking "NEW" tag in a menu, issue #11) the
  * order shifts and each gets paired with its neighbour, so the in-between frame drew it halfway
- * to the other's place. With a few same-key draws, take the nearest one on screen instead, each
+ * to the other's place (scrolling the pause menu moved its rows by two). Take the nearest one
+ * on screen instead (up to FI_NEAREST_MAX same-key draws), each
  * previous draw at most once; a draw with no free partner is not interpolated. */
+#define FI_NEAREST_MAX 256   /* the pause menu draws 46 rows of text with one key */
 static uint8_t s_fi_used[FI_MAX_DRAWS];
 static int fi_match(const FiFrame *f, const FiDraw *x) {
     const uint32_t n = fi_count(f, x->key);
-    if (n <= 1 || n > 32) {
+    if (n <= 1 || n > FI_NEAREST_MAX) {
         const int j = fi_find(f, x);
         if (j < 0 || s_fi_used[j]) return -1;
         s_fi_used[j] = 1;
@@ -2267,6 +2269,19 @@ static int fi_replay(Target *disp, float t) {
             float mid[16], ix[16];
             for (int k = 0; k < 16; k++) mid[k] = prev->d[j].m[k] + (x->m[k] - prev->d[j].m[k]) * t;
             if (inv44(x->m, ix)) { mul44(mid, ix, R); have = 1; }
+            static int dbg2 = -1;   /* SR_FIDBG2=1: draws that move in the in-between frame */
+            if (dbg2 < 0) dbg2 = getenv("SR_FIDBG2") ? 1 : 0;
+            if (dbg2 && have) {
+                float dev = 0.0f;
+                for (int k = 0; k < 16; k++) dev = fmaxf(dev, fabsf(R[k] - ((k % 5) == 0 ? 1.0f : 0.0f)));
+                if (dev > 1e-3f) {
+                    float a[2] = { 0 }, b[2] = { 0 };
+                    fi_origin(x->m, a); fi_origin(prev->d[j].m, b);
+                    fprintf(stderr, "FIDBG2 n%lu draw %d key %x/%u/%u/%06x occ %u/%u -> %d occ %u  origin %.3f,%.3f <- %.3f,%.3f dev %.3f\n",
+                            (unsigned long)s_cnt_interp, i, x->key[0], x->key[1], x->key[2], x->key[3], x->occ,
+                            fi_count(cur, x->key), j, prev->d[j].occ, a[0], a[1], b[0], b[1], dev);
+                }
+            }
         }
         {   /* matching statistics (stats line): 0 matched, 1 camera only, 2 drawn as is */
             const int kind = have ? 0 : !memcmp(x->pv, pvc, sizeof(x->pv)) ? 1 : 2;
@@ -2418,7 +2433,10 @@ int gegpu_present_interp(void *img) {
         if (ms < 0) { const char *e = getenv("SR_SLOWINTERP"); ms = e ? atoi(e) : 0; }
         if (ms > 0) Sleep((DWORD)ms);
     }
-    return sdl3vk_present_image(img);
+    { extern int g_sdl3vk_mid; g_sdl3vk_mid = 1; }   /* shotseq names it as an in-between frame */
+    const int r = sdl3vk_present_image(img);
+    { extern int g_sdl3vk_mid; g_sdl3vk_mid = 0; }
+    return r;
 }
 
 /* Present: hand the GPU image straight to the swapchain. Returns 0 if this address is
