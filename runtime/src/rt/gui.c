@@ -21,6 +21,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+/* Left stick setting id: kept out of recomp.h, which is part of the kit (a change there would
+ * make every player prepare the game again). */
+#ifndef SR_TS_ANALOG_MOVE
+#define SR_TS_ANALOG_MOVE (SR_TS_FREE_AIM + 1)
+#endif
 
 #define PSP_W 480
 #define PSP_H 272
