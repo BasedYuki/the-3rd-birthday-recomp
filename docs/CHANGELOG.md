@@ -3,12 +3,14 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.13 - 2026-11-19
 
 - full analog left stick! the original game keeps aya running straight while the stick points
   within about 35 degrees of where she's going (ppsspp does the same), so small corrections did
   nothing and it felt like a d-pad. now she runs exactly where you point. Esc > Left stick:
   Original puts the old behaviour back. thanks for the report in #15
+
+no need to press "Prepare game" again this time
 
 ## 0.9.12 - 2026-11-18
 
