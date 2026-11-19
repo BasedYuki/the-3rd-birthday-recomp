@@ -3,7 +3,7 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.15 - 2026-11-19
 
 - no more ghosting with the glow on at higher resolutions. the glow is a small blurred copy
   of the picture laid over it, and above 1x it kept too much detail, so it showed up as a sharp
@@ -14,6 +14,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
   does. thanks for the report in #16
 - if the game crashes, run.err now also says which dll it happened in (helps with overlays
   like reshade, #17)
+
+no need to press "Prepare game" again this time
 
 ## 0.9.14 - 2026-11-19
 
