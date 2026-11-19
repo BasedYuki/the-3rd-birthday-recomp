@@ -3,10 +3,12 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.14 - 2026-11-19
 
 - right stick camera reacts faster. it used to ease into the turn over about a tenth of a
   second, now it's twice as quick. thanks for the report in #20
+
+no need to press "Prepare game" again this time
 
 ## 0.9.13 - 2026-11-19
 
