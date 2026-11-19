@@ -228,7 +228,8 @@ int      gui_cfg_get(const char *key, int def);   /* graphics.cfg integer settin
 enum { SR_TS_SENSITIVITY, SR_TS_INVERT_X, SR_TS_INVERT_Y, SR_TS_RECENTER,
        SR_TS_TURNING /* read-only: the orbit is moving */, SR_TS_MOVING /* read-only: left stick pushed */,
        SR_TS_STYLE /* 0 = classic orbit, 1 = modern (over the shoulder, free mouse look) */,
-       SR_TS_FREE_AIM /* mouse / right stick turn the aim while L is held */ };
+       SR_TS_FREE_AIM /* mouse / right stick turn the aim while L is held */,
+       SR_TS_ANALOG_MOVE /* Aya runs in the stick's exact direction (the game keeps her straight within ~35 deg) */ };
 float    sr_twinstick_setting(int id);
 void     sr_twinstick_set(int id, float v);
 void     gui_toast(const char *msg);              /* short on-screen status message ("Game saved") */

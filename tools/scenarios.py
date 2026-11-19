@@ -311,3 +311,42 @@ def stick_diag(g):
     fy = (lambda y: 256 - y) if g.name == "ppsspp" else (lambda y: y)   # PPSSPP's analog y points up
     g.stick(150, fy(2), 150); g.wait(0.5); g.shot("b_after10")
     g.stick(237, fy(64), 90); g.wait(0.5); g.shot("c_after60")
+
+
+def stick_face(g):
+    """Issue #15: Aya's heading for small left-stick angles, port vs PPSSPP (original camera).
+    STICK_AYA=<hex> is her object (the port logs it with SR_FACELOG=1); prints her forward vector
+    (root matrix row +0x40) and position (+0x50) before and after each push."""
+    import math, os, struct as st
+    aya = int(os.environ["STICK_AYA"], 16) + (int(os.environ.get("STICK_PP_OFF", "0"), 16) if g.name == "ppsspp" else 0)
+    def show(tag):
+        b = g.read(aya + 0x40, 0x20)
+        fx, fy, fz, _, px, py, pz, _ = st.unpack("<8f", b)
+        print(f"{g.name} {tag}: heading {math.degrees(math.atan2(fx, fz)):7.1f}  pos {px:8.1f} {pz:8.1f}", flush=True)
+    scene_quick(g)
+    g.wait(2)
+    if g.name == "port":                        # the port logs her object (SR_FACELOG=1)
+        import re
+        log = open(os.path.join(g.out, "port.err"), errors="replace").read()
+        m = re.findall(r"face: Aya at 0x([0-9a-f]+)", log)
+        if m: aya = int(m[-1], 16)
+        print(f"port Aya at 0x{aya:08x}", flush=True)
+    if os.environ.get("STICK_SEARCH"):          # find her by the position bytes the port printed
+        pat = bytes.fromhex(os.environ["STICK_SEARCH"])
+        for base in range(0x09800000, 0x0a000000, 0x40000):
+            blk = g.read(base, 0x40000)
+            i = blk.find(pat)
+            while i >= 0:
+                c = base + i - 0x50
+                if c % 16 == 0 and base + i - 0x50 >= base:
+                    m = st.unpack("<16f", blk[i - 0x30:i + 0x10])
+                    if abs(m[15] - 1.0) < 1e-6 and abs(m[0] * m[0] + m[2] * m[2] - 1.0) < 1e-3:
+                        print(f"{g.name} candidate Aya 0x{c:08x}: right {m[0]:.3f} {m[2]:.3f} fwd {m[8]:.3f} {m[10]:.3f}", flush=True)
+                i = blk.find(pat, i + 1)
+    print(f"{g.name} pos bytes {g.read(aya + 0x50, 12).hex()}", flush=True)
+    show("start")
+    fy = (lambda y: 256 - y) if g.name == "ppsspp" else (lambda y: y)
+    for deg in (10, 20, 30, 45):
+        a = math.radians(deg)
+        x, y = int(round(128 + 127 * math.sin(a))), int(round(128 - 127 * math.cos(a)))
+        g.stick(x, fy(y), 45); g.wait(0.3); show(f"after {deg:2d} deg")

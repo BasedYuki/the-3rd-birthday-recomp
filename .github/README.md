@@ -120,6 +120,8 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
   with the crosshair staying in the middle and the shots going where it points. If the game
   locked onto an enemy, the lock stays until you move the aim. The sniper scope and the
   launchers keep the game's own stick aiming (the mouse moves it)
+- **Full analog left stick** (Esc menu > Left stick, on by default): Aya runs exactly where the
+  stick points; the original keeps her straight within about 35 degrees of her heading
 - **Mouse camera**: click the game window and the mouse turns the camera (left button fires, right
   aims; Esc releases the mouse); smooth WASD turning
 - **Launcher** (`The 3rd Birthday.exe`): disc image, settings, save list with backup / restore,

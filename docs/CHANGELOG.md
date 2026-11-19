@@ -3,6 +3,13 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- full analog left stick! the original game keeps aya running straight while the stick points
+  within about 35 degrees of where she's going (ppsspp does the same), so small corrections did
+  nothing and it felt like a d-pad. now she runs exactly where you point. Esc > Left stick:
+  Original puts the old behaviour back. thanks for the report in #15
+
 ## 0.9.12 - 2026-11-18
 
 - 60 fps: scrolling the pause menu doesn't make the rows go dark anymore. the menu draws a lot

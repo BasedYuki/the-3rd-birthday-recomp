@@ -104,6 +104,7 @@ static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick 
 static float s_yaw_vel = 0.0f, s_pitch_vel = 0.0f;   /* smoothed turn speed (rad/s) */
 static unsigned s_ticks = 0, s_hook_tick = 0;        /* pad reads, and the last one with a camera hook */
 static int s_free_aim = 1;                           /* free aim on */
+static int s_analog_move = 1;                        /* full analog running direction */
 static int s_aiming = 0;                             /* L reaches the game (last pad sample) */
 static int s_aim_pending = 0;                        /* L just pressed: the turn is set on the next pose */
 static float s_aim_look = 0.0f;                      /* where the view looked when L was pressed */
@@ -124,8 +125,8 @@ static struct { uint32_t base; float eye[3]; } s_last[MAX_CAMS];
 static void cfg_save(void) {
     FILE *f = fopen(CFG_FILE, "w");
     if (!f) return;
-    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\nstyle=%d\nfree_aim=%d\n",
-            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still, s_style, s_free_aim);
+    fprintf(f, "sensitivity=%.2f\ninvert_x=%d\ninvert_y=%d\nrecenter=%d\nrecenter_delay=%.2f\nrecenter_delay_still=%.2f\nstyle=%d\nfree_aim=%d\nanalog_move=%d\n",
+            s_speed, s_inv_x, s_inv_y, s_recenter, s_recenter_delay, s_recenter_delay_still, s_style, s_free_aim, s_analog_move);
     fclose(f);
 }
 
@@ -146,6 +147,7 @@ static void init_once(void) {
             else if (sscanf(line, "recenter=%f", &v) == 1) s_recenter = v != 0.0f;
             else if (sscanf(line, "style=%f", &v) == 1) s_style = v >= 2.0f ? 2 : v != 0.0f;
             else if (sscanf(line, "free_aim=%f", &v) == 1) s_free_aim = v != 0.0f;
+            else if (sscanf(line, "analog_move=%f", &v) == 1) s_analog_move = v != 0.0f;
         }
         fclose(f);
         cfg_save();                                  /* add keys missing from older files */
@@ -154,6 +156,7 @@ static void init_once(void) {
     }
     { const char *st = getenv("SR_CAMSTYLE"); if (st) { s_style = atoi(st); if (s_style < 0 || s_style > 2) s_style = 1; } }   /* tests */
     { const char *fa = getenv("SR_FREEAIM"); if (fa) s_free_aim = atoi(fa) != 0; }
+    { const char *am = getenv("SR_ANALOGMOVE"); if (am) s_analog_move = atoi(am) != 0; }
     const char *sp = getenv("SR_TWINSTICK_SPEED");
     if (sp) s_speed = (float)atof(sp);
     if (!(s_speed >= SENS_MIN)) s_speed = SENS_MIN;
@@ -172,6 +175,7 @@ float sr_twinstick_setting(int id) {
     case SR_TS_MOVING:      return (float)s_moving;
     case SR_TS_STYLE:       return (float)s_style;
     case SR_TS_FREE_AIM:    return (float)s_free_aim;
+    case SR_TS_ANALOG_MOVE: return (float)s_analog_move;
     default:                return 0.0f;
     }
 }
@@ -184,6 +188,7 @@ void sr_twinstick_set(int id, float v) {
     case SR_TS_RECENTER:    s_recenter = v != 0.0f; break;
     case SR_TS_STYLE:       s_style = v >= 2.0f ? 2 : v != 0.0f; s_abs_valid = 0; s_yaw_off = s_pitch_off = 0.0f; break;
     case SR_TS_FREE_AIM:    s_free_aim = v != 0.0f; break;
+    case SR_TS_ANALOG_MOVE: s_analog_move = v != 0.0f; break;
     default: return;
     }
     cfg_save();
@@ -350,6 +355,35 @@ static void aim_release(void) {
  * samples and feed "left stick forward" instead: the game's own camera-relative movement turns
  * Aya to face where the camera looks, then L goes through and she aims that way. Runs on every
  * pad sample (60 Hz), before the game sees it. SR_TWINSTICK_AIMTURN=0 disables it. */
+/* Full analog running direction (issue #15, Esc menu "Left stick"). The game keeps Aya on her
+ * heading while the stick points within about 35 degrees of it (the same on PPSSPP: 10, 20 and
+ * 30 degrees all run straight), so small corrections did nothing and the stick felt like a d-pad.
+ * Inside that band her heading is turned towards the stick's direction here, through her root
+ * matrix (Aya +0x20 right, +0x40 forward rows), which the game reads her heading back from;
+ * outside it the game turns her itself as before. */
+#define AM_BAND 0.65f      /* radians: about the game's own band, a little more */
+#define AM_STEP 0.09f      /* radians per pad sample (60 Hz) */
+static void analog_move(uint32_t btn, uint8_t lx, uint8_t ly) {
+    if (!s_analog_move || !s_aya || !s_view_look_ok || s_suspended || s_aiming) return;
+    if (btn & 0xF300u) return;                         /* L, R, face buttons: dodges, attacks */
+    if (s_ticks - s_hook_tick > 4) return;             /* the gameplay camera is running */
+    const float dx = (float)lx - 128.0f, dy = (float)ly - 128.0f;
+    if (dx * dx + dy * dy < 40.0f * 40.0f) return;
+    if (fabsf(rdf(s_aya + 0x24)) > 0.01f || fabsf(rdf(s_aya + 0x44)) > 0.01f) return;   /* upright only */
+    static float sign = 0.0f;
+    if (sign == 0.0f) { const char *e = getenv("SR_AMSIGN"); sign = e ? (float)atof(e) : -1.0f; }
+    const float want = s_view_look + sign * atan2f(dx, -dy);   /* the game runs straight along s_view_look */
+    float h = atan2f(rdf(s_aya + 0x40), rdf(s_aya + 0x48));
+    float d = want - h;
+    while (d > 3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    if (fabsf(d) < 0.004f || fabsf(d) > AM_BAND) return;
+    h += d > AM_STEP ? AM_STEP : d < -AM_STEP ? -AM_STEP : d;
+    const float c = cosf(h), sn = sinf(h);
+    wrf(s_aya + 0x20, c);  wrf(s_aya + 0x28, -sn);
+    wrf(s_aya + 0x40, sn); wrf(s_aya + 0x48, c);
+}
+
 #define AIM_TURN_SAMPLES 10
 void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     static int on = -1, phase = 0, prev_l = 0;
@@ -379,6 +413,7 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
         *btn &= ~0x0100u;          /* L waits */
         *lx = 128; *ly = 0;        /* stick forward: face the camera's direction */
     }
+    analog_move(*btn, *lx, *ly);
     /* Aim with the right stick: while L reaches the game, the PSP's single analog stick moves
      * the aim with the weapons whose aim the game moves itself (sniper scope, grenade / egg
      * launcher; with the others it strafes). Without free aim, or when free aim found that the
@@ -695,6 +730,10 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
         return 0;
     }
     init_once();
+    if (addr == HOOK_PLAYER_POSE && s->r[4] != s_aya) {   /* her object, also with the camera off */
+        s_aya = s->r[4];
+        if (getenv("SR_FACELOG")) fprintf(stderr, "face: Aya at 0x%08x\n", s_aya);
+    }
     if (!s_on) return 0;
     switch (addr) {
     case HOOK_CAMERA_DERIVE:   /* a0 = camera object base (logic camera) */
