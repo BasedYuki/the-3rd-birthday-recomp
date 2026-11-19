@@ -1425,7 +1425,8 @@ static int present_common(VkImage src, int srcw, int srch, int do_upload) {
         }
 
         if (!s_shot_req && s_seq_left > 0) {
-            snprintf(s_shot_path, sizeof(s_shot_path), "%s/s%04d%s.png", s_seq_dir, s_seq_n++, g_sdl3vk_mid ? "m" : "");
+            { extern long long ctrlsrv_samples(void);
+              snprintf(s_shot_path, sizeof(s_shot_path), "%s/s%04d_v%06lld%s.png", s_seq_dir, s_seq_n++, ctrlsrv_samples(), g_sdl3vk_mid ? "m" : ""); }
             s_seq_left--; s_shot_req = 1;
         }
         if (s_shot_req) { shot_record(src, srcw, srch); s_shot_req = 0; }

@@ -194,6 +194,8 @@ Kill rule: the framework that gets closest to showing anything wins. If none get
 
 - **Left stick (2026-11-19, #15):** measured Aya's heading (root matrix forward row, Aya+0x40) after holding the stick 10/20/30/45 deg in the port and in PPSSPP (scenario stick_face; PPSSPP's Aya found by her position bytes, 0x09bc1250 vs the port's 0x09bc1790/1810): both keep her heading for 10-30 deg, so the "d-pad feel" is the game's own band, not a port bug. New option analog_move (twinstick.cfg, Esc menu "Left stick", default on): inside a 0.65 rad band her heading is turned toward s_view_look - stick angle (0.09 rad per pad sample) by writing her root matrix rows; skipped while aiming, under special cameras, with L/R/face buttons held, or when she isn't upright. Modern/centred headings now follow the stick exactly (10/20/30/45 deg); classic steers with the orbit following.
 
+- **Input lag (2026-11-19, #20):** measured with the ctrl "stick" command (logs the pad sample it first reaches the game at) and shotseq frames named by sample: first visible change 4-5 vblanks (67-83 ms) after the stick reaches the game, the same with 60 fps on or off; presentation is MAILBOX with a fence per present. That is the game's own 30 fps pad-read/update/draw/flip. The right stick's turn-speed smoothing (SMOOTH_S) was 0.06 s (42% / 66% / 81% of the speed on the first three 30 Hz reads), now 0.03 s (67% / 89%).
+
 ## Open, not blocking
 - Controller remapping and config UI
 - Mod/patch format for other people's function replacements

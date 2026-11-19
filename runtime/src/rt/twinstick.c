@@ -61,7 +61,7 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
  * fine control and only a full push turns at the full rate. */
 #define YAW_RATE   2.1f
 #define PITCH_RATE 1.2f
-#define SMOOTH_S   0.06f    /* time constant of the turn-speed smoothing (seconds) */
+#define SMOOTH_S   0.03f    /* time constant of the turn-speed smoothing (seconds); 0.06 felt late (issue #20) */
 /* Limits on the final elevation of the eye above the target (radians). */
 #define ELEV_MIN (-0.35f)   /* a little below the target */
 #define ELEV_MAX (1.2f)     /* high overhead */

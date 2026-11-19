@@ -20,12 +20,13 @@
 #include "recomp.h"
 
 static volatile LONG s_btn_mask, s_btn_left;          /* frames left */
-static volatile LONG s_stick_xy = -1, s_stick_left;
+static volatile LONG s_stick_xy = -1, s_stick_left, s_stick_new;   /* new: log when it reaches the game */
 static volatile LONG64 s_vbl;                         /* vblank counter (sampled frames) */
 volatile int g_drawlog_on = 0;                       /* "drawlog" (ge.c / gui.c) */
 static volatile LONG s_presses;                       /* btn masks not yet seen by a modal dialog */
 
 /* Modal dialogs (gui_dialog) read button presses here instead of from the game's pad. */
+long long ctrlsrv_samples(void) { return (long long)s_vbl; }   /* shotseq names */
 uint32_t ctrlsrv_take_presses(void) { return (uint32_t)InterlockedExchange(&s_presses, 0); }
 
 /* Called once per controller sample (vblank). */
@@ -34,6 +35,8 @@ void ctrlsrv_apply(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     if (s_btn_left > 0) { *btn |= (uint32_t)s_btn_mask; InterlockedDecrement(&s_btn_left); }
     if (s_stick_left > 0 && s_stick_xy >= 0) {
         *lx = (uint8_t)((s_stick_xy >> 8) & 0xFF); *ly = (uint8_t)(s_stick_xy & 0xFF);
+        if (InterlockedExchange(&s_stick_new, 0)) fprintf(stderr, "ctrl: stick %ld,%ld from sample %lld\n",
+                                                          (long)((s_stick_xy >> 8) & 0xFF), (long)(s_stick_xy & 0xFF), (long long)s_vbl);
         InterlockedDecrement(&s_stick_left);
     }
 }
@@ -51,7 +54,7 @@ static void handle(SOCKET c, char *line) {
         reply(c, "ok\n");
     } else if (!strcmp(cmd, "stick") && sscanf(line, "%*s %lu %lu %lu", &a, &b, &f) == 3) {
         InterlockedExchange(&s_stick_xy, (LONG)(((a & 0xFF) << 8) | (b & 0xFF)));
-        InterlockedExchange(&s_stick_left, (LONG)f);
+        InterlockedExchange(&s_stick_left, (LONG)f); InterlockedExchange(&s_stick_new, 1);
         reply(c, "ok\n");
     } else if (!strcmp(cmd, "shotseq") && sscanf(line, "%*s %299s %lu", arg, &a) == 2) {   /* test: every presented frame */
         extern void sdl3vk_shot_sequence(const char *, int);
