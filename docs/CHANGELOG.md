@@ -3,6 +3,18 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- no more ghosting with the glow on at higher resolutions. the glow is a small blurred copy
+  of the picture laid over it, and above 1x it kept too much detail, so it showed up as a sharp
+  second copy a few pixels off (easy to see on lights). it's soft like the original again.
+  thanks for the report in #21
+- Load Game with no saved game now says "There is no saved data." instead of dropping you
+  back at the logos with no message. after that it goes back to the logos like the original
+  does. thanks for the report in #16
+- if the game crashes, run.err now also says which dll it happened in (helps with overlays
+  like reshade, #17)
+
 ## 0.9.14 - 2026-11-19
 
 - right stick camera reacts faster. it used to ease into the turn over about a tenth of a

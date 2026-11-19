@@ -23,7 +23,9 @@ layout(set = 0, binding = 0) uniform sampler2D u_tex;
 /* flags bits (pc.cfg.x >> 8): 1 textured, 2 texfunc-RGBA, 4 color-double, 8 fog,
  * 16 persp (apply minz/maxz), 32 clear mode, 64 nearest-filter (+0.5 texel shift),
  * 128 premultiply rgb by 2*alpha (PSP src blend factor DOUBLE_SRC_ALPHA with VK factor
- * ONE), 256 premultiply rgb by (1 - 2*alpha) (ONE_MINUS_DOUBLE_SRC_ALPHA). */
+ * ONE), 256 premultiply rgb by (1 - 2*alpha) (ONE_MINUS_DOUBLE_SRC_ALPHA),
+ * 2048 low-res read: average the scale x scale block of the target under one PSP texel
+ * (the glow buffer at a higher internal resolution, ge_gpu.c F_LOWRES). */
 layout(push_constant) uniform PC {
     ivec4 cfg;      /* x = texfunc | flags<<8, y = alpha test (func|ref<<8|mask<<16),
                        z = minz, w = maxz */
@@ -70,9 +72,27 @@ vec4 depal_1x(ivec2 t) {
     return depal_texel(ivec2((q + 0.5) * sc));
 }
 
+/* One 1x texel of an upscaled target, as the PSP would hold it: the average of its block
+ * (four points at the block's quarters), each read through the palette. */
+vec4 depal_block(ivec2 t, vec2 sc) {
+    vec2 b = vec2(t) * sc;
+    return 0.25 * (depal_texel(ivec2(b + sc * vec2(0.25, 0.25))) + depal_texel(ivec2(b + sc * vec2(0.75, 0.25))) +
+                   depal_texel(ivec2(b + sc * vec2(0.25, 0.75))) + depal_texel(ivec2(b + sc * vec2(0.75, 0.75))));
+}
+
 /* uv in 1x texel units. Linear filtering happens after the palette lookup, as on the PSP.
- * The target image may be rendered at a higher internal resolution: address its pixels. */
-vec4 depal_sample(vec2 uv) {
+ * The target image may be rendered at a higher internal resolution: address its pixels.
+ * lowres: filter between 1x texels instead (the glow buffer, flags 2048). */
+vec4 depal_sample(vec2 uv, bool lowres) {
+    if (lowres && pc.depal.w == 0) {
+        vec2 sc = vec2(textureSize(u_tex, 0)) / pc.texsize.xy;
+        vec2 q = uv - 0.5;
+        ivec2 i = ivec2(floor(q));
+        vec2 f = q - floor(q);
+        vec4 a = mix(depal_block(i, sc), depal_block(i + ivec2(1, 0), sc), f.x);
+        vec4 b = mix(depal_block(i + ivec2(0, 1), sc), depal_block(i + ivec2(1, 1), sc), f.x);
+        return mix(a, b, f.y);
+    }
     if (pc.depal.w > 0) {
         vec2 tu = uv - pc.texsize.zw;                    /* texture-space texel coords */
         if (((pc.depal.x >> 8) & 1) == 0) return depal_1x(ivec2(floor(tu)));
@@ -115,7 +135,18 @@ void main() {
             float rw = max(abs(v_rw), 1e-20);
             vec2 uv = v_uv / rw;
             uv += pc.texsize.zw;
-            vec4 t = ((flags & 512) != 0 ? depal_sample(uv) : texture(u_tex, uv / pc.texsize.xy)) * 255.0;
+            vec4 t;
+            if ((flags & 2048) != 0 && (flags & 512) != 0) {
+                t = depal_sample(uv, true) * 255.0;
+            } else if ((flags & 2048) != 0) {
+                /* four bilinear taps a quarter of the scale apart cover the scale x scale block */
+                vec2 tsz = vec2(textureSize(u_tex, 0));
+                float o = 0.25 * tsz.x / pc.texsize.x;
+                vec2 c = uv / pc.texsize.xy, d = o / tsz;
+                t = 0.25 * (texture(u_tex, c + vec2(-d.x, -d.y)) + texture(u_tex, c + vec2(d.x, -d.y)) +
+                            texture(u_tex, c + vec2(-d.x, d.y)) + texture(u_tex, c + vec2(d.x, d.y))) * 255.0;
+            } else
+                t = ((flags & 512) != 0 ? depal_sample(uv, false) : texture(u_tex, uv / pc.texsize.xy)) * 255.0;
             int  tf    = pc.cfg.x & 7;
             bool rgba  = (flags & 2) != 0;
             float dscl = ((flags & 4) != 0) ? 2.0 : 1.0;

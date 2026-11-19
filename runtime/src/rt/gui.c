@@ -663,7 +663,8 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 #ifdef SR_SDL3VK
     { extern float g_ge_ws; if (s_sdl3) g_ge_ws = sdl3vk_widescreen_factor(); }   /* next frame's squeeze */
     if (s_sdl3) sdl3vk_fps_game_frame();
-    { extern uint32_t g_ge_skip_glow; g_ge_skip_glow = (s_sdl3 && !sdl3vk_glow()) ? ADDR_GLOW_BUFFER : 0; }
+    { extern uint32_t g_ge_skip_glow, g_ge_glow_buf; g_ge_skip_glow = (s_sdl3 && !sdl3vk_glow()) ? ADDR_GLOW_BUFFER : 0;
+      g_ge_glow_buf = ADDR_GLOW_BUFFER; }
     if (s_sdl3) {
         /* GPU-resident framebuffer: blit straight from the GE's target image. Falls back
          * to the guest-VRAM convert for CPU-written frames (movies) or pure software GE.

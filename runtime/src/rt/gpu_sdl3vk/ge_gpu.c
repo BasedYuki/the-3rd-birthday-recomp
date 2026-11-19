@@ -85,7 +85,7 @@ typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba;
 /* fragment push constants (must match psp.frag PC block) */
 typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize[4]; int32_t depal[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
-       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DEPAL = 512, F_STENCIL = 1024 };
+       F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DEPAL = 512, F_STENCIL = 1024, F_LOWRES = 2048 };
 
 typedef struct {
     uint8_t blend_on, srcf, dstf, eq;      /* VkBlendFactor / VkBlendOp values */
@@ -1586,6 +1586,25 @@ static void build_state(int persp, int sprite, Batch *b) {
             if (!nortt && (g->tex_fmt == src->fmt || depal) && !g->tex_swizzle &&
                 (g->tex_bufw == src->stride || g->tex_bufw == 0 || remap) && (toff % bpp_s) == 0) {
                 uint32_t pix = toff / bpp_s;
+                /* The glow buffer (a 128-wide target the game blurs the frame into) holds about
+                 * 128x72 texels at 1x and is stretched over the screen, which makes the glow soft.
+                 * At a higher internal resolution it kept the scale's detail, so the glow came
+                 * back as a sharp copy of the picture a few pixels off: ghosting (issue #21).
+                 * Its reads average a scale x scale block (psp.frag F_LOWRES), as at 1x. */
+                {   /* SR_RTTLOG=1: render-target reads (which effect reads what) */
+                    static int rl = -1, nr = 0; if (rl < 0) rl = getenv("SR_RTTLOG") ? 1 : 0;
+                    if (rl && nr < 400) { nr++;
+                        fprintf(stderr, "RTT read: tgt %06x stride %u fmt %u | tex %06x %ux%u fmt %u lin %d depal %d through %d -> fb %06x\n",
+                                (unsigned)src->fba, (unsigned)src->stride, (unsigned)src->fmt, (unsigned)(g->tex_addr & 0x1FFFFFu),
+                                (unsigned)g->tex_w, (unsigned)g->tex_h, (unsigned)g->tex_fmt, linear, depal, persp, sprite,
+                                (unsigned)(s_cur ? s_cur->fba : 0)); } }
+                { extern uint32_t g_ge_glow_buf;
+                  static int sharp = -1; if (sharp < 0) sharp = getenv("SR_GLOWSHARP") ? 1 : 0;   /* A/B tests */
+                  if (s_sc > 1 && !sharp && !remap && linear && g_ge_glow_buf && src->fba == (g_ge_glow_buf & 0x001FFFFFu)) {
+                      flags |= F_LOWRES;
+                      static int n = 0;
+                      if (n++ < 3) fprintf(stderr, "gegpu: glow buffer read softened (%ux%u, scale %d)\n", (unsigned)g->tex_w, (unsigned)g->tex_h, s_sc);
+                  } }
                 if (depal) {
                     flags |= F_DEPAL;
                     b->pc.depal[0] = (int32_t)(src->fmt | ((g->clut_fmt & 3) << 4) | (linear << 8)

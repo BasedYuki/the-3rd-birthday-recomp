@@ -744,6 +744,15 @@ static int pick_save(uint32_t param, uint32_t mode, const char *game, char *save
         items[n] = item[n]; dets[n] = det[n];
         n++;
     }
+    if (n == 0 && (mode == SD_LISTLOAD || mode == SD_LISTDELETE)) {
+        /* Nothing to load: the PSP (and PPSSPP) say so and go back. Returning "no data" at once
+         * made the game restart from the logos with no message (issue #16: system data saved,
+         * no game save yet). */
+        const char *none[1] = { "There is no saved data." };
+        int s0 = 0;
+        if (gui_dialog(mode == SD_LISTDELETE ? "Delete" : "Load", none, 1, NULL, &s0, "Any button: back") < 0) return -1;
+        return 1;                                    /* as if cancelled: back to the menu */
+    }
     if (n == 0) return -1;
     int sel = best >= 0 ? best : 0;
     const char *title = mode == SD_LISTSAVE ? "Save" : mode == SD_LISTDELETE ? "Delete" : "Load";

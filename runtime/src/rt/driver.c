@@ -68,6 +68,33 @@ static LONG WINAPI sr_crash_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     fprintf(stderr, "HOST CRASH: exception 0x%08lx at host %p\n",
             er->ExceptionCode, er->ExceptionAddress);
+    {   /* which module: the fault, and code addresses found on the stack (callers). A C++
+         * exception (0xe06d7363) comes from a DLL in the process, e.g. an overlay or a driver
+         * (issue #17: ReShade), so name them. */
+        const void *seen[10]; int ns = 0;
+        const uintptr_t *sp = (const uintptr_t *)(uintptr_t)ep->ContextRecord->Rsp;
+        int nsp = 0;                                     /* stack words readable from sp */
+        {   MEMORY_BASIC_INFORMATION mi;
+            if (VirtualQuery(sp, &mi, sizeof(mi)) && mi.State == MEM_COMMIT) {
+                const uintptr_t end = (uintptr_t)mi.BaseAddress + mi.RegionSize;
+                nsp = (int)((end - (uintptr_t)sp) / sizeof(uintptr_t));
+                if (nsp > 256) nsp = 256;
+            } }
+        for (int i = -1; i < nsp && ns < 10; i++) {
+            const void *a = i < 0 ? er->ExceptionAddress : (const void *)sp[i];
+            HMODULE hm = NULL; char name[MAX_PATH];
+            if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                    (LPCSTR)a, &hm) || !hm) continue;
+            if (!GetModuleFileNameA(hm, name, sizeof(name))) continue;
+            int dup = 0;
+            for (int k = 0; k < ns; k++) if (seen[k] == (const void *)hm) dup = 1;
+            if (dup) continue;
+            seen[ns++] = (const void *)hm;
+            const char *base = strrchr(name, '\\');
+            fprintf(stderr, "  %s %s+0x%llx\n", i < 0 ? "in" : "via", base ? base + 1 : name,
+                    (unsigned long long)((uintptr_t)a - (uintptr_t)hm));
+        }
+    }
     if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
         const uint8_t *fa = (const uint8_t *)er->ExceptionInformation[1];
         fprintf(stderr, "  %s of host %p", er->ExceptionInformation[0] ? "write" : "read", fa);

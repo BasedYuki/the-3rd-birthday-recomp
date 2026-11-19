@@ -350,3 +350,14 @@ def stick_face(g):
         a = math.radians(deg)
         x, y = int(round(128 + 127 * math.sin(a))), int(round(128 - 127 * math.cos(a)))
         g.stick(x, fy(y), 45); g.wait(0.3); show(f"after {deg:2d} deg")
+
+
+def load_nodata(g):
+    """Issue #16: Load Game with the system data but no game save: the "no data" screen, then
+    Back (circle). Where does the game go?"""
+    to_title_menu(g); g.wait(30); g.press("cross"); g.wait(8)
+    g.press("cross"); g.wait(4); g.shot("a_menu")           # press start -> the menu
+    g.press("cross"); g.wait(4); g.shot("b_nodata")         # Load Game
+    g.press("circle"); g.wait(2); g.shot("c_back2")
+    g.wait(4); g.shot("d_back6")
+    g.wait(6); g.shot("e_back12")

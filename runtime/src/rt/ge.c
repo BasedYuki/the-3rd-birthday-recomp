@@ -797,6 +797,7 @@ typedef GeVtx Vtx;
  * keep their shape in the middle. Flat draws that cover the whole screen (backgrounds, post
  * effects) or the whole width without a texture (fades, cinema bars) are left to stretch. */
 float g_ge_ws = 1.0f;
+uint32_t g_ge_glow_buf = 0;    /* the game's glow buffer (ge_gpu.c softens its reads at high resolutions) */
 uint32_t g_ge_skip_glow = 0;   /* glow buffer address while the glow effect is turned off */
 static uint32_t prim_vtx_addr(uint32_t vbase, uint32_t ibase, int idxfmt, int i, int stride);
 typedef struct CVtx CVtx;
