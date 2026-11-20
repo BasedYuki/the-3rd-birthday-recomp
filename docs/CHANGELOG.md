@@ -3,6 +3,13 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- 60 fps: the GAME OVER title doesn't get doubled anymore, and the same fix covers things
+  showing up twice for a frame in busy fights. when something blinks in or out, the in-between
+  frame could pair it with the next one over and draw it halfway. now it only moves things that
+  are really the same. thanks ijezabella for the video!
+
 ## 0.9.15 - 2026-11-19
 
 - no more ghosting with the glow on at higher resolutions. the glow is a small blurred copy

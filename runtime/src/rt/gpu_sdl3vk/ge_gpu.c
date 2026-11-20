@@ -2106,16 +2106,27 @@ static int fi_origin(const float *m, float *o) {       /* where a draw's own ori
  * previous draw at most once; a draw with no free partner is not interpolated. */
 #define FI_NEAREST_MAX 256   /* the pause menu draws 46 rows of text with one key */
 static uint8_t s_fi_used[FI_MAX_DRAWS];
-static int fi_match(const FiFrame *f, const FiDraw *x) {
+/* When the two frames have a different number of draws with this key (a letter of the Game
+ * Over title blinking, issue #11), some draw has no true partner, and the nearest free one can
+ * be the next letter over: then only a partner in practically the same place counts (the draw
+ * is otherwise not moved). FI_SAME_POS is in NDC (2 = screen height): about 3 pixels at 1x. */
+#define FI_SAME_POS 0.02f
+static int fi_match(const FiFrame *f, const FiFrame *cur, const FiDraw *x) {
     const uint32_t n = fi_count(f, x->key);
-    if (n <= 1 || n > FI_NEAREST_MAX) {
+    const int strict = n != fi_count(cur, x->key);
+    float ox[2];
+    const int have_o = fi_origin(x->m, ox);
+    if (n == 0) return -1;
+    if ((n == 1 && !strict) || n > FI_NEAREST_MAX || !have_o) {
         const int j = fi_find(f, x);
         if (j < 0 || s_fi_used[j]) return -1;
+        if (strict && have_o) {
+            float oj[2];
+            if (!fi_origin(f->d[j].m, oj) || fabsf(oj[0] - ox[0]) + fabsf(oj[1] - ox[1]) > FI_SAME_POS) return -1;
+        }
         s_fi_used[j] = 1;
         return j;
     }
-    float ox[2];
-    if (!fi_origin(x->m, ox)) return -1;
     FiDraw q = *x;
     int best = -1; float bd = 1e30f;
     for (uint32_t k = 0; k < n; k++) {
@@ -2127,6 +2138,7 @@ static int fi_match(const FiFrame *f, const FiDraw *x) {
         const float d = (oj[0] - ox[0]) * (oj[0] - ox[0]) + (oj[1] - ox[1]) * (oj[1] - ox[1]);
         if (d < bd) { bd = d; best = j; }
     }
+    if (best >= 0 && strict && bd > FI_SAME_POS * FI_SAME_POS) best = -1;
     if (best >= 0) s_fi_used[best] = 1;
     return best;
 }
@@ -2271,7 +2283,7 @@ static int fi_replay(Target *disp, float t) {
         const FiDraw *x = &cur->d[i];
         PushVS *v = &s_fi_vs[i];
         memset(v, 0, sizeof(*v));
-        const int j = fi_match(prev, x);
+        const int j = fi_match(prev, cur, x);
         float R[16];
         int have = 0;
         {   /* SR_FIDBG=1: why draws do (not) match the previous frame */
