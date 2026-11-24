@@ -137,7 +137,10 @@ icon. Until a disc image is chosen, the background is dark red with the blood on
   Liberation, max BP (999,999). Each can be switched on and off and stays as you leave it
   (`cheats.cfg`). From the community CWCheat database
 - Data Install (Extra menu) works, and **Use Install Data** reads from it like on a PSP
-- Saves from a real PSP or PPSSPP can be imported (`tools/save_import.py`); the port's saves load in PPSSPP
+- Saves from PPSSPP: turn off save data encryption in PPSSPP (Settings > System), load your save
+  there and save once, then copy the save folder into `memstick/PSP/SAVEDATA`. Encrypted saves (a
+  real PSP, or PPSSPP with encryption on) can't be read; `tools/save_import.py` converts them with
+  PPSSPP's help. The port's saves load in PPSSPP
 - Xbox, PlayStation and other controllers through SDL3, plus keyboard
 - **Twin-stick camera**: the right stick orbits the camera around Aya. Aiming starts where
   the camera looks, and the game's own cameras take over for aiming, Overdive and Liberation.

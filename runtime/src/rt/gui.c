@@ -753,6 +753,10 @@ void gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             }
         }
         if (sdl3vk_menu_events() & SDL3VK_MENU_TOGGLE) { s_fi_phase = 0; menu_run(fbaddr, fmt, stride); }
+        {   /* an encrypted save was met (savedata.c): explain once there is a frame to draw on */
+            extern int g_sd_encrypted_notice; extern void sr_savedata_encrypted_notice(void);
+            if (g_sd_encrypted_notice == 1 && s_last_ok) { g_sd_encrypted_notice = 2; s_fi_phase = 0; sr_savedata_encrypted_notice(); }
+        }
         s_buttons = sdl3vk_buttons();
         sdl3vk_analog(&s_lx, &s_ly);
         sdl3vk_rstick(&s_rx, &s_ry);

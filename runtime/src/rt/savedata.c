@@ -378,6 +378,18 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
         size_t rd = dataBuf ? fread(SR_HOST(dataBuf), 1, (size_t)n, f) : 0;
         fclose(f);
         MEM_W32(param + SDP_dataSize, (uint32_t)rd);
+        {   /* An encrypted save (made on a PSP, or by PPSSPP with save encryption on) can't be
+             * read here: the game then treats it like a cleared save with no word why
+             * (issue #24). Plain saves have a fixed size and first word: say so once. */
+            const int sys = !_stricmp(fileName, "SYSDATA.BIN"), gam = !_stricmp(fileName, "3RDDATA.BIN");
+            const uint32_t head = dataBuf && rd >= 4 ? MEM_R32(dataBuf) : 0;
+            if ((sys && (rd != 0x4000 || head != 5)) || (gam && (rd != 0x20000 || head != 0x14))) {
+                fprintf(stderr, "savedata: %s is not a plain save (%u bytes, first word %08x): encrypted?\n",
+                        path, (unsigned)rd, head);
+                extern int g_sd_encrypted_notice;
+                if (!g_sd_encrypted_notice) g_sd_encrypted_notice = 1;   /* gui.c shows it on a frame */
+            }
+        }
         { const char *rw = getenv("SR_READWATCH");   /* debug: SR_READWATCH=<part of the file path> */
           if (rw && dataBuf && rd && strstr(path, rw)) sr_readwatch_set(dataBuf, (uint32_t)rd); }
         if (sdlog()) {
@@ -773,6 +785,19 @@ static int pick_save(uint32_t param, uint32_t mode, const char *game, char *save
         snprintf(save, (size_t)cap, "%s", name[sel]);
         return 0;
     }
+}
+
+int g_sd_encrypted_notice = 0;             /* 1: an encrypted save was met, tell the player (gui.c) */
+/* The message for an encrypted save; gui.c calls this once a frame can be drawn (the game
+ * loads its system data at boot, before there is one). */
+void sr_savedata_encrypted_notice(void) {
+    const char *ok[1] = { "OK" };
+    const char *why[1] = { "It was made on a PSP or in PPSSPP, and the port only reads plain saves.\n"
+                           "In PPSSPP: Settings > System, turn off save data encryption,\n"
+                           "load your save there and save once, then copy that save folder here." };
+    int s0 = 0;
+    const int r = gui_dialog("This save is encrypted and can't be read", ok, 1, why, &s0, "Enter / A: OK");
+    fprintf(stderr, "savedata: told the player about an encrypted save (dialog %d)\n", r);
 }
 
 int g_savedata_loads = 0;                  /* game saves (not system data) loaded */

@@ -2109,8 +2109,9 @@ static uint8_t s_fi_used[FI_MAX_DRAWS];
 /* When the two frames have a different number of draws with this key (a letter of the Game
  * Over title blinking, issue #11), some draw has no true partner, and the nearest free one can
  * be the next letter over: then only a partner in practically the same place counts (the draw
- * is otherwise not moved). FI_SAME_POS is in NDC (2 = screen height): about 3 pixels at 1x. */
-#define FI_SAME_POS 0.02f
+ * is otherwise not moved). FI_SAME_POS is in NDC (2 = screen height): under a pixel at 1x; 0.02
+ * still let the Game Over letters' little corner marks swap places. */
+#define FI_SAME_POS 0.005f
 static int fi_match(const FiFrame *f, const FiFrame *cur, const FiDraw *x) {
     const uint32_t n = fi_count(f, x->key);
     const int strict = n != fi_count(cur, x->key);

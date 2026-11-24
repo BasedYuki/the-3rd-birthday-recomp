@@ -455,7 +455,15 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     }
     /* What the game sees: L (aim, including the egg launcher) or Triangle (Overdive view)
      * switch to the game's own special cameras, which the orbit must leave alone. */
-    s_btn_special = (*btn & (0x0100u | 0x1000u)) != 0;
+    /* Triangle counts once it has been held alone for a moment: Triangle + Circle with the
+     * Overdive bar not full is a quick stun move (it cancels a dodge's recovery) with no special
+     * camera, and treating it as one reset the orbit with a jump (issue #23). The Overdive
+     * view itself also shows up by its field of view (update_special). */
+    {
+        static int tri_n = 0;
+        tri_n = (*btn & 0x1000u) && !(*btn & 0x2000u) ? tri_n + 1 : 0;
+        s_btn_special = (*btn & 0x0100u) != 0 || tri_n >= 8;
+    }
     s_aiming = (*btn & 0x0100u) != 0;
 }
 

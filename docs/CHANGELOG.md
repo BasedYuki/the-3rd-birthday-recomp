@@ -3,6 +3,16 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## Unreleased
+
+- Triangle+Circle (the quick stun move when the overdive bar isn't full) doesn't reset the
+  camera anymore. the port took Triangle as "overdive view" and snapped the camera back. thanks
+  for the report in #23
+- saves from PPSSPP or a real PSP are encrypted and the port can't read them. it used to just
+  act like a fresh save, now it tells you and how to get a plain save out of PPSSPP (turn off
+  save data encryption in its System settings, load and save once). thanks for #24
+- 60 fps: the last bits of doubling on the GAME OVER title (the little corner marks) are gone
+
 ## 0.9.16 - 2026-11-20
 
 - 60 fps: the GAME OVER title doesn't get doubled anymore, and the same fix covers things

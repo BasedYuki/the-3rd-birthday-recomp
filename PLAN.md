@@ -200,6 +200,8 @@ Kill rule: the framework that gets closest to showing anything wins. If none get
 
 - **#11 Game Over / doubled objects (2026-11-20):** reporter's video (RX 9070 XT, scale 6): in-between frames show the GAME OVER letters doubled to the right and, in a subway fight, monster/object parts drawn elsewhere. Letters blink, so the number of same-key draws differs between frames and the nearest free partner can be the next letter. fi_match: when the previous and current frame have different counts for a key, a partner only counts within FI_SAME_POS (0.02 NDC); otherwise the draw is not moved. Pause-menu scroll still clean, matching stats unchanged in the fight. Game Over not reproduced here (writing HP 0 at Aya+0x36C does not kill her without a hit).
 
+- **#22-#24 and #11 follow-up (2026-11-24):** #23: Triangle counted as the Overdive-view button from the first sample, so Triangle+Circle (the stun move with the bar not full) started a "special camera" and reset the orbit; Triangle now counts after 8 samples held without Circle (the Overdive view also shows by its fov). #24: an encrypted SYSDATA.BIN/3RDDATA.BIN (size not 0x4000/0x20000 or first word not 5/0x14) is logged and, on the first frame (g_sd_encrypted_notice, gui_present), a dialog says how to get a plain save from PPSSPP. #11: the reporter's new video still shows the Game Over title's corner marks swapping in single in-between frames; FI_SAME_POS 0.02 -> 0.005 NDC. #22 (32:9 on a 9070 XT, "textures decouple and shift"): a 32:9 run here (SR_WINSIZE=2560x720, widescreen fill) showed nothing clearly wrong; asked for a clip.
+
 ## Open, not blocking
 - Controller remapping and config UI
 - Mod/patch format for other people's function replacements
