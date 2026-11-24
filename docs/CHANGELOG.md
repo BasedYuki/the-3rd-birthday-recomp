@@ -3,6 +3,17 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## 0.9.19 - 2026-11-24
+
+- free aim doesn't make aya strafe anymore when you turn fast with the right stick. the aim
+  camera lags a bit on a fast turn and the port took that as "this weapon doesn't follow free
+  aim" (like the sniper scope) and gave the stick back to the game. thanks for #30
+- LT where aya can't aim (safe rooms, the overdive room) puts the camera behind her again like
+  the original, eased instead of a jump, and she keeps walking where you push instead of
+  snapping to the camera. thanks for #26
+
+no need to press "Prepare game" again this time
+
 ## 0.9.18 - 2026-11-24
 
 - fullscreen is remembered now, the game starts the way you left it. thanks for #28
