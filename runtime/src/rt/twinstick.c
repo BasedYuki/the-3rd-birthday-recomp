@@ -105,6 +105,10 @@ static int s_snap = 0;                               /* R3 / O reset in progress
 static float s_idle_s = 0.0f;                        /* time since the right stick was last used */
 static int s_moving = 0;                             /* left stick pushed (last pad sample) */
 static unsigned s_pose_tick = 0;                     /* pad read when the game last built Aya's aim pose */
+static unsigned s_l_tick = 0;                        /* pad read when L was last pressed */
+static int s_l_noaim = 0;                            /* L held where Aya can't aim (no aim pose came) */
+static int s_noaim_area = 0;                         /* the last L here built no aim pose */
+#define NOAIM_TICKS 6                                /* pad reads (30 Hz) the aim pose gets to show up */
 static int s_btn_special = 0;                        /* L or Triangle held (aim / Overdive view) */
 static int s_suspended = 0;                          /* a special camera is live: no orbit */
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
@@ -123,6 +127,10 @@ static float s_aim_pitch = 0.0f;                     /* and the aim's elevation 
 static float s_view_look = 0.0f;                     /* the view camera's look direction (yaw) */
 static int s_view_look_ok = 0;
 static uint32_t s_aya = 0;                           /* Aya's object (hook player_pose) */
+static unsigned s_aya_tick = 0;                      /* pad read of the last player_pose call */
+/* The game runs player_pose every frame where Aya plays normally; where it doesn't (the Overdive
+ * Room, safe rooms) the object we know may be stale: leave it alone. */
+static int aya_live(void) { return s_aya && s_aya_tick && s_ticks - s_aya_tick <= 4; }
 
 /* The eye we last wrote into each camera object, so a second pass in the same frame (the
  * game calls these routines more than once) doesn't rotate it again. */
@@ -371,7 +379,7 @@ static void aim_release(void) {
 #define AM_BAND 0.65f      /* radians: about the game's own band, a little more */
 #define AM_STEP 0.09f      /* radians per pad sample (60 Hz) */
 static void analog_move(uint32_t btn, uint8_t lx, uint8_t ly) {
-    if (!s_analog_move || !s_aya || !s_view_look_ok || s_suspended || s_aiming) return;
+    if (!s_analog_move || !aya_live() || !s_view_look_ok || s_suspended || s_aiming) return;
     if (btn & 0xF300u) return;                         /* L, R, face buttons: dodges, attacks */
     if (s_ticks - s_hook_tick > 4) return;             /* the gameplay camera is running */
     const float dx = (float)lx - 128.0f, dy = (float)ly - 128.0f;
@@ -468,7 +476,27 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
          * (the Overdive Room) L changes nothing, and taking it as the aim camera reset the
          * orbit with a jump (issue #26). */
         const int aim_pose = s_pose_tick && s_ticks - s_pose_tick <= 8;
-        s_btn_special = ((*btn & 0x0100u) && aim_pose) || tri_n >= 8;
+        /* Where she can't aim (safe rooms, the Overdive Room) the game turns its camera behind Aya
+         * while L is held and moves her by that camera. No aim pose a few reads after the press:
+         * hand the view to the game's camera too (eased in, update_special), and stop turning her
+         * to our view for an aim that never starts (issue #26: she snapped to the camera's way). */
+        if ((*btn & 0x0100u) && !s_aiming) {          /* pressed; known no-aim place: at once */
+            s_l_tick = s_ticks; s_l_noaim = s_noaim_area;
+            if (s_noaim_area) s_aim_pending = 0;
+        }
+        if (!(*btn & 0x0100u)) s_l_noaim = 0;
+        else if (s_pose_tick && s_pose_tick - s_l_tick < 0x80000000u) s_noaim_area = 0;   /* aiming works */
+        else if (!s_l_noaim && s_ticks - s_l_tick >= NOAIM_TICKS) {
+            s_l_noaim = 1; s_aim_pending = 0;
+            if (s_ticks - s_hook_tick <= 4) s_noaim_area = 1;   /* not from a movie or menu */
+            static int n = 0;
+            if (n++ < 40) fprintf(stderr, "twinstick: L where Aya can't aim: the game's camera behind her\n");
+        }
+        s_btn_special = ((*btn & 0x0100u) && (aim_pose || s_l_noaim)) || tri_n >= 8;
+        static int al = -1; if (al < 0) al = getenv("SR_AIMLOG") ? 1 : 0;
+        if (al && (*btn & 0x0100u) && (s_ticks % 10) == 0)
+            fprintf(stderr, "aimlog: tick %u pose age %u aya age %u special %d moving %d aim_stick %d\n", s_ticks,
+                    s_pose_tick ? s_ticks - s_pose_tick : 9999u, s_aya_tick ? s_ticks - s_aya_tick : 9999u, s_btn_special, s_moving, s_aim_stick);
     }
     s_aiming = (*btn & 0x0100u) != 0;
 }
@@ -484,6 +512,11 @@ static uint32_t s_tgt_obj; static float s_tgt_written[3], s_tgt_orig[3];
 static int s_blend_on = 0; static double s_blend_t0;
 static float s_bl_eye[3], s_bl_tgt[3], s_sp_eye[3], s_sp_tgt[3];
 static int s_sp_ok = 0;
+static float s_fv_eye[3], s_fv_tgt[3];               /* the follow view last shown (all styles) */
+static int s_fv_ok = 0;
+static int s_in_on = 0; static double s_in_t0;        /* easing into the game's camera (L, no aim) */
+static float s_in_eye[3], s_in_tgt[3];
+static int s_soft = 0;                               /* the special camera is the L-no-aim one */
 static float s_view_eye[3], s_view_tgt[3];           /* the last follow view we showed */
 static int s_view_ok = 0;
 
@@ -649,6 +682,7 @@ static void check_cut(uint32_t src) {
             static int n = 0;
             if (n++ < 30) fprintf(stderr, "twinstick: view camera source 0x%08x -> 0x%08x\n", s_cut_src, src);
             reset_offset("new camera source");
+            s_noaim_area = 0;
         }
         else if (dt > fmaxf(0.3f * dist, 60.0f)) reset_offset("target jump");
         /* with cam_collide the game's eye follows our turns, so only its target tells a cut */
@@ -709,7 +743,12 @@ static void update_special(uint32_t src) {
     }
     const int special = s_btn_special || by_fov;
     if (special != s_suspended) {
-        if (!special && s_style && s_sp_ok) {        /* the ease starts at the special camera's view */
+        if (special && s_l_noaim && s_fv_ok) {       /* L, no aim: ease into the game's camera */
+            memcpy(s_in_eye, s_fv_eye, sizeof(s_in_eye)); memcpy(s_in_tgt, s_fv_tgt, sizeof(s_in_tgt));
+            s_in_on = 1; s_in_t0 = now_s();
+        }
+        if (!special) s_in_on = 0;
+        if (!special && (s_style || s_soft) && s_sp_ok) {   /* the ease starts at the special camera's view */
             memcpy(s_bl_eye, s_sp_eye, sizeof(s_bl_eye)); memcpy(s_bl_tgt, s_sp_tgt, sizeof(s_bl_tgt));
             s_blend_on = 1; s_blend_t0 = now_s();
         }
@@ -720,6 +759,7 @@ static void update_special(uint32_t src) {
                     special ? "special" : "follow", fov, std,
                     s_btn_special ? "button held" : by_fov ? "fov differs" : "back to normal");
         s_suspended = special;
+        s_soft = special && s_l_noaim;
     }
     if (special && (s_yaw_off != 0.0f || s_pitch_off != 0.0f)) {
         reset_offset("special camera");
@@ -731,16 +771,32 @@ static void update_special(uint32_t src) {
  * shotguns). The sniper scope and the launchers move their aim with the stick instead and ignore
  * it: when the view keeps looking elsewhere for half a second after the aim was moved, this aim
  * goes back to the stick (aim_stick; the mouse / right stick then drive the PSP stick). */
+/* The aim camera trails a fast turn (right stick pushed all the way) by more than that, so a
+ * view that is behind but still turning towards the aim counts as following; only a view that
+ * stays put while the aim moves away is a miss (issue #30: a fast turn switched a rifle to the
+ * stick, and the stick strafes). */
 static void aim_check(uint32_t src) {
-    static int miss = 0;
-    if (!(s_free_aim && s_aiming && s_aim_active && s_aim_moved)) { miss = 0; return; }
+    static int miss = 0, pv_ok = 0;
+    static float pv_yaw, pv_pitch;
+    if (!(s_free_aim && s_aiming && s_aim_active && s_aim_moved)) { miss = pv_ok = 0; return; }
     const float dx = rdf(src + 0x20) - rdf(src + 0x10), dy = rdf(src + 0x24) - rdf(src + 0x14), dz = rdf(src + 0x28) - rdf(src + 0x18);
     const float h = sqrtf(dx * dx + dz * dz);
     if (h < 1.0f) return;
-    float d = atan2f(dx, dz) - (s_aim_yaw + AIM_CAM_OFF);
+    const float vy = atan2f(dx, dz), vp = atan2f(dy, h);
+    float d = vy - (s_aim_yaw + AIM_CAM_OFF);
     while (d > 3.14159265f) d -= 6.2831853f;
     while (d < -3.14159265f) d += 6.2831853f;
-    const int off = fabsf(d) > 0.2f || (fabsf(s_aim_pitch) < 0.3f && fabsf(atan2f(dy, h) - s_aim_pitch) > 0.25f);
+    const float dp = vp - s_aim_pitch;
+    float my = pv_ok ? vy - pv_yaw : 0.0f;          /* how far the view turned since last frame */
+    while (my > 3.14159265f) my -= 6.2831853f;
+    while (my < -3.14159265f) my += 6.2831853f;
+    const float mp = pv_ok ? vp - pv_pitch : 0.0f;
+    pv_yaw = vy; pv_pitch = vp; pv_ok = 1;
+    const int yaw_off = fabsf(d) > 0.2f && !(my * d < 0.0f && fabsf(my) > 0.005f);
+    const int pitch_off = fabsf(s_aim_pitch) < 0.3f && fabsf(dp) > 0.25f && !(mp * dp < 0.0f && fabsf(mp) > 0.005f);
+    const int off = yaw_off || pitch_off;
+    { static int al = -1; if (al < 0) al = getenv("SR_AIMLOG") ? 1 : 0;
+      if (al && fabsf(d) > 0.1f) fprintf(stderr, "aimlog: view behind %.3f (turned %.3f) pitch %.3f (%.3f) miss %d\n", d, my, dp, mp, miss); }
     miss = off ? miss + 1 : 0;
     if (miss > 15) {
         miss = 0; aim_release(); s_aim_stick = 1;
@@ -754,8 +810,8 @@ static void aim_check(uint32_t src) {
  * Turn her and latch our direction from the start. hold_view: the special camera is already
  * showing, put our last follow view in it (otherwise rotate_camera shows ours anyway). */
 static void early_aim_latch(uint32_t src, int hold_view) {
-    if (!(s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && s_aya &&
-          MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu)) return;
+    if (!(s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && aya_live() && !s_noaim_area &&
+          s_ticks - s_l_tick <= NOAIM_TICKS && MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu)) return;
     const float y = s_aim_look - AIM_CAM_OFF;
     for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(y)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(y)); }
     wrf(s_aya + 0x4c4, y);         /* her facing, and her root matrix it is read back from */
@@ -763,6 +819,19 @@ static void early_aim_latch(uint32_t src, int hold_view) {
     wrf(s_aya + 0x40, sinf(y)); wrf(s_aya + 0x44, 0.0f); wrf(s_aya + 0x48, cosf(y));
     if (hold_view && s_style && s_view_ok)
         for (int i = 0; i < 3; i++) { wrf(src + 0x10 + 4 * i, s_view_eye[i]); wrf(src + 0x20 + 4 * i, s_view_tgt[i]); }
+}
+
+/* Show the view camera source at src part way from a remembered view (eye, target) to its own,
+ * eased over BLEND_S from t0; *on drops to 0 once there. */
+static void ease_view(uint32_t src, const float *eye, const float *tgt, double t0, int *on) {
+    float k = (float)((now_s() - t0) / BLEND_S);
+    if (k >= 1.0f || k < 0.0f) { *on = 0; return; }
+    k = k * k * (3.0f - 2.0f * k);
+    for (int i = 0; i < 3; i++) {
+        const uint32_t e = src + 0x10 + 4 * i, t = src + 0x20 + 4 * i;
+        wrf(e, eye[i] + (rdf(e) - eye[i]) * k);
+        wrf(t, tgt[i] + (rdf(t) - tgt[i]) * k);
+    }
 }
 
 int sr_func_hook(CpuState *s, uint32_t addr) {
@@ -804,14 +873,35 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
                 rotate_camera(s->r[5], "view camera source");
                 const uint32_t src = s->r[5];       /* where the picture looks: the free aim's start */
                 early_aim_latch(src, 0);            /* L held, aim pose not started yet */
+                if (!s_style && s_blend_on) {       /* classic, back from L-no-aim: ease (modern: rotate_camera) */
+                    if (s_yaw_off != 0.0f || s_pitch_off != 0.0f) s_blend_on = 0;   /* the stick took over */
+                    else ease_view(src, s_bl_eye, s_bl_tgt, s_blend_t0, &s_blend_on);
+                }
+                /* classic: the game turns its camera behind Aya the moment L is pressed, before we
+                 * can know whether she aims; hold the last view until then (then the aim camera
+                 * or the ease into the game's camera takes over) */
+                if (!s_style && s_aiming && s_fv_ok && !s_noaim_area && s_ticks - s_l_tick <= NOAIM_TICKS &&
+                    !(s_pose_tick && s_pose_tick - s_l_tick < 0x80000000u))
+                    for (int i = 0; i < 3; i++) { wrf(src + 0x10 + 4 * i, s_fv_eye[i]); wrf(src + 0x20 + 4 * i, s_fv_tgt[i]); }
+                else {
+                    for (int i = 0; i < 3; i++) { s_fv_eye[i] = rdf(src + 0x10 + 4 * i); s_fv_tgt[i] = rdf(src + 0x20 + 4 * i); }
+                    s_fv_ok = 1;
+                }
                 const float dx = rdf(src + 0x20) - rdf(src + 0x10), dz = rdf(src + 0x28) - rdf(src + 0x18);
                 if (dx * dx + dz * dz > 1.0f) { s_view_look = atan2f(dx, dz); s_view_look_ok = 1; }
             } else {
                 const uint32_t src = s->r[5];       /* the special camera's view, for the ease back */
+                if (s_in_on) ease_view(src, s_in_eye, s_in_tgt, s_in_t0, &s_in_on);
                 for (int i = 0; i < 3; i++) { s_sp_eye[i] = rdf(src + 0x10 + 4 * i); s_sp_tgt[i] = rdf(src + 0x20 + 4 * i); }
                 s_sp_ok = 1;
                 early_aim_latch(src, 1);
                 aim_check(src);
+            }
+            static int vl = -1; if (vl < 0) vl = getenv("SR_VIEWLOG") ? 1 : 0;   /* the view shown, every frame */
+            if (vl) {
+                const uint32_t v = s->r[5];
+                fprintf(stderr, "viewlog: tick %u yaw %.3f %s\n", s_ticks,
+                        atan2f(rdf(v + 0x20) - rdf(v + 0x10), rdf(v + 0x28) - rdf(v + 0x18)), s_suspended ? "special" : "follow");
             }
         }
         break;
@@ -819,7 +909,7 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
         cam_collide(s);
         break;
     case HOOK_PLAYER_POSE:     /* a0 = Aya's object */
-        s_aya = s->r[4];
+        s_aya = s->r[4]; s_aya_tick = s_ticks ? s_ticks : 1;
         {   /* SR_FACEWATCH=1: report the code that writes her facing (debugging movement) */
             static int fw = -1; if (fw < 0) fw = getenv("SR_FACEWATCH") ? 1 : 0;
             if (fw == 1 && s_aya) { extern void sr_watch_set(uint32_t); sr_watch_set(s_aya + 0x4c6); fw = 2; }
