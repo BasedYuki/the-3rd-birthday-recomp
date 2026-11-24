@@ -3,7 +3,7 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.17 - 2026-11-24
 
 - Triangle+Circle (the quick stun move when the overdive bar isn't full) doesn't reset the
   camera anymore. the port took Triangle as "overdive view" and snapped the camera back. thanks
@@ -12,6 +12,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
   act like a fresh save, now it tells you and how to get a plain save out of PPSSPP (turn off
   save data encryption in its System settings, load and save once). thanks for #24
 - 60 fps: the last bits of doubling on the GAME OVER title (the little corner marks) are gone
+
+no need to press "Prepare game" again this time
 
 ## 0.9.16 - 2026-11-20
 
