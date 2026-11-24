@@ -3,7 +3,7 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
-## Unreleased
+## 0.9.18 - 2026-11-24
 
 - fullscreen is remembered now, the game starts the way you left it. thanks for #28
 - the camera can't go under the floor anymore when you tilt it all the way up. thanks for #29
@@ -12,6 +12,8 @@ update notice compares it with the newest GitHub release. Dates are when the wor
 - the right stick could stop turning the camera after a long look at another camera (the
   computer in the overdive room, a boss intro). if that happens it fixes itself after a second
   of walking now. thanks for #27
+
+no need to press "Prepare game" again this time
 
 ## 0.9.17 - 2026-11-24
 
