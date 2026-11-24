@@ -65,6 +65,7 @@ static void wrf(uint32_t a, float f) { uint32_t w; memcpy(&w, &f, 4); MEM_W32(a,
 /* Limits on the final elevation of the eye above the target (radians). */
 #define ELEV_MIN (-0.35f)   /* a little below the target */
 #define ELEV_MAX (1.2f)     /* high overhead */
+#define FLOOR_CLEAR 20.0f   /* the eye stays this far above the floor under Aya (game units) */
 
 /* Settings, kept in twinstick.cfg next to the executable's working directory:
  *   sensitivity=1.0   (the - and = keys change it in game, 0.2 to 4)
@@ -103,6 +104,7 @@ static float s_recenter_delay = 0.8f, s_recenter_delay_still = 2.0f;
 static int s_snap = 0;                               /* R3 / O reset in progress */
 static float s_idle_s = 0.0f;                        /* time since the right stick was last used */
 static int s_moving = 0;                             /* left stick pushed (last pad sample) */
+static unsigned s_pose_tick = 0;                     /* pad read when the game last built Aya's aim pose */
 static int s_btn_special = 0;                        /* L or Triangle held (aim / Overdive view) */
 static int s_suspended = 0;                          /* a special camera is live: no orbit */
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
@@ -462,7 +464,11 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     {
         static int tri_n = 0;
         tri_n = (*btn & 0x1000u) && !(*btn & 0x2000u) ? tri_n + 1 : 0;
-        s_btn_special = (*btn & 0x0100u) != 0 || tri_n >= 8;
+        /* L: only once the game builds Aya's aim pose (hook mat_from_yaw). Where she can't aim
+         * (the Overdive Room) L changes nothing, and taking it as the aim camera reset the
+         * orbit with a jump (issue #26). */
+        const int aim_pose = s_pose_tick && s_ticks - s_pose_tick <= 8;
+        s_btn_special = ((*btn & 0x0100u) && aim_pose) || tri_n >= 8;
     }
     s_aiming = (*btn & 0x0100u) != 0;
 }
@@ -583,6 +589,12 @@ static void rotate_camera(uint32_t base, const char *why) {
     e[0] = tw[0] + sinf(yaw) * ch;
     e[1] = tw[1] + sinf(elev) * dist;
     e[2] = tw[2] + cosf(yaw) * ch;
+    /* Looking up all the way put the eye below the ground (issue #29): keep it above the floor
+     * Aya stands on (her position, Aya +0x54, is at her feet). */
+    if (s_aya && elev < 0.0f) {
+        const float floor_y = rdf(s_aya + 0x54) + FLOOR_CLEAR;
+        if (fabsf(floor_y) < 1e6f && e[1] < floor_y && tw[1] > floor_y) e[1] = floor_y;
+    }
     if (s_style && view && s_blend_on) {             /* back from aiming / Overdive: ease, don't snap */
         float k = (float)((now_s() - s_blend_t0) / BLEND_S);
         if (k >= 1.0f || k < 0.0f) s_blend_on = 0;
@@ -682,7 +694,19 @@ static void update_special(uint32_t src) {
     const int fov_ok = fov > 0.05f && fov < 4.0f;
     if (fov_ok && !s_btn_special) fov_observe(fov);
     const float std = fov_standard();
-    const int by_fov = fov_ok && std > 0.0f && fabsf(fov - std) > 0.02f * std;
+    int by_fov = fov_ok && std > 0.0f && fabsf(fov - std) > 0.02f * std;
+    {   /* A long look at another camera (the Overdive Room's computer, a boss intro) can make its
+         * field of view "the standard"; then the real follow camera counted as special and the
+         * right stick stopped turning it (issue #27). A "special" view while Aya is walked with
+         * the left stick for a second is the follow camera: take its fov as the standard. */
+        static int walk_n = 0;
+        walk_n = by_fov && !s_btn_special && s_moving ? walk_n + 1 : 0;
+        if (walk_n > 30) {
+            for (int i = 0; i < 300; i++) fov_observe(fov);   /* outweighs what was learned */
+            walk_n = 0; by_fov = 0;
+            fprintf(stderr, "twinstick: follow camera fov relearned (%.3f, was %.3f)\n", fov, std);
+        }
+    }
     const int special = s_btn_special || by_fov;
     if (special != s_suspended) {
         if (!special && s_style && s_sp_ok) {        /* the ease starts at the special camera's view */
@@ -724,6 +748,23 @@ static void aim_check(uint32_t src) {
     }
 }
 
+/* Free aim, before the game first builds Aya's aim pose: it aims (and its aim camera looks)
+ * along the direction it latched from her old facing when it saw L, for about three frames,
+ * then the free aim takes over and the camera jumped (issue #15: a jolt when aiming starts).
+ * Turn her and latch our direction from the start. hold_view: the special camera is already
+ * showing, put our last follow view in it (otherwise rotate_camera shows ours anyway). */
+static void early_aim_latch(uint32_t src, int hold_view) {
+    if (!(s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && s_aya &&
+          MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu)) return;
+    const float y = s_aim_look - AIM_CAM_OFF;
+    for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(y)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(y)); }
+    wrf(s_aya + 0x4c4, y);         /* her facing, and her root matrix it is read back from */
+    wrf(s_aya + 0x20, cosf(y)); wrf(s_aya + 0x24, 0.0f); wrf(s_aya + 0x28, -sinf(y));
+    wrf(s_aya + 0x40, sinf(y)); wrf(s_aya + 0x44, 0.0f); wrf(s_aya + 0x48, cosf(y));
+    if (hold_view && s_style && s_view_ok)
+        for (int i = 0; i < 3; i++) { wrf(src + 0x10 + 4 * i, s_view_eye[i]); wrf(src + 0x20 + 4 * i, s_view_tgt[i]); }
+}
+
 int sr_func_hook(CpuState *s, uint32_t addr) {
     /* code mods (mods/<name>/, compiled in by scripts/build.sh) come first and may replace */
     { extern int sr_mods_hook(CpuState *s, uint32_t addr); if (sr_mods_hook(s, addr)) return 1; }
@@ -762,33 +803,14 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
             if (!s_suspended) {
                 rotate_camera(s->r[5], "view camera source");
                 const uint32_t src = s->r[5];       /* where the picture looks: the free aim's start */
+                early_aim_latch(src, 0);            /* L held, aim pose not started yet */
                 const float dx = rdf(src + 0x20) - rdf(src + 0x10), dz = rdf(src + 0x28) - rdf(src + 0x18);
                 if (dx * dx + dz * dz > 1.0f) { s_view_look = atan2f(dx, dz); s_view_look_ok = 1; }
             } else {
                 const uint32_t src = s->r[5];       /* the special camera's view, for the ease back */
                 for (int i = 0; i < 3; i++) { s_sp_eye[i] = rdf(src + 0x10 + 4 * i); s_sp_tgt[i] = rdf(src + 0x20 + 4 * i); }
                 s_sp_ok = 1;
-                /* Free aim, before the game first builds Aya's aim pose: it aims (and its aim
-                 * camera looks) along the direction it latched from her old facing when it saw
-                 * L, for about three frames, then the free aim takes over and the camera jumped
-                 * (issue #15: a jolt when aiming starts). Latch our direction from the start. */
-                if (s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && s_aya &&
-                    MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu) {
-                    const float y = s_aim_look - AIM_CAM_OFF;
-                    static int n = 0;
-                    if (getenv("SR_AIMLOG") && n++ < 30)
-                        fprintf(stderr, "twinstick: early aim latch %.2f (was %.2f) eye-target yaw %.2f\n", y,
-                                atan2f(rdf(s_aya + 0x13a0), rdf(s_aya + 0x13a8)),
-                                atan2f(rdf(src + 0x20) - rdf(src + 0x10), rdf(src + 0x28) - rdf(src + 0x18)));
-                    for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(y)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(y)); }
-                    wrf(s_aya + 0x4c4, y);         /* her facing, and her root matrix it is read back from */
-                    wrf(s_aya + 0x20, cosf(y)); wrf(s_aya + 0x24, 0.0f); wrf(s_aya + 0x28, -sinf(y));
-                    wrf(s_aya + 0x40, sinf(y)); wrf(s_aya + 0x44, 0.0f); wrf(s_aya + 0x48, cosf(y));
-                    /* the aim camera holds a view along the game's own (unturned) follow camera
-                     * until the aim pose starts: show ours until then */
-                    if (s_style && s_view_ok)
-                        for (int i = 0; i < 3; i++) { wrf(src + 0x10 + 4 * i, s_view_eye[i]); wrf(src + 0x20 + 4 * i, s_view_tgt[i]); }
-                }
+                early_aim_latch(src, 1);
                 aim_check(src);
             }
         }
@@ -807,6 +829,7 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
         break;
     case HOOK_MAT_FROM_YAW:    /* a0 = object, $f13 = its facing */
         if (s->r[4] != s_aya || !s_aya) break;
+        if (s_aiming) s_pose_tick = s_ticks ? s_ticks : 1;
         if (!s_free_aim || !s_aiming || s_aim_stick) { aim_release(); break; }   /* the game keeps the facing from her matrix */
         {
             /* The game's lock-on (Aya + 0x434: the target, -1 = none) picks an enemy when L is

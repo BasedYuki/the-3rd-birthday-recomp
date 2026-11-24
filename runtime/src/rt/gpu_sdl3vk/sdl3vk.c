@@ -707,7 +707,11 @@ float sdl3vk_widescreen_factor(void) {
 void sdl3vk_set_widescreen(int on) { sdl3vk_cfg_set("widescreen", on); s_ws_dirty = 1; }
 
 int  sdl3vk_fullscreen(void) { return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN) != 0; }
-void sdl3vk_set_fullscreen(int on) { if (s_win) SDL_SetWindowFullscreen(s_win, on ? true : false); }
+/* Fullscreen is remembered in graphics.cfg (fullscreen=1) and the game starts in it (issue #28). */
+void sdl3vk_set_fullscreen(int on) {
+    if (s_win) SDL_SetWindowFullscreen(s_win, on ? true : false);
+    sdl3vk_cfg_set("fullscreen", on ? 1 : 0);
+}
 void sdl3vk_request_screenshot(void) { s_shot_req = 1; }
 /* Test runs: save the next frame as <SR_SHOTDIR>/<name>.png (no toast). */
 static char s_shot_name[64], s_shot_path[300];
@@ -956,9 +960,12 @@ int sdl3vk_init(const char *title) {
     int ww = PSP_W * wk, wh = PSP_H * wk;
     { const char *e = getenv("SR_WINSIZE");   /* <w>x<h>: e.g. a 21:9 window for widescreen tests */
       int a, b; if (e && sscanf(e, "%dx%d", &a, &b) == 2 && a > 0 && b > 0) { ww = a; wh = b; } }
+    /* the last session's fullscreen (graphics.cfg), from the start: no switch (and no new
+     * swapchain) once the game runs */
+    const int start_fs = !getenv("SR_OFFSCREEN") && sdl3vk_cfg_get("fullscreen", 0);
     s_win = SDL_CreateWindow(title ? title : "PSP Recomp",
                              ww, wh,
-                             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+                             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | (start_fs ? SDL_WINDOW_FULLSCREEN : 0));
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 0;
@@ -1151,7 +1158,7 @@ static void poll_input(int *quit) {
                         (unsigned)ev.key.key, (int)ev.key.scancode, (unsigned)ev.key.mod, (int)ev.key.repeat);
             if (!ev.key.repeat && (ev.key.key == SDLK_F11 ||
                                    (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT)))) {
-                SDL_SetWindowFullscreen(s_win, !(SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN));
+                sdl3vk_set_fullscreen(!(SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN));
                 break;
             }
             if (!ev.key.repeat && ev.key.key == SDLK_F12) s_shot_req = 1;
