@@ -108,7 +108,9 @@ static unsigned s_pose_tick = 0;                     /* pad read when the game l
 static unsigned s_l_tick = 0;                        /* pad read when L was last pressed */
 static int s_l_noaim = 0;                            /* L held where Aya can't aim (no aim pose came) */
 static int s_noaim_area = 0;                         /* the last L here built no aim pose */
-#define NOAIM_TICKS 6                                /* pad reads (30 Hz) the aim pose gets to show up */
+#define NOAIM_TICKS 9                                /* pad reads (30 Hz) the aim gets to show up (it takes 6) */
+static float s_press_face[7];                        /* Aya's facing and matrix rows when L was pressed */
+static int s_press_face_ok = 0, s_latched = 0;       /* ... and whether the early aim latch turned her */
 static int s_btn_special = 0;                        /* L or Triangle held (aim / Overdive view) */
 static int s_suspended = 0;                          /* a special camera is live: no orbit */
 static float s_yaw_off = 0.0f, s_pitch_off = 0.0f;   /* accumulated right-stick orbit */
@@ -131,6 +133,11 @@ static unsigned s_aya_tick = 0;                      /* pad read of the last pla
 /* The game runs player_pose every frame where Aya plays normally; where it doesn't (the Overdive
  * Room, safe rooms) the object we know may be stale: leave it alone. */
 static int aya_live(void) { return s_aya && s_aya_tick && s_ticks - s_aya_tick <= 4; }
+/* Aya is really aiming (Aya + 0x1580: 2 with every weapon tried, 0 otherwise). Where she can't
+ * aim (a corridor in scene 35, safe rooms) the game still builds her pose with mat_from_yaw
+ * while she walks with L held, so that alone took L as aiming (issue #26: free aim turned her to
+ * the camera and the stick fallback gave the right stick to her movement). */
+static int aim_flag(void) { return aya_live() && MEM_R32(s_aya + 0x1580u) != 0; }
 
 /* The eye we last wrote into each camera object, so a second pass in the same frame (the
  * game calls these routines more than once) doesn't rotate it again. */
@@ -417,7 +424,7 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
     if (s_free_aim) {                  /* free aim turns Aya itself, from the first frame of aiming */
         if (l && !prev_l && s_view_look_ok && s_ticks - s_hook_tick <= 4) { s_aim_look = s_view_look; s_aim_pending = 1; }
         if (!l) { aim_release(); s_aim_pending = s_aim_moved = s_aim_stick = 0; }
-    } else if (l && !prev_l && stick_idle && fabsf(s_yaw_off) > 0.2f && s_ticks - s_hook_tick <= 4) {
+    } else if (l && !prev_l && stick_idle && !s_noaim_area && fabsf(s_yaw_off) > 0.2f && s_ticks - s_hook_tick <= 4) {
         phase = AIM_TURN_SAMPLES;
         fprintf(stderr, "twinstick: aim along the camera (turning Aya %.2f rad first)\n", s_yaw_off);
     }
@@ -433,7 +440,7 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
      * the aim with the weapons whose aim the game moves itself (sniper scope, grenade / egg
      * launcher; with the others it strafes). Without free aim, or when free aim found that the
      * game doesn't follow it (aim_stick), the right stick and the mouse are fed to it. */
-    if ((*btn & 0x0100u) && gui_on() && (!s_free_aim || s_aim_stick)) {
+    if ((*btn & 0x0100u) && gui_on() && (!s_free_aim || s_aim_stick) && aim_flag()) {
         float rx = 0.0f, ry = 0.0f;
         gui_rstick(&rx, &ry);
         if (s_inv_x) rx = -rx;
@@ -481,22 +488,33 @@ void sr_twinstick_filter(uint32_t *btn, uint8_t *lx, uint8_t *ly) {
          * hand the view to the game's camera too (eased in, update_special), and stop turning her
          * to our view for an aim that never starts (issue #26: she snapped to the camera's way). */
         if ((*btn & 0x0100u) && !s_aiming) {          /* pressed; known no-aim place: at once */
-            s_l_tick = s_ticks; s_l_noaim = s_noaim_area;
+            s_l_tick = s_ticks; s_l_noaim = s_noaim_area; s_latched = 0;
             if (s_noaim_area) s_aim_pending = 0;
+            s_press_face_ok = aya_live();
+            if (s_press_face_ok) {
+                static const uint16_t o[7] = { 0x4c4, 0x20, 0x24, 0x28, 0x40, 0x44, 0x48 };
+                for (int i = 0; i < 7; i++) s_press_face[i] = rdf(s_aya + o[i]);
+            }
         }
         if (!(*btn & 0x0100u)) s_l_noaim = 0;
         else if (s_pose_tick && s_pose_tick - s_l_tick < 0x80000000u) s_noaim_area = 0;   /* aiming works */
         else if (!s_l_noaim && s_ticks - s_l_tick >= NOAIM_TICKS) {
             s_l_noaim = 1; s_aim_pending = 0;
             if (s_ticks - s_hook_tick <= 4) s_noaim_area = 1;   /* not from a movie or menu */
+            if (s_latched && s_press_face_ok && !s_moving && aya_live()) {   /* the latch turned her: back */
+                static const uint16_t o[7] = { 0x4c4, 0x20, 0x24, 0x28, 0x40, 0x44, 0x48 };
+                for (int i = 0; i < 7; i++) wrf(s_aya + o[i], s_press_face[i]);
+            }
             static int n = 0;
             if (n++ < 40) fprintf(stderr, "twinstick: L where Aya can't aim: the game's camera behind her\n");
         }
         s_btn_special = ((*btn & 0x0100u) && (aim_pose || s_l_noaim)) || tri_n >= 8;
         static int al = -1; if (al < 0) al = getenv("SR_AIMLOG") ? 1 : 0;
-        if (al && (*btn & 0x0100u) && (s_ticks % 10) == 0)
-            fprintf(stderr, "aimlog: tick %u pose age %u aya age %u special %d moving %d aim_stick %d\n", s_ticks,
-                    s_pose_tick ? s_ticks - s_pose_tick : 9999u, s_aya_tick ? s_ticks - s_aya_tick : 9999u, s_btn_special, s_moving, s_aim_stick);
+        if (al && (*btn & 0x0100u) && ((s_ticks % 10) == 0 || s_ticks - s_l_tick < 12))
+            fprintf(stderr, "aimlog: tick %u (+%u) pose age %u aya age %u flag %x/%.1f special %d moving %d aim_stick %d\n", s_ticks,
+                    s_ticks - s_l_tick, s_pose_tick ? s_ticks - s_pose_tick : 9999u, s_aya_tick ? s_ticks - s_aya_tick : 9999u,
+                    s_aya ? MEM_R32(s_aya + 0x1580u) : 0xFFu, s_aya ? rdf(s_aya + 0x390u) : -1.0f,
+                    s_btn_special, s_moving, s_aim_stick);
     }
     s_aiming = (*btn & 0x0100u) != 0;
 }
@@ -813,6 +831,7 @@ static void early_aim_latch(uint32_t src, int hold_view) {
     if (!(s_free_aim && s_aiming && s_aim_pending && !s_aim_stick && aya_live() && !s_noaim_area &&
           s_ticks - s_l_tick <= NOAIM_TICKS && MEM_R32(s_aya + 0x434u) == 0xFFFFFFFFu)) return;
     const float y = s_aim_look - AIM_CAM_OFF;
+    s_latched = 1;
     for (uint32_t o = 0x13a0; o <= 0x13b0; o += 0x10) { wrf(s_aya + o, sinf(y)); wrf(s_aya + o + 4, 0.0f); wrf(s_aya + o + 8, cosf(y)); }
     wrf(s_aya + 0x4c4, y);         /* her facing, and her root matrix it is read back from */
     wrf(s_aya + 0x20, cosf(y)); wrf(s_aya + 0x24, 0.0f); wrf(s_aya + 0x28, -sinf(y));
@@ -919,8 +938,8 @@ int sr_func_hook(CpuState *s, uint32_t addr) {
         break;
     case HOOK_MAT_FROM_YAW:    /* a0 = object, $f13 = its facing */
         if (s->r[4] != s_aya || !s_aya) break;
-        if (s_aiming) s_pose_tick = s_ticks ? s_ticks : 1;
-        if (!s_free_aim || !s_aiming || s_aim_stick) { aim_release(); break; }   /* the game keeps the facing from her matrix */
+        if (s_aiming && aim_flag()) s_pose_tick = s_ticks ? s_ticks : 1;
+        if (!s_free_aim || !s_aiming || s_aim_stick || !aim_flag()) { aim_release(); break; }   /* the game keeps the facing from her matrix */
         {
             /* The game's lock-on (Aya + 0x434: the target, -1 = none) picks an enemy when L is
              * pressed near one; its aim point is then the enemy. Free aim leaves that alone until
