@@ -3,6 +3,14 @@
 Versions follow `VERSION` in the repository root; the game and the launcher show it, and the
 update notice compares it with the newest GitHub release. Dates are when the work landed.
 
+## 0.9.20 - 2026-11-26
+
+- LT in safe rooms (anywhere aya can't aim) doesn't make her snap to the camera anymore, and the
+  right stick doesn't move her while you hold it. walking with L held there looked like aiming to
+  the port, it now checks the game's own "really aiming" flag. thanks for #26
+
+no need to press "Prepare game" again this time
+
 ## 0.9.19 - 2026-11-24
 
 - free aim doesn't make aya strafe anymore when you turn fast with the right stick. the aim
